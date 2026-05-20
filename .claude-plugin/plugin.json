@@ -1,0 +1,26 @@
+{
+  "name": "agent-bus",
+  "displayName": "Agent Bus",
+  "version": "1.0.0",
+  "description": "A minimal file-based protocol to coordinate multiple Claude Code instances across separate sessions",
+  "author": {
+    "name": "Mario Mosca",
+    "url": "https://github.com/mariomosca"
+  },
+  "homepage": "https://github.com/mariomosca/agent-bus",
+  "repository": "https://github.com/mariomosca/agent-bus",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "multi-agent",
+    "ai-coordination",
+    "agentic",
+    "mcp",
+    "inter-session",
+    "messaging",
+    "bus"
+  ],
+  "skills": "./skills/",
+  "commands": "./commands/",
+  "hooks": "./hooks/hooks.json"
+}

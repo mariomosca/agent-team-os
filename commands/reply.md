@@ -9,7 +9,9 @@ Steps:
 1. **Resolve the original message**:
 
    ```bash
-   source ~/.claude/scripts/agent-bus-lib.sh
+   LIB="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/scripts/agent-bus-lib.sh"
+   [[ -f "$LIB" ]] || LIB="$HOME/.claude/scripts/agent-bus-lib.sh"
+   source "$LIB"
    AGENT=$(ab_detect_agent "$PWD")
    ORIG_PATH=$(ab_resolve_msg_path "$AGENT" "$1")
    [[ -z "$ORIG_PATH" ]] && { echo "Message $1 not found."; exit 1; }

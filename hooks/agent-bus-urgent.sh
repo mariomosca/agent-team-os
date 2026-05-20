@@ -4,8 +4,14 @@
 
 set -uo pipefail
 
-LIB="$HOME/.claude/scripts/agent-bus-lib.sh"
-[[ -f "$LIB" ]] || exit 0
+# Resolve the helper library (plugin mode or manual install).
+if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" && -f "$CLAUDE_PLUGIN_ROOT/scripts/agent-bus-lib.sh" ]]; then
+    LIB="$CLAUDE_PLUGIN_ROOT/scripts/agent-bus-lib.sh"
+elif [[ -f "$HOME/.claude/scripts/agent-bus-lib.sh" ]]; then
+    LIB="$HOME/.claude/scripts/agent-bus-lib.sh"
+else
+    exit 0
+fi
 # shellcheck disable=SC1090
 source "$LIB"
 

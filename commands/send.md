@@ -14,7 +14,9 @@ Steps:
 2. **Detect sender** from cwd:
 
    ```bash
-   source ~/.claude/scripts/agent-bus-lib.sh
+   LIB="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/scripts/agent-bus-lib.sh"
+   [[ -f "$LIB" ]] || LIB="$HOME/.claude/scripts/agent-bus-lib.sh"
+   source "$LIB"
    FROM=$(ab_detect_agent "$PWD")
    ```
 

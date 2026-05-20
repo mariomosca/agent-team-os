@@ -38,7 +38,22 @@ No daemon. No server. No cloud. Just files on your machine.
 
 Each Claude Code session detects its identity from its current working directory via `AGENT_MAP.json`. A `SessionStart` hook registers the agent and prints any pending inbox messages. Slash commands handle the rest.
 
-## Quickstart
+## Install
+
+### Option A — As a Claude Code plugin (recommended)
+
+In any Claude Code session:
+
+```
+/plugin marketplace add mariomosca/claude-plugins
+/plugin install agent-bus@mariomosca-claude-plugins
+```
+
+The plugin registers its hooks, skill and slash commands automatically. On first run it drops a starter `AGENT_MAP.json` in `~/.agent-bus/` for you to edit.
+
+### Option B — Manual install
+
+If you'd rather not use the plugin marketplace, the bundled installer does the same job:
 
 ```bash
 git clone https://github.com/mariomosca/agent-bus.git ~/agent-bus
@@ -55,7 +70,7 @@ The installer:
 5. Creates `~/.agent-bus/` runtime folders
 6. Drops a starter `AGENT_MAP.json` you can edit
 
-Then edit `~/.agent-bus/AGENT_MAP.json` to map your working directories to agent names.
+In both cases, edit `~/.agent-bus/AGENT_MAP.json` to map your working directories to agent names.
 
 ## Example: define your agents
 
