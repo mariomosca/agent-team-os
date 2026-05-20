@@ -1,0 +1,76 @@
+{
+  "version": "1.2",
+  "updated": "2026-05-20",
+  "rules": [
+    {
+      "pattern": "/Users/me/work",
+      "match": "prefix",
+      "agent": "ops"
+    },
+    {
+      "pattern": "/Users/me/projects",
+      "match": "prefix",
+      "agent": "dev"
+    },
+    {
+      "pattern": "/Users/me/marketing",
+      "match": "prefix",
+      "agent": "growth"
+    }
+  ],
+  "fallback": "ops",
+  "agents": {
+    "ops": {
+      "display_name": "Ops",
+      "role": "Orchestrator and planner",
+      "capabilities": [
+        "planning",
+        "tracking",
+        "handoff",
+        "question",
+        "architecture-review"
+      ],
+      "persona_file": "personas/ops.md"
+    },
+    "dev": {
+      "display_name": "Dev",
+      "role": "Engineer",
+      "capabilities": [
+        "bug-fix",
+        "feature-spec",
+        "code-review",
+        "refactor",
+        "handoff",
+        "question",
+        "generate-screenshots"
+      ],
+      "persona_file": "personas/dev.md"
+    },
+    "growth": {
+      "display_name": "Growth",
+      "role": "Content and marketing",
+      "capabilities": [
+        "draft-post",
+        "review-copy",
+        "plan-campaign",
+        "handoff",
+        "question"
+      ],
+      "persona_file": "personas/growth.md"
+    }
+  },
+  "routing_rules": {
+    "ops": {
+      "deny": [],
+      "reason": "ops is the hub, can talk to anyone"
+    },
+    "dev": {
+      "deny": [],
+      "reason": "dev can talk to ops and growth"
+    },
+    "growth": {
+      "deny": [],
+      "reason": "growth can talk to ops and dev"
+    }
+  }
+}

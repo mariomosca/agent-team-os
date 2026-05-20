@@ -1,0 +1,19 @@
+# Local artifacts
+.DS_Store
+*.log
+*.bak
+*.bak.*
+.env
+.env.*
+!.env.example
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Node (if anyone adds tooling later)
+node_modules/
+
+# Backups inadvertently dropped
+*.tmp
