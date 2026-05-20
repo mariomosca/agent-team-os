@@ -1,8 +1,11 @@
 # Agent Bus
 
+![agent-bus — coordinate Claude Code sessions](./assets/cover.png)
+
 > A minimal file-based protocol to coordinate multiple Claude Code instances across separate sessions.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Release](https://img.shields.io/github/v/release/mariomosca/agent-bus?label=release)](https://github.com/mariomosca/agent-bus/releases/latest)
 
 ## Why
 
@@ -37,6 +40,92 @@ No daemon. No server. No cloud. Just files on your machine.
 ```
 
 Each Claude Code session detects its identity from its current working directory via `AGENT_MAP.json`. A `SessionStart` hook registers the agent and prints any pending inbox messages. Slash commands handle the rest.
+
+### Architecture at a glance
+
+```mermaid
+flowchart LR
+    subgraph S["Multiple Claude Code sessions"]
+        direction TB
+        A[session 01<br/>ops]
+        B[session 02<br/>dev]
+        C[session 03<br/>growth]
+        D[session 04<br/>...]
+    end
+
+    FS[("~/.agent-bus/<br/>filesystem")]
+
+    A -- write msg --> FS
+    B -- write msg --> FS
+    C -- write msg --> FS
+    D -- write msg --> FS
+
+    FS -. SessionStart<br/>reads inbox .-> A
+    FS -. SessionStart<br/>reads inbox .-> B
+    FS -. SessionStart<br/>reads inbox .-> C
+    FS -. SessionStart<br/>reads inbox .-> D
+
+    classDef session fill:#0a0a0a,stroke:#5eead4,color:#fff
+    classDef hub fill:#5eead4,stroke:#5eead4,color:#000
+    class A,B,C,D session
+    class FS hub
+```
+
+No daemon listens. Every session writes to and polls the filesystem independently. The hook only fires on session boundaries — there's nothing running between turns.
+
+### Message lifecycle
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Ops as ops session
+    participant FS as ~/.agent-bus/
+    participant Dev as dev session
+
+    Ops->>FS: /send dev bug-fix
+    Note over FS: msg-...json written to<br/>inboxes/dev/
+    Note over FS: outbox/YYYY-MM-DD.jsonl<br/>appended (audit)
+    Note over FS: threads/thread-...json<br/>opened
+
+    Dev->>FS: SessionStart hook
+    FS-->>Dev: inbox banner<br/>"1 pending: brief from ops"
+    Dev->>FS: /read msg-...
+    Note over FS: msg moved to .read/
+    Dev->>FS: /reply msg-... response
+    Note over FS: reply written to inboxes/ops/<br/>thread auto-closed
+
+    Ops->>FS: SessionStart hook
+    FS-->>Ops: inbox banner<br/>"1 response from dev"
+```
+
+A request → response cycle never has both sessions live at the same time. Filesystem is the rendezvous.
+
+### Routing rules
+
+```mermaid
+flowchart TB
+    ops((ops<br/>hub))
+    dev((dev))
+    growth((growth))
+    secure((secure<br/>isolated))
+
+    ops <--> dev
+    ops <--> growth
+    ops <--> secure
+    dev <--> growth
+
+    dev x--x secure
+    growth x--x secure
+
+    classDef hub fill:#5eead4,stroke:#5eead4,color:#000
+    classDef peer fill:#0a0a0a,stroke:#5eead4,color:#fff
+    classDef walled fill:#0a0a0a,stroke:#f87171,color:#fff
+    class ops hub
+    class dev,growth peer
+    class secure walled
+```
+
+Declare blocked pairs in `AGENT_MAP.json` to keep contexts isolated. Cross-impact between walled agents must route through the hub.
 
 ## Install
 
