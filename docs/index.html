@@ -42,6 +42,40 @@
 
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
 
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      if (window.mermaid) {
+        mermaid.initialize({
+          startOnLoad: true,
+          theme: 'dark',
+          themeVariables: {
+            background: '#0a0a0a',
+            primaryColor: '#0a0a0a',
+            primaryTextColor: '#ffffff',
+            primaryBorderColor: '#5eead4',
+            lineColor: '#5eead4',
+            secondaryColor: '#1a1a1a',
+            tertiaryColor: '#0a0a0a',
+            mainBkg: '#0a0a0a',
+            secondBkg: '#1a1a1a',
+            tertiaryBkg: '#0a0a0a',
+            edgeLabelBackground: '#0a0a0a',
+            actorBkg: '#0a0a0a',
+            actorBorder: '#5eead4',
+            actorTextColor: '#ffffff',
+            actorLineColor: '#5eead4',
+            signalColor: '#5eead4',
+            signalTextColor: '#ffffff',
+            noteBkgColor: '#1a1a1a',
+            noteTextColor: '#ffffff',
+            noteBorderColor: '#5eead4'
+          }
+        });
+      }
+    });
+  </script>
+
   <style>
     body { background: #0a0a0a; }
     .bg-grid {
@@ -64,6 +98,7 @@
     <nav class="flex items-center gap-6 text-sm text-muted">
       <a href="#install" class="hover:text-white transition">Install</a>
       <a href="#how" class="hover:text-white transition">How it works</a>
+      <a href="#faq" class="hover:text-white transition">FAQ</a>
       <a href="https://github.com/mariomosca/agent-bus" class="hover:text-white transition">GitHub →</a>
     </nav>
   </header>
@@ -104,6 +139,136 @@
     <p class="text-lg mt-4">
       <span class="text-white font-semibold">Agent Bus removes the postman.</span>
     </p>
+  </section>
+
+  <!-- Show me — before / after -->
+  <section class="max-w-5xl mx-auto px-6 py-12 border-t border-white/5">
+    <h2 class="text-2xl font-semibold mb-2 text-teal text-center">Show me</h2>
+    <p class="text-center text-muted text-sm mb-10">Same task. Without agent-bus, and with it.</p>
+
+    <div class="grid md:grid-cols-2 gap-6">
+
+      <!-- Before -->
+      <div class="rounded-lg border border-red-500/30 bg-red-500/5 p-6">
+        <p class="text-xs font-mono text-red-300 uppercase tracking-wider mb-4">Without agent-bus</p>
+        <ol class="space-y-3 text-sm text-muted">
+          <li><span class="text-white font-mono">1.</span> Open ops session, draft a bug-fix brief.</li>
+          <li><span class="text-white font-mono">2.</span> Copy brief to clipboard.</li>
+          <li><span class="text-white font-mono">3.</span> Switch terminal, open dev session.</li>
+          <li><span class="text-white font-mono">4.</span> Paste brief, prepend "ops asked me to:".</li>
+          <li><span class="text-white font-mono">5.</span> Dev does the work, writes a result.</li>
+          <li><span class="text-white font-mono">6.</span> Copy result, switch back to ops, paste.</li>
+          <li><span class="text-white font-mono">7.</span> Forget what was decided 3 days later.</li>
+        </ol>
+        <p class="mt-4 text-xs text-red-300/80">You are the postman. Context lives in your head.</p>
+      </div>
+
+      <!-- After -->
+      <div class="rounded-lg border border-teal/30 bg-teal/5 p-6">
+        <p class="text-xs font-mono text-teal uppercase tracking-wider mb-4">With agent-bus</p>
+        <div class="space-y-3 text-sm font-mono text-muted">
+          <p><span class="text-teal">ops$</span> /send dev bug-fix</p>
+          <p class="text-xs text-muted/70 pl-4">→ msg-...json written to inboxes/dev/</p>
+          <p><span class="text-teal">dev$</span> claude  <span class="text-xs text-muted/70">(later, in another terminal)</span></p>
+          <p class="text-xs text-muted/70 pl-4">=== Agent Bus ===<br/>Inbox: 1 pending<br/>  - brief/bug-fix from ops</p>
+          <p><span class="text-teal">dev$</span> /read msg-...</p>
+          <p><span class="text-teal">dev$</span> /reply msg-... response</p>
+          <p class="text-xs text-muted/70 pl-4">→ thread auto-closed, ops will see the reply at next SessionStart</p>
+        </div>
+        <p class="mt-4 text-xs text-teal">Context lives in the bus. Threads are preserved.</p>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- Architecture diagrams -->
+  <section class="max-w-5xl mx-auto px-6 py-16 border-t border-white/5">
+    <h2 class="text-2xl font-semibold mb-2 text-teal text-center">Architecture</h2>
+    <p class="text-center text-muted text-sm mb-10">Three diagrams. The whole protocol.</p>
+
+    <div class="space-y-12">
+
+      <div>
+        <h3 class="font-semibold text-white mb-2">1. Sessions meet at the filesystem</h3>
+        <p class="text-muted text-sm mb-4">No daemon listens. Each session writes to and polls the filesystem on its own schedule. The hook only fires when a session boots.</p>
+        <div class="rounded-lg border border-white/10 bg-black/20 p-6 overflow-x-auto">
+<pre class="mermaid">
+flowchart LR
+    subgraph S["Multiple Claude Code sessions"]
+        direction TB
+        A[session 01<br/>ops]
+        B[session 02<br/>dev]
+        C[session 03<br/>growth]
+        D[session 04<br/>...]
+    end
+
+    FS[("~/.agent-bus/<br/>filesystem")]
+
+    A -- write msg --> FS
+    B -- write msg --> FS
+    C -- write msg --> FS
+    D -- write msg --> FS
+
+    FS -. SessionStart<br/>reads inbox .-> A
+    FS -. SessionStart<br/>reads inbox .-> B
+    FS -. SessionStart<br/>reads inbox .-> C
+    FS -. SessionStart<br/>reads inbox .-> D
+</pre>
+        </div>
+      </div>
+
+      <div>
+        <h3 class="font-semibold text-white mb-2">2. A message has a lifecycle</h3>
+        <p class="text-muted text-sm mb-4">Request → response never has both sessions live at the same time. Filesystem is the rendezvous. Threads remember.</p>
+        <div class="rounded-lg border border-white/10 bg-black/20 p-6 overflow-x-auto">
+<pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant Ops as ops session
+    participant FS as ~/.agent-bus/
+    participant Dev as dev session
+
+    Ops->>FS: /send dev bug-fix
+    Note over FS: msg-...json written to<br/>inboxes/dev/
+    Note over FS: outbox/YYYY-MM-DD.jsonl<br/>appended (audit)
+    Note over FS: threads/thread-...json<br/>opened
+
+    Dev->>FS: SessionStart hook
+    FS-->>Dev: inbox banner<br/>"1 pending: brief from ops"
+    Dev->>FS: /read msg-...
+    Note over FS: msg moved to .read/
+    Dev->>FS: /reply msg-... response
+    Note over FS: reply written to inboxes/ops/<br/>thread auto-closed
+
+    Ops->>FS: SessionStart hook
+    FS-->>Ops: inbox banner<br/>"1 response from dev"
+</pre>
+        </div>
+      </div>
+
+      <div>
+        <h3 class="font-semibold text-white mb-2">3. Routing rules isolate contexts</h3>
+        <p class="text-muted text-sm mb-4">Declare blocked pairs in <code class="text-teal font-mono">AGENT_MAP.json</code>. Cross-impact between walled agents must route through a hub.</p>
+        <div class="rounded-lg border border-white/10 bg-black/20 p-6 overflow-x-auto">
+<pre class="mermaid">
+flowchart TB
+    ops((ops<br/>hub))
+    dev((dev))
+    growth((growth))
+    secure((secure<br/>isolated))
+
+    ops &lt;--&gt; dev
+    ops &lt;--&gt; growth
+    ops &lt;--&gt; secure
+    dev &lt;--&gt; growth
+
+    dev x--x secure
+    growth x--x secure
+</pre>
+        </div>
+      </div>
+
+    </div>
   </section>
 
   <!-- What it gives -->
@@ -189,6 +354,43 @@ cd ~/agent-bus
     <p class="text-muted mt-3 leading-relaxed">
       The cost is coordination. Agent Bus is the cheapest possible coordination layer.
     </p>
+  </section>
+
+  <!-- FAQ -->
+  <section id="faq" class="max-w-3xl mx-auto px-6 py-16 border-t border-white/5">
+    <h2 class="text-2xl font-semibold mb-8 text-teal">FAQ</h2>
+
+    <div class="space-y-6">
+      <div>
+        <h3 class="font-semibold text-white mb-2">What happens if two sessions write at the same time?</h3>
+        <p class="text-muted text-sm leading-relaxed">Per-recipient atomic locks via <code class="text-teal font-mono">mkdir</code>. The bash helper acquires a lock before writing to an inbox and releases it after. Brief contention is handled with a short retry loop.</p>
+      </div>
+
+      <div>
+        <h3 class="font-semibold text-white mb-2">Do I need Claude Code to use the bus?</h3>
+        <p class="text-muted text-sm leading-relaxed">The bash helpers and message schema work standalone — you can write to <code class="text-teal font-mono">~/.agent-bus/inboxes/&lt;agent&gt;/</code> from any shell. The hooks and slash commands are the Claude Code integration. If you wrap another agent runtime around the same filesystem layout, it joins the bus.</p>
+      </div>
+
+      <div>
+        <h3 class="font-semibold text-white mb-2">What if the inbox grows large?</h3>
+        <p class="text-muted text-sm leading-relaxed">Reading a message moves it to <code class="text-teal font-mono">inboxes/&lt;agent&gt;/.read/</code> automatically. Pending inbox stays small; archive grows but is read-once. The append-only outbox is a JSONL log per day under <code class="text-teal font-mono">outbox/</code> — easy to rotate.</p>
+      </div>
+
+      <div>
+        <h3 class="font-semibold text-white mb-2">How do I migrate between machines?</h3>
+        <p class="text-muted text-sm leading-relaxed">It's just a directory. <code class="text-teal font-mono">rsync ~/.agent-bus/ user@host:~/.agent-bus/</code> or commit the whole thing to a private repo. Path-based agent rules in <code class="text-teal font-mono">AGENT_MAP.json</code> may need updating per machine.</p>
+      </div>
+
+      <div>
+        <h3 class="font-semibold text-white mb-2">What about secrets in messages?</h3>
+        <p class="text-muted text-sm leading-relaxed">Don't put them there. Payloads are size-capped (10KB suggested) and the convention is to pass heavy or sensitive content by reference (<code class="text-teal font-mono">context_refs</code>) — file paths, GitHub issue URIs, knowledge-graph node IDs.</p>
+      </div>
+
+      <div>
+        <h3 class="font-semibold text-white mb-2">Realtime delivery between live sessions?</h3>
+        <p class="text-muted text-sm leading-relaxed">Not in v1. Inbox is read on <code class="text-teal font-mono">SessionStart</code> and on each <code class="text-teal font-mono">UserPromptSubmit</code> (for <code class="text-teal font-mono">urgent</code>/<code class="text-teal font-mono">high</code> priority alerts). A <code class="text-teal font-mono">fswatch</code>-based realtime delivery is on the v1.1 roadmap.</p>
+      </div>
+    </div>
   </section>
 
   <!-- Footer -->
