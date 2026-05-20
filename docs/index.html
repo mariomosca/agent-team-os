@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>agent-bus — Coordinate Claude Code sessions</title>
+  <meta name="description" content="A minimal file-based protocol to coordinate multiple Claude Code instances across separate sessions. No daemon. No server. No cloud." />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="agent-bus — Coordinate Claude Code sessions" />
+  <meta property="og:description" content="A minimal file-based protocol to coordinate multiple Claude Code instances across separate sessions." />
+  <meta property="og:image" content="https://raw.githubusercontent.com/mariomosca/agent-bus/main/assets/cover.png" />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://mariomosca.github.io/agent-bus/" />
+
+  <!-- Twitter card -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="agent-bus — Coordinate Claude Code sessions" />
+  <meta name="twitter:description" content="A minimal file-based protocol to coordinate multiple Claude Code instances across separate sessions." />
+  <meta name="twitter:image" content="https://raw.githubusercontent.com/mariomosca/agent-bus/main/assets/cover.png" />
+
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>→</text></svg>" />
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            ink: '#0a0a0a',
+            teal: '#5eead4',
+            muted: '#9ca3af'
+          },
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+            mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace']
+          }
+        }
+      }
+    }
+  </script>
+
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <style>
+    body { background: #0a0a0a; }
+    .bg-grid {
+      background-image:
+        linear-gradient(rgba(94, 234, 212, 0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(94, 234, 212, 0.04) 1px, transparent 1px);
+      background-size: 48px 48px;
+    }
+    .glow {
+      box-shadow: 0 0 60px rgba(94, 234, 212, 0.12);
+    }
+  </style>
+</head>
+
+<body class="text-white font-sans antialiased">
+
+  <!-- Nav -->
+  <header class="max-w-5xl mx-auto px-6 py-6 flex items-center justify-between">
+    <div class="font-mono text-teal text-sm">agent-bus</div>
+    <nav class="flex items-center gap-6 text-sm text-muted">
+      <a href="#install" class="hover:text-white transition">Install</a>
+      <a href="#how" class="hover:text-white transition">How it works</a>
+      <a href="https://github.com/mariomosca/agent-bus" class="hover:text-white transition">GitHub →</a>
+    </nav>
+  </header>
+
+  <!-- Hero -->
+  <section class="bg-grid">
+    <div class="max-w-5xl mx-auto px-6 pt-12 pb-20 text-center">
+      <p class="font-mono text-xs text-teal tracking-wider uppercase mb-6">v1.0.0 · MIT · file-based</p>
+      <h1 class="text-5xl md:text-7xl font-bold tracking-tight mb-6">
+        agent-bus
+      </h1>
+      <p class="text-xl md:text-2xl text-muted max-w-2xl mx-auto leading-relaxed">
+        A minimal file-based protocol to coordinate multiple Claude Code instances across separate sessions.
+      </p>
+      <p class="text-sm text-muted mt-4">No daemon. No server. No cloud. Just files on your machine.</p>
+
+      <div class="flex flex-wrap items-center justify-center gap-3 mt-10">
+        <a href="#install" class="px-6 py-3 rounded-md bg-teal text-ink font-medium hover:opacity-90 transition">Install</a>
+        <a href="https://github.com/mariomosca/agent-bus" class="px-6 py-3 rounded-md border border-white/10 text-white hover:border-teal hover:text-teal transition">View on GitHub</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Cover image -->
+  <section class="max-w-5xl mx-auto px-6 -mt-4 mb-16">
+    <div class="rounded-xl overflow-hidden border border-white/10 glow">
+      <img src="https://raw.githubusercontent.com/mariomosca/agent-bus/main/assets/cover.png" alt="agent-bus architecture cover" class="w-full block" />
+    </div>
+  </section>
+
+  <!-- The problem -->
+  <section class="max-w-3xl mx-auto px-6 py-16">
+    <h2 class="text-2xl font-semibold mb-4 text-teal">The problem</h2>
+    <p class="text-lg text-muted leading-relaxed">
+      If you run more than one Claude Code session — one per project, one per role, one per repo — you quickly hit a wall:
+      the sessions don't talk to each other. You become the human postman, copy-pasting context, briefs and handoffs between terminals.
+    </p>
+    <p class="text-lg mt-4">
+      <span class="text-white font-semibold">Agent Bus removes the postman.</span>
+    </p>
+  </section>
+
+  <!-- What it gives -->
+  <section class="max-w-5xl mx-auto px-6 py-12 border-t border-white/5">
+    <h2 class="text-2xl font-semibold mb-10 text-center">What it gives you</h2>
+    <div class="grid md:grid-cols-2 gap-6">
+      <div class="p-6 border border-white/10 rounded-lg">
+        <h3 class="font-semibold mb-2">Inbox per agent</h3>
+        <p class="text-muted text-sm">Each session sees what's waiting for it the moment you open it.</p>
+      </div>
+      <div class="p-6 border border-white/10 rounded-lg">
+        <h3 class="font-semibold mb-2">Structured messages</h3>
+        <p class="text-muted text-sm">Versioned JSON with <code class="text-teal font-mono">from</code>, <code class="text-teal font-mono">to</code>, <code class="text-teal font-mono">intent</code>, payload, deadlines.</p>
+      </div>
+      <div class="p-6 border border-white/10 rounded-lg">
+        <h3 class="font-semibold mb-2">Threaded replies</h3>
+        <p class="text-muted text-sm">Pick up a conversation a week later. Threads are preserved.</p>
+      </div>
+      <div class="p-6 border border-white/10 rounded-lg">
+        <h3 class="font-semibold mb-2">Routing rules</h3>
+        <p class="text-muted text-sm">Declare blocked pairs to isolate contexts (e.g. work vs personal).</p>
+      </div>
+      <div class="p-6 border border-white/10 rounded-lg">
+        <h3 class="font-semibold mb-2">Audit log</h3>
+        <p class="text-muted text-sm">Append-only JSONL of every message sent, for free.</p>
+      </div>
+      <div class="p-6 border border-white/10 rounded-lg">
+        <h3 class="font-semibold mb-2">Slash commands</h3>
+        <p class="text-muted text-sm font-mono">/inbox /read /send /reply /handoff /thread /bus</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Install -->
+  <section id="install" class="max-w-3xl mx-auto px-6 py-16 border-t border-white/5">
+    <h2 class="text-2xl font-semibold mb-6 text-teal">Install</h2>
+
+    <div class="mb-8">
+      <h3 class="font-semibold text-white mb-2">Option A — As a Claude Code plugin (recommended)</h3>
+      <p class="text-muted text-sm mb-3">In any Claude Code session:</p>
+      <pre class="bg-black/40 border border-white/10 rounded-lg p-4 text-sm font-mono text-teal overflow-x-auto"><code>/plugin marketplace add mariomosca/claude-plugins
+/plugin install agent-bus@mariomosca-claude-plugins</code></pre>
+    </div>
+
+    <div>
+      <h3 class="font-semibold text-white mb-2">Option B — Manual</h3>
+      <pre class="bg-black/40 border border-white/10 rounded-lg p-4 text-sm font-mono text-teal overflow-x-auto"><code>git clone https://github.com/mariomosca/agent-bus.git ~/agent-bus
+cd ~/agent-bus
+./install.sh</code></pre>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section id="how" class="max-w-3xl mx-auto px-6 py-16 border-t border-white/5">
+    <h2 class="text-2xl font-semibold mb-6 text-teal">How it works</h2>
+    <p class="text-muted mb-6">A folder structure, a JSON schema, a handful of bash helpers and slash commands.</p>
+
+    <pre class="bg-black/40 border border-white/10 rounded-lg p-4 text-xs font-mono overflow-x-auto text-muted"><code>~/.agent-bus/
+  AGENT_MAP.json              # path -> agent + routing rules
+  registry/&lt;agent&gt;.json       # agent card (active, last_seen)
+  inboxes/&lt;agent&gt;/            # pending msg-*.json
+  inboxes/&lt;agent&gt;/.read/      # local archive after read
+  threads/&lt;thread-id&gt;.json    # conversation history
+  outbox/YYYY-MM-DD.jsonl     # append-only audit log
+  locks/                      # mkdir-based atomic locks
+</code></pre>
+
+    <p class="text-muted mt-6 text-sm leading-relaxed">
+      Each Claude Code session detects its identity from its current working directory via <code class="text-teal font-mono">AGENT_MAP.json</code>. A <code class="text-teal font-mono">SessionStart</code> hook registers the agent and prints any pending inbox messages. Slash commands handle the rest.
+    </p>
+
+    <p class="text-muted mt-4 text-sm">
+      See <a href="https://github.com/mariomosca/agent-bus#how-it-works" class="text-teal underline">the README on GitHub</a> for architecture diagrams and the full message schema.
+    </p>
+  </section>
+
+  <!-- Why -->
+  <section class="max-w-3xl mx-auto px-6 py-16 border-t border-white/5">
+    <h2 class="text-2xl font-semibold mb-4 text-teal">Why not just use one Claude Code instance?</h2>
+    <p class="text-muted leading-relaxed">
+      Because context is finite. One instance per role — engineering, marketing, ops — keeps each session focused, lets each one carry its own conventions, skills and memory, and stops them from stepping on each other's toes.
+    </p>
+    <p class="text-muted mt-3 leading-relaxed">
+      The cost is coordination. Agent Bus is the cheapest possible coordination layer.
+    </p>
+  </section>
+
+  <!-- Footer -->
+  <footer class="max-w-5xl mx-auto px-6 py-12 border-t border-white/5 text-sm text-muted flex flex-wrap items-center justify-between gap-4">
+    <p>
+      Built by <a href="https://github.com/mariomosca" class="text-teal hover:underline">Mario Mosca</a> — AI Transformation Manager &amp; indie builder.
+    </p>
+    <p>
+      <a href="https://github.com/mariomosca/agent-bus/blob/main/LICENSE" class="hover:text-white">MIT License</a>
+      ·
+      <a href="https://github.com/mariomosca/agent-bus/releases" class="hover:text-white">Releases</a>
+      ·
+      <a href="https://github.com/mariomosca/agent-bus/issues" class="hover:text-white">Issues</a>
+    </p>
+  </footer>
+
+</body>
+</html>
