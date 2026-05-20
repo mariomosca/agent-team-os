@@ -263,8 +263,8 @@ You can declare blocked pairs in `AGENT_MAP.json` to keep contexts isolated — 
 
 ## Status
 
-- **v1**: file-based protocol, bash helpers, slash commands, `SessionStart` hook — battle-tested across five concurrent agents in production since May 2026
-- **v1.1** (planned): MCP server wrapper, `fswatch`-based realtime delivery, optional `UserPromptSubmit` urgent alerts
+- **v1.0**: file-based protocol, bash helpers, slash commands, `SessionStart` hook — battle-tested across five concurrent agents in production since May 2026.
+- **v1.1+**: realtime delivery, conductor pattern, active driver, autonomous mode with guard-rails — see [ROADMAP.md](./ROADMAP.md).
 
 ## Why not just use one Claude Code instance?
 
