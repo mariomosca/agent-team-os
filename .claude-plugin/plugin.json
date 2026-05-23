@@ -1,5 +1,5 @@
 {
-  "name": "agent-bus",
+  "name": "agent-team-os",
   "displayName": "Agent Bus",
   "version": "1.0.0",
   "description": "A minimal file-based protocol to coordinate multiple Claude Code instances across separate sessions",
@@ -7,8 +7,8 @@
     "name": "Mario Mosca",
     "url": "https://github.com/mariomosca"
   },
-  "homepage": "https://github.com/mariomosca/agent-bus",
-  "repository": "https://github.com/mariomosca/agent-bus",
+  "homepage": "https://github.com/mariomosca/agent-team-os",
+  "repository": "https://github.com/mariomosca/agent-team-os",
   "license": "MIT",
   "keywords": [
     "claude-code",

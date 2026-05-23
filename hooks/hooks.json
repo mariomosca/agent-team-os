@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/agent-bus-load.sh"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/agent-team-os-load.sh"
           }
         ]
       }
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/agent-bus-urgent.sh"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/agent-team-os-urgent.sh"
           }
         ]
       }

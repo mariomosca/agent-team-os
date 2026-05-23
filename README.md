@@ -1,11 +1,11 @@
 # Agent Bus
 
-![agent-bus — coordinate Claude Code sessions](./assets/cover.png)
+![agent-team-os — coordinate Claude Code sessions](./assets/cover.png)
 
 > A minimal file-based protocol to coordinate multiple Claude Code instances across separate sessions.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Release](https://img.shields.io/github/v/release/mariomosca/agent-bus?label=release)](https://github.com/mariomosca/agent-bus/releases/latest)
+[![Release](https://img.shields.io/github/v/release/mariomosca/agent-team-os?label=release)](https://github.com/mariomosca/agent-team-os/releases/latest)
 
 ## Why
 
@@ -29,7 +29,7 @@ No daemon. No server. No cloud. Just files on your machine.
 ## How it works
 
 ```
-~/.agent-bus/
+~/.agent-team-os/
   AGENT_MAP.json              # path -> agent + capabilities + routing rules
   registry/<agent>.json       # agent card (active, last_seen, workspace_path)
   inboxes/<agent>/            # pending msg-*.json
@@ -53,7 +53,7 @@ flowchart LR
         D[session 04<br/>...]
     end
 
-    FS[("~/.agent-bus/<br/>filesystem")]
+    FS[("~/.agent-team-os/<br/>filesystem")]
 
     A -- write msg --> FS
     B -- write msg --> FS
@@ -79,7 +79,7 @@ No daemon listens. Every session writes to and polls the filesystem independentl
 sequenceDiagram
     autonumber
     participant Ops as ops session
-    participant FS as ~/.agent-bus/
+    participant FS as ~/.agent-team-os/
     participant Dev as dev session
 
     Ops->>FS: /send dev bug-fix
@@ -135,31 +135,31 @@ In any Claude Code session:
 
 ```
 /plugin marketplace add mariomosca/claude-plugins
-/plugin install agent-bus@mariomosca-claude-plugins
+/plugin install agent-team-os@mariomosca-claude-plugins
 ```
 
-The plugin registers its hooks, skill and slash commands automatically. On first run it drops a starter `AGENT_MAP.json` in `~/.agent-bus/` for you to edit.
+The plugin registers its hooks, skill and slash commands automatically. On first run it drops a starter `AGENT_MAP.json` in `~/.agent-team-os/` for you to edit.
 
 ### Option B — Manual install
 
 If you'd rather not use the plugin marketplace, the bundled installer does the same job:
 
 ```bash
-git clone https://github.com/mariomosca/agent-bus.git ~/agent-bus
-cd ~/agent-bus
+git clone https://github.com/mariomosca/agent-team-os.git ~/agent-team-os
+cd ~/agent-team-os
 ./install.sh
 ```
 
 The installer:
 
-1. Copies the helper library to `~/.claude/scripts/agent-bus-lib.sh`
-2. Copies the `SessionStart` hook to `~/.claude/hooks/agent-bus-load.sh`
+1. Copies the helper library to `~/.claude/scripts/agent-team-os-lib.sh`
+2. Copies the `SessionStart` hook to `~/.claude/hooks/agent-team-os-load.sh`
 3. Copies the slash commands to `~/.claude/commands/`
-4. Copies the auto-attaching skill to `~/.claude/skills/agent-bus/`
-5. Creates `~/.agent-bus/` runtime folders
+4. Copies the auto-attaching skill to `~/.claude/skills/agent-team-os/`
+5. Creates `~/.agent-team-os/` runtime folders
 6. Drops a starter `AGENT_MAP.json` you can edit
 
-In both cases, edit `~/.agent-bus/AGENT_MAP.json` to map your working directories to agent names.
+In both cases, edit `~/.agent-team-os/AGENT_MAP.json` to map your working directories to agent names.
 
 ## Example: define your agents
 
@@ -191,7 +191,7 @@ From your `ops` session:
 /send dev bug-fix
 ```
 
-The wizard collects payload, deadline, context references and writes a JSON message to `~/.agent-bus/inboxes/dev/`.
+The wizard collects payload, deadline, context references and writes a JSON message to `~/.agent-team-os/inboxes/dev/`.
 
 Next time you open a Claude Code session in `/Users/me/projects/...`, the `SessionStart` hook prints:
 

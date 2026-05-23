@@ -23,7 +23,7 @@ Steps:
 4. **Resolve recipient's workspace** from `AGENT_MAP.json` so the user knows where to open the next session:
 
    ```bash
-   TO_WORKSPACE=$(jq -r --arg a "$1" '.rules[] | select(.agent == $a) | .pattern' "$HOME/.agent-bus/AGENT_MAP.json" | head -1)
+   TO_WORKSPACE=$(jq -r --arg a "$1" '.rules[] | select(.agent == $a) | .pattern' "$HOME/.agent-team-os/AGENT_MAP.json" | head -1)
    ```
 
 5. **Show a preview** before sending:

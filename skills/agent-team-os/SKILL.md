@@ -1,5 +1,5 @@
 ---
-name: agent-bus
+name: agent-team-os
 description: File-based communication bus between multiple Claude Code sessions. Use when the user says "send to <agent>", "tell <agent>", "hand off to <agent>", "check inbox", "reply to brief", "delegate to <agent>", or asks "who is active", "list agents", "open threads".
 allowed-tools: Bash, Read, Write, Edit
 ---
@@ -27,7 +27,7 @@ File-based communication between separate Claude Code sessions. Replaces manual 
 ### Step 1 — Determine sender
 
 ```bash
-source ~/.claude/scripts/agent-bus-lib.sh
+source ~/.claude/scripts/agent-team-os-lib.sh
 FROM=$(ab_detect_agent "$PWD")
 ```
 
@@ -35,12 +35,12 @@ If `FROM` is empty → "this workspace is outside AGENT_MAP, cannot send". Stop.
 
 ### Step 2 — Check routing before proposing
 
-Read `~/.agent-bus/AGENT_MAP.json` field `.routing_rules.<from>.deny`. If `to` is in the deny list, do NOT propose a direct send. Suggest:
+Read `~/.agent-team-os/AGENT_MAP.json` field `.routing_rules.<from>.deny`. If `to` is in the deny list, do NOT propose a direct send. Suggest:
 - "Routing blocks {from}→{to} ({reason}). Want me to route via a hub agent if one is configured?"
 
 ### Step 3 — Compose payload for the intent
 
-Check `~/.agent-bus/AGENT_MAP.json` field `.agents.<to>.capabilities` to see if the intent is supported. Add an intent only if documented.
+Check `~/.agent-team-os/AGENT_MAP.json` field `.agents.<to>.capabilities` to see if the intent is supported. Add an intent only if documented.
 
 **Payload schema for common intents**:
 
@@ -168,11 +168,11 @@ Skill:
 
 ## Where things live
 
-- Authoritative spec: `~/agent-bus/README.md` and `~/agent-bus/scripts/agent-bus-lib.sh`
-- Runtime: `~/.agent-bus/` (inboxes, registry, threads, outbox, locks)
-- Bash helper: `~/.claude/scripts/agent-bus-lib.sh`
-- SessionStart hook: `~/.claude/hooks/agent-bus-load.sh`
-- UserPromptSubmit hook (urgent): `~/.claude/hooks/agent-bus-urgent.sh`
+- Authoritative spec: `~/agent-team-os/README.md` and `~/agent-team-os/scripts/agent-team-os-lib.sh`
+- Runtime: `~/.agent-team-os/` (inboxes, registry, threads, outbox, locks)
+- Bash helper: `~/.claude/scripts/agent-team-os-lib.sh`
+- SessionStart hook: `~/.claude/hooks/agent-team-os-load.sh`
+- UserPromptSubmit hook (urgent): `~/.claude/hooks/agent-team-os-urgent.sh`
 - Slash commands: `~/.claude/commands/{bus,inbox,read,send,reply,handoff,thread}.md`
 
 Everything is JSON, inspectable with `jq`, `ls`, `cat`.

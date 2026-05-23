@@ -2,7 +2,7 @@
 # Agent Bus — installer
 #
 # Copies the helper library, hooks, slash commands and skill into your
-# ~/.claude/ folder, and creates ~/.agent-bus/ runtime structure.
+# ~/.claude/ folder, and creates ~/.agent-team-os/ runtime structure.
 #
 # Idempotent: re-running it overwrites the bundled files but leaves your
 # AGENT_MAP.json untouched if it already exists.
@@ -11,7 +11,7 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
-BUS_HOME="${AB_HOME:-$HOME/.agent-bus}"
+BUS_HOME="${AB_HOME:-$HOME/.agent-team-os}"
 
 echo "Agent Bus installer"
 echo "  source repo: $REPO_DIR"
@@ -42,23 +42,23 @@ mkdir -p "$BUS_HOME/locks"
 
 # --- Copy bundled files ---
 
-echo "Copying helper library → $CLAUDE_HOME/scripts/agent-bus-lib.sh"
-cp "$REPO_DIR/scripts/agent-bus-lib.sh" "$CLAUDE_HOME/scripts/agent-bus-lib.sh"
-chmod +x "$CLAUDE_HOME/scripts/agent-bus-lib.sh"
+echo "Copying helper library → $CLAUDE_HOME/scripts/agent-team-os-lib.sh"
+cp "$REPO_DIR/scripts/agent-team-os-lib.sh" "$CLAUDE_HOME/scripts/agent-team-os-lib.sh"
+chmod +x "$CLAUDE_HOME/scripts/agent-team-os-lib.sh"
 
 echo "Copying hooks → $CLAUDE_HOME/hooks/"
-cp "$REPO_DIR/hooks/agent-bus-load.sh"   "$CLAUDE_HOME/hooks/agent-bus-load.sh"
-cp "$REPO_DIR/hooks/agent-bus-urgent.sh" "$CLAUDE_HOME/hooks/agent-bus-urgent.sh"
-chmod +x "$CLAUDE_HOME/hooks/agent-bus-load.sh" "$CLAUDE_HOME/hooks/agent-bus-urgent.sh"
+cp "$REPO_DIR/hooks/agent-team-os-load.sh"   "$CLAUDE_HOME/hooks/agent-team-os-load.sh"
+cp "$REPO_DIR/hooks/agent-team-os-urgent.sh" "$CLAUDE_HOME/hooks/agent-team-os-urgent.sh"
+chmod +x "$CLAUDE_HOME/hooks/agent-team-os-load.sh" "$CLAUDE_HOME/hooks/agent-team-os-urgent.sh"
 
 echo "Copying slash commands → $CLAUDE_HOME/commands/"
 for cmd in bus inbox read send reply handoff thread; do
   cp "$REPO_DIR/commands/${cmd}.md" "$CLAUDE_HOME/commands/${cmd}.md"
 done
 
-echo "Copying skill → $CLAUDE_HOME/skills/agent-bus/"
-mkdir -p "$CLAUDE_HOME/skills/agent-bus"
-cp "$REPO_DIR/skills/agent-bus/SKILL.md" "$CLAUDE_HOME/skills/agent-bus/SKILL.md"
+echo "Copying skill → $CLAUDE_HOME/skills/agent-team-os/"
+mkdir -p "$CLAUDE_HOME/skills/agent-team-os"
+cp "$REPO_DIR/skills/agent-team-os/SKILL.md" "$CLAUDE_HOME/skills/agent-team-os/SKILL.md"
 
 # --- AGENT_MAP starter ---
 
@@ -104,10 +104,10 @@ cat <<'JSON'
        {
          "hooks": {
            "SessionStart": [
-             { "type": "command", "command": "~/.claude/hooks/agent-bus-load.sh" }
+             { "type": "command", "command": "~/.claude/hooks/agent-team-os-load.sh" }
            ],
            "UserPromptSubmit": [
-             { "type": "command", "command": "~/.claude/hooks/agent-bus-urgent.sh" }
+             { "type": "command", "command": "~/.claude/hooks/agent-team-os-urgent.sh" }
            ]
          }
        }

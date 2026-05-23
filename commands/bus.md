@@ -7,12 +7,12 @@ Print the current state of the bus: which agents are configured, who is active, 
 Run via Bash:
 
 ```bash
-LIB="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/scripts/agent-bus-lib.sh"
-   [[ -f "$LIB" ]] || LIB="$HOME/.claude/scripts/agent-bus-lib.sh"
+LIB="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/scripts/agent-team-os-lib.sh"
+   [[ -f "$LIB" ]] || LIB="$HOME/.claude/scripts/agent-team-os-lib.sh"
    source "$LIB"
 
 echo "=== Agent Bus Roster ==="
-if [[ ! -f "$HOME/.agent-bus/AGENT_MAP.json" ]]; then
+if [[ ! -f "$HOME/.agent-team-os/AGENT_MAP.json" ]]; then
   echo "AGENT_MAP.json not found. Run install.sh first."
   exit 0
 fi
@@ -30,11 +30,11 @@ jq -r '
     then "  " + .key + " ↛ " + ((.value.deny // []) | join(","))
     else empty end
   )
-' "$HOME/.agent-bus/AGENT_MAP.json"
+' "$HOME/.agent-team-os/AGENT_MAP.json"
 
 echo ""
 echo "Active sessions (last 5min):"
-for f in "$HOME"/.agent-bus/registry/*.json; do
+for f in "$HOME"/.agent-team-os/registry/*.json; do
   [[ -f "$f" ]] || continue
   AGENT=$(jq -r '.name // (input_filename | split("/")[-1] | rtrimstr(".json"))' "$f" 2>/dev/null)
   LAST=$(jq -r '.last_seen // ""' "$f")

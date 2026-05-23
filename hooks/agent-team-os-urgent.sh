@@ -5,10 +5,10 @@
 set -uo pipefail
 
 # Resolve the helper library (plugin mode or manual install).
-if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" && -f "$CLAUDE_PLUGIN_ROOT/scripts/agent-bus-lib.sh" ]]; then
-    LIB="$CLAUDE_PLUGIN_ROOT/scripts/agent-bus-lib.sh"
-elif [[ -f "$HOME/.claude/scripts/agent-bus-lib.sh" ]]; then
-    LIB="$HOME/.claude/scripts/agent-bus-lib.sh"
+if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" && -f "$CLAUDE_PLUGIN_ROOT/scripts/agent-team-os-lib.sh" ]]; then
+    LIB="$CLAUDE_PLUGIN_ROOT/scripts/agent-team-os-lib.sh"
+elif [[ -f "$HOME/.claude/scripts/agent-team-os-lib.sh" ]]; then
+    LIB="$HOME/.claude/scripts/agent-team-os-lib.sh"
 else
     exit 0
 fi
@@ -46,7 +46,7 @@ while IFS= read -r f; do
 done < <(ab_list_inbox "$AGENT")
 
 # Build full text then JSON-encode via python (safe with newlines and quotes)
-MSG="[agent-bus] You have ${HIGH_COUNT} urgent/high messages in inbox for ${AGENT}:
+MSG="[agent-team-os] You have ${HIGH_COUNT} urgent/high messages in inbox for ${AGENT}:
 ${LIST}
 Consider pausing to read them with /read <msg-id>, or /inbox for an overview."
 

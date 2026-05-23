@@ -14,15 +14,15 @@ Steps:
 2. **Detect sender** from cwd:
 
    ```bash
-   LIB="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/scripts/agent-bus-lib.sh"
-   [[ -f "$LIB" ]] || LIB="$HOME/.claude/scripts/agent-bus-lib.sh"
+   LIB="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/scripts/agent-team-os-lib.sh"
+   [[ -f "$LIB" ]] || LIB="$HOME/.claude/scripts/agent-team-os-lib.sh"
    source "$LIB"
    FROM=$(ab_detect_agent "$PWD")
    ```
 
    If `FROM` is empty → stop: "Workspace not mapped to any agent. Cannot send."
 
-3. **Check routing** in `~/.agent-bus/AGENT_MAP.json` under `.routing_rules[$FROM].deny`. If `TO` is denied, explain the reason and suggest routing via a hub agent if one is configured.
+3. **Check routing** in `~/.agent-team-os/AGENT_MAP.json` under `.routing_rules[$FROM].deny`. If `TO` is denied, explain the reason and suggest routing via a hub agent if one is configured.
 
 4. **Compose the payload** by asking the user the fields appropriate for the intent:
 

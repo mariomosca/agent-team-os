@@ -1,13 +1,13 @@
 #!/bin/bash
-# agent-bus-lib.sh — shared functions for Agent Bus v1
+# agent-team-os-lib.sh — shared functions for Agent Bus v1
 # Source this from hooks and command scripts:
-#   source "$HOME/.claude/scripts/agent-bus-lib.sh"
+#   source "$HOME/.claude/scripts/agent-team-os-lib.sh"
 #
 # Functions: ab_detect_agent, ab_iso_now, ab_msg_id, ab_lock, ab_unlock,
 #            ab_write_message, ab_list_inbox, ab_count_inbox, ab_resolve_msg_path,
 #            ab_mark_read, ab_log_outbox, ab_thread_append, ab_update_registry
 
-AB_HOME="${AB_HOME:-$HOME/.agent-bus}"
+AB_HOME="${AB_HOME:-$HOME/.agent-team-os}"
 AB_MAP="$AB_HOME/AGENT_MAP.json"
 
 # ---------- Time & IDs ----------

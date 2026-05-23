@@ -7,7 +7,7 @@
 The current public release.
 
 - File-based protocol with versioned JSON message schema (v1.0)
-- Bash helper library (`agent-bus-lib.sh`)
+- Bash helper library (`agent-team-os-lib.sh`)
 - Seven slash commands: `/inbox`, `/read`, `/send`, `/reply`, `/handoff`, `/thread`, `/bus`
 - Two hooks: `SessionStart` inbox banner, `UserPromptSubmit` urgent alerter
 - Auto-attaching skill that triggers on natural-language requests
@@ -31,7 +31,7 @@ Run a dedicated "conductor" agent that owns a single daily plan and orchestrates
 
 - New skill `daily-orchestrator` for the conductor role
 - New slash command `/daily-goals` — collect goals at the start of the day, decompose into streams, choose teammates, estimate wall-clock
-- Daily plan written to `~/.agent-bus/plans/DAILY-YYYY-MM-DD.md` (file-based, inspectable, version-controllable)
+- Daily plan written to `~/.agent-team-os/plans/DAILY-YYYY-MM-DD.md` (file-based, inspectable, version-controllable)
 - Pure-file workflow: no MCP dependency, conductor still drives the bus via the same `/send`, `/read`, `/reply` it already speaks
 - Adoption-friendly: any single workspace can be marked as the conductor's home in `AGENT_MAP.json`
 

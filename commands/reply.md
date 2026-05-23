@@ -9,8 +9,8 @@ Steps:
 1. **Resolve the original message**:
 
    ```bash
-   LIB="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/scripts/agent-bus-lib.sh"
-   [[ -f "$LIB" ]] || LIB="$HOME/.claude/scripts/agent-bus-lib.sh"
+   LIB="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/scripts/agent-team-os-lib.sh"
+   [[ -f "$LIB" ]] || LIB="$HOME/.claude/scripts/agent-team-os-lib.sh"
    source "$LIB"
    AGENT=$(ab_detect_agent "$PWD")
    ORIG_PATH=$(ab_resolve_msg_path "$AGENT" "$1")

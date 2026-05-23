@@ -10,7 +10,7 @@ Steps:
 
    ```bash
    echo "=== Recent threads ==="
-   ls -t "$HOME"/.agent-bus/threads/*.json 2>/dev/null | head -10 | while IFS= read -r f; do
+   ls -t "$HOME"/.agent-team-os/threads/*.json 2>/dev/null | head -10 | while IFS= read -r f; do
      [[ -f "$f" ]] || continue
      jq -r '
        "─── " + .id + " ───" +
@@ -27,7 +27,7 @@ Steps:
 
    ```bash
    THREAD_ID="$1"
-   THREAD_FILE="$HOME/.agent-bus/threads/${THREAD_ID}.json"
+   THREAD_FILE="$HOME/.agent-team-os/threads/${THREAD_ID}.json"
    [[ -f "$THREAD_FILE" ]] || { echo "Thread $THREAD_ID not found."; exit 1; }
    jq '.' "$THREAD_FILE"
    ```
