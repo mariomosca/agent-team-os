@@ -1,4 +1,4 @@
-# Agent Bus
+# Agent Team OS
 
 ![agent-team-os — coordinate Claude Code sessions](./assets/cover.png)
 
@@ -6,12 +6,15 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Release](https://img.shields.io/github/v/release/mariomosca/agent-team-os?label=release)](https://github.com/mariomosca/agent-team-os/releases/latest)
+[![Website](https://img.shields.io/badge/website-mariomosca.github.io%2Fagent--team--os-teal)](https://mariomosca.github.io/agent-team-os/)
+
+**[Visit the landing page →](https://mariomosca.github.io/agent-team-os/)** for the full pitch, diagrams, FAQ and install instructions.
 
 ## Why
 
 If you run more than one Claude Code session — one per project, one per role, one per repo — you quickly hit a wall: the sessions don't talk to each other. You become the human postman, copy-pasting context, briefs and handoffs between terminals.
 
-Agent Bus removes the postman.
+Agent Team OS removes the postman.
 
 It's a tiny convention — a folder structure, a JSON message schema, a handful of bash helpers and slash commands — that lets each Claude Code instance read its own inbox at session start, send structured messages to its peers, and resume threaded conversations days later.
 
@@ -196,7 +199,7 @@ The wizard collects payload, deadline, context references and writes a JSON mess
 Next time you open a Claude Code session in `/Users/me/projects/...`, the `SessionStart` hook prints:
 
 ```
-=== Agent Bus ===
+=== Agent Team OS ===
 You are dev. Inbox: 1 pending.
   - msg-20260520T091812Z-x7q3  [normal] brief/bug-fix from ops  (by 2026-05-23T18:00:00+02:00)
 ```
@@ -268,7 +271,7 @@ You can declare blocked pairs in `AGENT_MAP.json` to keep contexts isolated — 
 
 ## Why not just use one Claude Code instance?
 
-Because context is finite. One instance per role — engineering, marketing, ops — keeps each session focused, lets each one carry its own conventions, skills and memory, and stops them from stepping on each other's toes. The cost is coordination. Agent Bus is the cheapest possible coordination layer.
+Because context is finite. One instance per role — engineering, marketing, ops — keeps each session focused, lets each one carry its own conventions, skills and memory, and stops them from stepping on each other's toes. The cost is coordination. Agent Team OS is the cheapest possible coordination layer.
 
 ## Contributing
 

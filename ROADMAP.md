@@ -1,6 +1,6 @@
 # Roadmap
 
-> Planned direction for Agent Bus. Dates are best-effort, not commitments. Scope can shift; the foundation contract (v1.0 message schema, filesystem layout) won't.
+> Planned direction for Agent Team OS. Dates are best-effort, not commitments. Scope can shift; the foundation contract (v1.0 message schema, filesystem layout) won't.
 
 ## v1.0.0 — Foundation (shipped)
 

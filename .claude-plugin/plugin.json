@@ -1,6 +1,6 @@
 {
   "name": "agent-team-os",
-  "displayName": "Agent Bus",
+  "displayName": "Agent Team OS",
   "version": "1.0.0",
   "description": "A minimal file-based protocol to coordinate multiple Claude Code instances across separate sessions",
   "author": {

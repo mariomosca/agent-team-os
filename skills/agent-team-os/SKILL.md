@@ -4,7 +4,7 @@ description: File-based communication bus between multiple Claude Code sessions.
 allowed-tools: Bash, Read, Write, Edit
 ---
 
-# Agent Bus — How to Operate
+# Agent Team OS — How to Operate
 
 File-based communication between separate Claude Code sessions. Replaces manual copy-paste between terminals.
 

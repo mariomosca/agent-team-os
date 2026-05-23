@@ -1,5 +1,5 @@
 #!/bin/bash
-# agent-team-os-lib.sh — shared functions for Agent Bus v1
+# agent-team-os-lib.sh — shared functions for Agent Team OS (bus protocol v1)
 # Source this from hooks and command scripts:
 #   source "$HOME/.claude/scripts/agent-team-os-lib.sh"
 #

@@ -28,7 +28,7 @@ if [[ ! -f "$HOME/.agent-team-os/AGENT_MAP.json" ]]; then
         if [[ -d "$CLAUDE_PLUGIN_ROOT/examples/personas" ]]; then
             cp "$CLAUDE_PLUGIN_ROOT/examples/personas/"*.md "$HOME/.agent-team-os/personas/" 2>/dev/null || true
         fi
-        echo "=== Agent Bus: first-run ==="
+        echo "=== Agent Team OS: first-run ==="
         echo "Created starter AGENT_MAP.json at $HOME/.agent-team-os/AGENT_MAP.json"
         echo "Edit it to map your workspaces to agent names, then restart the session."
         echo ""
@@ -50,7 +50,7 @@ HIGH_COUNT=$(ab_count_inbox_priority "$AGENT")
 DISPLAY=$(ab_agent_display "$AGENT")
 ROLE=$(ab_agent_role "$AGENT")
 
-echo "=== Agent Bus ==="
+echo "=== Agent Team OS ==="
 echo "You are ${DISPLAY} (${AGENT}). Role: ${ROLE}"
 echo "Workspace: ${CWD}"
 echo ""
@@ -73,7 +73,7 @@ fi
 
 echo ""
 echo "Commands: /inbox  /read <msg-id>  /send <to> <intent>  /reply <msg-id> <type>  /bus"
-echo "=== End Agent Bus ==="
+echo "=== End Agent Team OS ==="
 
 # Inject persona file (if defined and existing) so the model adopts the
 # correct identity/voice for this session. Failing silently is fine: the

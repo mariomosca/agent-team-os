@@ -1,5 +1,5 @@
 ---
-description: Agent Bus hub — show roster, status, capabilities, routing rules.
+description: Agent Team OS hub — show roster, status, capabilities, routing rules.
 ---
 
 Print the current state of the bus: which agents are configured, who is active, and what routing rules apply.
@@ -11,7 +11,7 @@ LIB="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/scripts/agent-team-os-lib.sh"
    [[ -f "$LIB" ]] || LIB="$HOME/.claude/scripts/agent-team-os-lib.sh"
    source "$LIB"
 
-echo "=== Agent Bus Roster ==="
+echo "=== Agent Team OS Roster ==="
 if [[ ! -f "$HOME/.agent-team-os/AGENT_MAP.json" ]]; then
   echo "AGENT_MAP.json not found. Run install.sh first."
   exit 0

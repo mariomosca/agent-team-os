@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Agent Bus — installer
+# Agent Team OS — installer
 #
 # Copies the helper library, hooks, slash commands and skill into your
 # ~/.claude/ folder, and creates ~/.agent-team-os/ runtime structure.
@@ -13,7 +13,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
 BUS_HOME="${AB_HOME:-$HOME/.agent-team-os}"
 
-echo "Agent Bus installer"
+echo "Agent Team OS installer"
 echo "  source repo: $REPO_DIR"
 echo "  Claude home: $CLAUDE_HOME"
 echo "  Bus  home:   $BUS_HOME"
