@@ -17,3 +17,9 @@ node_modules/
 
 # Backups inadvertently dropped
 *.tmp
+
+# Runtime-only avatars (user-specific photos, NOT shipped with OSS)
+# Default placeholder avatars under assets/avatars/default/ ARE committed.
+# Anything under a "local/" sibling is user data and must stay out of git.
+assets/avatars/local/
+avatars/local/
