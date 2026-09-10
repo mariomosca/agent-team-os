@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mariomosca/agent-team-os/schema/settings-hook-entry.schema.json",
+  "title": "Managed hook entry in ~/.claude/settings.json",
+  "description": "Shape of a SINGLE hook entry written by a managed installer (Onda: agent-team-setup.ts) into the user's Claude Code settings.json. The marker '_onda' is what makes install/update/uninstall safe on a file the installer does not own. Claude Code ignores unknown keys in a hook entry, so the marker is inert at runtime.\n\nOWNERSHIP RULE (non-negotiable, see CONTRACT.md 'Installer'):\n  - The installer reads, updates and removes ONLY entries carrying '_onda'.\n  - Any entry without the marker is foreign and MUST NOT be modified, reordered or removed, ever.\n  - Marker-less entries pointing at the same script are reported as state 'foreign' in the UI and left untouched: the user registered them by hand and that decision wins.\n\nWhy it matters here: this user's settings.json already carries 5 SessionStart hooks (graphiti-load, session-start-rag-index, agent-team-os-load, morning-check, brandart-calendar-load), 2 UserPromptSubmit, 1 SessionEnd, 1 Stop - none of them ours. Clobbering them is the single highest-impact failure mode of the whole feature.\n\nSYMLINK RULE: ~/.claude-a/settings.json is a symlink to ~/.claude/settings.json on this machine. The installer MUST resolve candidates through realpath and deduplicate by resolved inode before writing, or it writes the same file twice and doubles every entry.",
+  "type": "object",
+  "required": ["type", "command", "_onda"],
+  "properties": {
+    "type": {
+      "const": "command",
+      "description": "Only 'command' hooks are managed."
+    },
+    "command": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Absolute path, or $HOME-prefixed path, to the managed hook script. Uses $HOME (not ~) for consistency with the entries already present in this file. Never ${CLAUDE_PLUGIN_ROOT}: that form is for the plugin distribution, not the managed install.",
+      "examples": ["$HOME/.claude/hooks/onda-agent-event.mjs"]
+    },
+    "timeout": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Optional per-hook timeout in seconds. The event hook is fire-and-forget and should finish well under 1s; set this only as a backstop."
+    },
+    "_onda": {
+      "type": "string",
+      "pattern": "^agent-team@\\d+\\.\\d+\\.\\d+$",
+      "description": "Ownership marker AND version stamp. Presence = 'this entry is managed, the installer may rewrite or delete it'. The version drives migration: on boot the installer rewrites entries whose version is older than the bundle's, leaving everything else alone.",
+      "examples": ["agent-team@1.0.0"]
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "installerState": {
+      "type": "string",
+      "enum": ["installed", "updated", "unchanged", "foreign", "missing-source", "error"],
+      "description": "Result reported per settings file. 'installed' = marker entries added; 'updated' = marker entries rewritten to a newer version; 'unchanged' = already current (the second run MUST report this - it is the idempotence test); 'foreign' = a marker-less entry for our script exists, nothing was touched; 'missing-source' = the bundle is absent (dev build without build:agent-team); 'error' = write failed, backup retained."
+    },
+    "events": {
+      "type": "array",
+      "description": "Hook events the managed install registers onda-agent-event.mjs on. One script, switching on hook_event_name.",
+      "items": {
+        "type": "string",
+        "enum": [
+          "SessionStart",
+          "UserPromptSubmit",
+          "PreToolUse",
+          "PostToolUse",
+          "Notification",
+          "Stop",
+          "SessionEnd",
+          "SubagentStart",
+          "SubagentStop"
+        ]
+      }
+    }
+  },
+  "examples": [
+    {
+      "type": "command",
+      "command": "$HOME/.claude/hooks/onda-agent-event.mjs",
+      "_onda": "agent-team@1.0.0"
+    }
+  ]
+}

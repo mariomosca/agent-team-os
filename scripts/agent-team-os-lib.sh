@@ -411,7 +411,27 @@ ab_thread_append() {
      .messages += [{id: $mid, from: $from, to: $to, type: $type, ts: $ts}]
      | .participants = (.participants + [$from, $to] | unique)
      | (if $type == "confirm" or $type == "response" then .status = "completed" | .closed = $ts else . end)
-     ' "$f" > "$tmp" && mv "$tmp" "$f"
+     ' "$f" > "$tmp"
+  ab_json_promote "$tmp" "$f"
+}
+
+# ---------- Safe JSON write ----------
+
+ab_json_promote() {
+  # Promote a candidate temp file over its target ONLY if it is non-empty valid JSON.
+  # Guards the `jq ... > "$tmp" && mv "$tmp" "$f"` idiom: jq exits 0 on empty input and
+  # produces no output, so a plain mv silently promotes emptiness. Once a state file is
+  # empty every later run re-confirms it empty (absorbing state) - the failure mode that
+  # left 4 of 6 registry files at 0 bytes.
+  # Args: tmp, target.  Returns 0 on promotion, 1 on rejection (target left untouched).
+  local tmp="$1" target="$2"
+  if [[ -s "$tmp" ]] && jq empty "$tmp" 2>/dev/null; then
+    mv "$tmp" "$target"
+    return 0
+  fi
+  rm -f "$tmp"
+  echo "WARN: refusing to write invalid/empty JSON to $target" >&2
+  return 1
 }
 
 # ---------- Registry ----------
@@ -427,6 +447,26 @@ ab_update_registry() {
   local ts
   ts=$(ab_iso_now)
   local tmp="${f}.tmp"
+
+  # Input guard: an existing-but-empty or corrupt file must be rebuilt, not fed to jq.
+  # `[[ -f ]]` above is satisfied by a 0-byte file, and jq on empty input exits 0 with no
+  # output, so without this the entry can never recover once emptied.
+  if ! [[ -s "$f" ]] || ! jq empty "$f" 2>/dev/null; then
+    jq -n --arg name "$agent" \
+          --argjson active "$active" \
+          --arg ts "$ts" \
+          --arg ws "$workspace" \
+      '{
+        name: $name,
+        active: $active,
+        last_seen: (if $active then $ts else null end),
+        workspace_path: (if $active then $ws else null end),
+        session_started: (if $active then $ts else null end)
+      }' > "$tmp"
+    ab_json_promote "$tmp" "$f"
+    return $?
+  fi
+
   jq --argjson active "$active" \
      --arg ts "$ts" \
      --arg ws "$workspace" \
@@ -436,7 +476,8 @@ ab_update_registry() {
      | .workspace_path = $ws
      | (if .session_started == null and $active then .session_started = $ts else . end)
      | (if $active == false then .session_started = null else . end)
-     ' "$f" > "$tmp" && mv "$tmp" "$f"
+     ' "$f" > "$tmp"
+  ab_json_promote "$tmp" "$f"
 }
 
 # ---------- Pretty print ----------

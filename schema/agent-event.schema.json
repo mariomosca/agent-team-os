@@ -1,0 +1,201 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mariomosca/agent-team-os/schema/agent-event.schema.json",
+  "title": "agent.event",
+  "description": "Event emitted by the Agent Team OS hook towards a terminal driver (Onda). Transport: JSON-RPC method 'agent.event' over the driver's unix socket, addressed by $ONDA_SOCKET. Fire-and-forget: the hook MUST NOT wait for a reply beyond the 200ms write timeout and MUST exit 0 regardless of outcome. PRIVACY INVARIANT: this payload never carries file contents nor prompt text - tool names and relative paths only.",
+  "type": "object",
+  "required": ["v", "event", "ts", "session", "onda"],
+  "additionalProperties": false,
+  "properties": {
+    "v": {
+      "const": 1,
+      "description": "Schema major version. A driver receiving an unknown v MUST discard the event silently."
+    },
+    "event": {
+      "type": "string",
+      "enum": [
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "Notification",
+        "Stop",
+        "SessionEnd",
+        "SubagentStart",
+        "SubagentStop"
+      ],
+      "description": "Verbatim Claude Code hook_event_name. The hook switches on this value."
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC with milliseconds, emitted by the hook (not the driver)."
+    },
+    "session": {
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Claude Code session id. Stable for the whole session: it is the ring-buffer key on the driver side."
+        },
+        "agentBin": {
+          "type": "string",
+          "description": "Binary driving the session: 'claude' | 'codex' | 'qwen' | ... Absent when undetectable.",
+          "examples": ["claude", "codex"]
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Absolute session cwd. Informational only: agent correlation uses onda.* env, NOT cwd."
+        }
+      }
+    },
+    "onda": {
+      "type": "object",
+      "description": "Terminal-driver correlation, inherited from the env the PTY injects into the shell. See CONTRACT.md 'Presence discriminant'.",
+      "required": ["terminalId"],
+      "additionalProperties": false,
+      "properties": {
+        "terminalId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "From $ONDA_TERMINAL_ID. Authoritative correlation key. The driver MUST discard the event when this does not resolve to a live terminal (see CONTRACT.md 'Trust model')."
+        },
+        "paneId": {
+          "type": "string",
+          "description": "From $ONDA_PANE_ID."
+        },
+        "tabId": {
+          "type": "string",
+          "description": "From $ONDA_TAB_ID."
+        },
+        "workspaceId": {
+          "type": "string",
+          "description": "From $ONDA_WORKSPACE_ID. Absent for a terminal spawned outside a workspace."
+        }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "description": "Agent identity as resolved by the hook via AGENT_MAP.rules[]. Absent when the cwd matches no rule and no fallback is set. Field names mirror AGENT_MAP.agents.<id> exactly - do not rename to display/god.",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "AGENT_MAP.agents key, e.g. 'kai'."
+        },
+        "display_name": {
+          "type": "string",
+          "description": "AGENT_MAP.agents.<id>.display_name, e.g. 'Kai'."
+        },
+        "domain": {
+          "type": "string",
+          "description": "AGENT_MAP.agents.<id>.domain, e.g. 'side' | 'brandart'."
+        },
+        "is_god": {
+          "type": "boolean",
+          "description": "AGENT_MAP.agents.<id>.is_god."
+        },
+        "account": {
+          "type": "string",
+          "description": "Claude account label when known. Free text, display only.",
+          "examples": ["Admin .com"]
+        },
+        "model": {
+          "type": "string",
+          "description": "Model label when known. Free text, display only.",
+          "examples": ["Opus 5 (1M context)"]
+        }
+      }
+    },
+    "tool": {
+      "type": "object",
+      "description": "Present on PreToolUse / PostToolUse only.",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Tool name only, never its input.",
+          "examples": ["Edit", "Bash", "Read"]
+        },
+        "target": {
+          "type": ["string", "null"],
+          "description": "Path RELATIVE to session.cwd, or null. MUST NOT be an absolute path outside cwd, MUST NOT carry file contents. For Bash this is null - never the command string."
+        },
+        "subagent": {
+          "type": ["string", "null"],
+          "description": "Subagent type when the event comes from a spawned agent, else null."
+        },
+        "ok": {
+          "type": "boolean",
+          "description": "PostToolUse only: false maps to the 'error' state."
+        }
+      }
+    },
+    "ctx": {
+      "type": "object",
+      "description": "Context/quota gauges when the harness exposes them. Omit rather than guessing.",
+      "additionalProperties": false,
+      "properties": {
+        "pct": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of context window consumed."
+        },
+        "quotaPct": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of plan quota consumed."
+        }
+      }
+    },
+    "inbox": {
+      "type": "object",
+      "description": "Agent Team OS inbox counters, so the driver can render the inbox row without reading the filesystem. Emitted on SessionStart / UserPromptSubmit / Stop.",
+      "additionalProperties": false,
+      "properties": {
+        "pending": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Messages pending for this agent in the current workspace."
+        },
+        "elsewhere": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Messages pending whose context.project_path differs from cwd (v1.2 workspace filtering)."
+        },
+        "from": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Sender agent ids, deduplicated. Ids only, never message bodies."
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "v": 1,
+      "event": "PreToolUse",
+      "ts": "2026-09-10T20:31:02.412Z",
+      "session": { "id": "claude-abc123", "agentBin": "claude", "cwd": "/Users/x/work-hub" },
+      "onda": { "terminalId": "t-9f2", "paneId": "p-3", "workspaceId": "ws-hub" },
+      "agent": { "id": "alita", "display_name": "Alita", "domain": "side", "is_god": true },
+      "tool": { "name": "Edit", "target": "analysis/foo.md", "subagent": null },
+      "ctx": { "pct": 13 }
+    },
+    {
+      "v": 1,
+      "event": "SessionStart",
+      "ts": "2026-09-10T20:29:00.004Z",
+      "session": { "id": "claude-abc123", "agentBin": "claude", "cwd": "/Users/x/Projects/04-Production/Onda" },
+      "onda": { "terminalId": "t-9f2", "paneId": "p-3", "workspaceId": "ws-onda" },
+      "agent": { "id": "kai", "display_name": "Kai", "domain": "side", "is_god": false },
+      "inbox": { "pending": 2, "elsewhere": 1, "from": ["alita"] }
+    }
+  ]
+}

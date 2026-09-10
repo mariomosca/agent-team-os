@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mariomosca/agent-team-os/schema/workspace-agent.schema.json",
+  "title": "WorkspaceAgent",
+  "description": "The agent assigned to a terminal-driver workspace (Onda: Workspace.agent, persisted with the workspace). This is a DENORMALIZED CACHE of AGENT_MAP.agents.<id> kept for rendering without reading ~/.agent-team-os on every frame. AGENT_MAP remains the single source of truth: on mismatch the driver refreshes from the map, never the reverse. Field names mirror AGENT_MAP exactly (display_name, is_god) so the copy is a subset, not a translation.",
+  "type": "object",
+  "required": ["id", "display_name"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+      "description": "AGENT_MAP.agents key. Lowercase kebab/snake, stable: it is the inbox directory name (~/.agent-team-os/inboxes/<id>/)."
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human label, e.g. 'Kai'."
+    },
+    "role": {
+      "type": "string",
+      "description": "AGENT_MAP.agents.<id>.role, shown under the name on the card."
+    },
+    "domain": {
+      "type": "string",
+      "description": "Routing domain, e.g. 'side' | 'brandart'. Drives cc-awareness, not permissions.",
+      "examples": ["side", "brandart", "lifeos"]
+    },
+    "is_god": {
+      "type": "boolean",
+      "default": false,
+      "description": "God-mode agent (see skills/agent-team-os/GOD-CONTRACT.md)."
+    },
+    "avatar_path": {
+      "type": ["string", "null"],
+      "description": "Resolved avatar. Absolute local path, file:// URL, data: URI, or https:// URL for a pack-installed avatar (the driver caches it once into ~/.agent-team-os/avatars/local/<id>.png). Null falls through to the initials bubble. RESOLUTION CHAIN, in order, unchanged from the team-panel plugin: registry.avatar_path > AGENT_MAP.avatar_path > AGENT_MAP.avatar_default_path > initials bubble. A hand-dropped PNG always wins and is never overwritten by regeneration."
+    },
+    "assigned": {
+      "type": "boolean",
+      "default": true,
+      "description": "False for an agent installed from a pack that has no workspace yet: it appears in the team bar as 'unassigned' and is not operational until given one."
+    },
+    "source": {
+      "type": "string",
+      "enum": ["map", "pack", "manual"],
+      "default": "map",
+      "description": "Provenance. 'map' = pre-existing AGENT_MAP entry; 'pack' = installed from the Agent Store; 'manual' = assigned in the driver UI. Used to explain the merge diff, never to gate behaviour."
+    }
+  },
+  "examples": [
+    {
+      "id": "kai",
+      "display_name": "Kai",
+      "role": "Tech team leader side-projects",
+      "domain": "side",
+      "is_god": false,
+      "avatar_path": "/Users/mariomosca/.agent-team-os/avatars/local/kai.png",
+      "assigned": true,
+      "source": "map"
+    },
+    {
+      "id": "sre-oncall",
+      "display_name": "SRE On-Call",
+      "role": "Incident response",
+      "domain": "side",
+      "is_god": false,
+      "avatar_path": null,
+      "assigned": false,
+      "source": "pack"
+    }
+  ]
+}
