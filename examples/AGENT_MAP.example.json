@@ -34,6 +34,8 @@
         "architecture-review"
       ],
       "persona_file": "personas/ops.md",
+      "voice_id": "PS6wM7QnnPTUDE3t4bbl",
+      "voice_name": "Serena",
       "is_god": true,
       "domain": "side",
       "task_provider": "orbit"
@@ -51,6 +53,8 @@
         "generate-screenshots"
       ],
       "persona_file": "personas/dev.md",
+      "voice_id": "W71zT1VwIFFx3mMGH2uZ",
+      "voice_name": "MarcoTrox",
       "god": "ops",
       "domain": "side"
     },
@@ -65,6 +69,8 @@
         "question"
       ],
       "persona_file": "personas/growth.md",
+      "voice_id": "Dzlw1nIlAqiOOW6J7qo1",
+      "voice_name": "Chiara",
       "god": "ops",
       "domain": "side"
     }
