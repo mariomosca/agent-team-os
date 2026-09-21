@@ -33,16 +33,33 @@ No daemon. No server. No cloud. Just files on your machine.
 
 ```
 ~/.agent-team-os/
-  AGENT_MAP.json              # path -> agent + capabilities + routing rules
-  registry/<agent>.json       # agent card (active, last_seen, workspace_path)
-  inboxes/<agent>/            # pending msg-*.json
-  inboxes/<agent>/.read/      # local archive after read
-  threads/<thread-id>.json    # conversation history
-  outbox/YYYY-MM-DD.jsonl     # append-only audit log
-  locks/                      # mkdir-based atomic locks
+  AGENT_MAP.json                  # path -> agent + capabilities + routing rules
+  registry/<agent>.d/<slug>.json  # one card per LIVE SESSION (active, last_seen, workspace)
+  registry/<agent>.json           # flat card, kept for older readers
+  inboxes/<agent>/                # broadcast msg-*.json — every session of that agent
+  inboxes/<agent>/@<slug>/        # messages for ONE session
+  inboxes/<agent>/@<slug>/.read/  # archive, next to the message it came from
+  threads/<thread-id>.jsonl       # conversation history
+  outbox/<agent>.jsonl            # append-only audit log
+  locks/                          # mkdir-based atomic locks
 ```
 
-Each Claude Code session detects its identity from its current working directory via `AGENT_MAP.json`. A `SessionStart` hook registers the agent and prints any pending inbox messages. Slash commands handle the rest.
+Each Claude Code session detects its identity from its current working directory via `AGENT_MAP.json`. A `SessionStart` hook registers the session and prints any pending inbox messages. Slash commands handle the rest.
+
+### Sessions: one agent, several workspaces (v1.4)
+
+An agent name maps to a whole tree of projects, so the same agent often has **several sessions open at once** — e.g. two `kai`, one per project. Addressing them by name alone makes them share a queue: whichever reads first wins, and the other never sees the message.
+
+So an address has two levels:
+
+| Address | Goes to |
+|---------|---------|
+| `kai` | every live session — use for announcements |
+| `kai/noi-calendar` | that one session |
+
+The message JSON keeps the bare agent in `to`; the session lives in the path. Sending to a name that has one session behaves exactly as before, so nothing existing has to change.
+
+Each session gets its own inbox, its own registry entry and its own drain cursor, so the Stop hook can no longer hold one session hostage to another's unread mail. `/bus` lists the live sessions and their pending counts; `/inbox` shows this session's messages and `--all` shows the others'.
 
 ### Architecture at a glance
 
@@ -266,10 +283,10 @@ You can declare blocked pairs in `AGENT_MAP.json` to keep contexts isolated — 
 
 | Command | What it does |
 |---------|--------------|
-| `/bus`     | Show roster, capabilities and routing rules |
-| `/inbox`   | List pending messages for the current agent |
+| `/bus`     | Show roster, live sessions with pending counts, and routing rules |
+| `/inbox`   | List pending messages for this session (`--all` for every session of the agent) |
 | `/read <id>` | Read a message, resolve context_refs, archive it |
-| `/send <to> <intent>` | Wizard to compose a new message |
+| `/send <to> <intent>` | Wizard to compose a new message (`<to>` = `agent` or `agent/slug`) |
 | `/reply <id> <type>`  | Reply to a message inside its thread |
 | `/handoff <to>` | Hand off the current task to another agent |
 | `/thread <id>`  | Show full thread history |
@@ -277,6 +294,8 @@ You can declare blocked pairs in `AGENT_MAP.json` to keep contexts isolated — 
 ## Status
 
 - **v1.0**: file-based protocol, bash helpers, slash commands, `SessionStart` hook — battle-tested across five concurrent agents in production since May 2026.
+- **v1.4**: session identity — `agent/slug` addressing, per-session inbox, registry and drain cursor. Written after two sessions of the same agent were found stealing each other's messages.
+- **MCP server**: [`agent-bus-mcp`](https://github.com/mariomosca/agent-bus-mcp) exposes the bus as six typed tools (`bus_status`, `bus_inbox`, `bus_read`, `bus_send`, `bus_archive`, `bus_thread`), session addressing included. Optional: the slash commands keep working on the same files.
 - **v1.1+**: realtime delivery, conductor pattern, active driver, autonomous mode with guard-rails — see [ROADMAP.md](./ROADMAP.md).
 
 ## Why not just use one Claude Code instance?

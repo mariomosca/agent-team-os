@@ -53,6 +53,22 @@ Dual-GOD orchestration + TaskProvider layer + drain-on-Stop + harvest. See `PLAN
 - ✅ **drain-on-Stop hook** (`hooks/agent-team-os-stop.sh`): blocks Stop on non-empty inbox, loop guard (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`). NOT auto-registered — gated, see `docs/agentic-v2/SETTINGS-DIFF.md`.
 - ✅ **harvest/telemetry** (`scripts/agent-team-os-harvest.sh`): token+cost per agent from `~/.claude/projects` JSONL, per-model pricing.
 - ⏳ TODO: VoiceInk ingestion wiring, GOD persona files import GOD-CONTRACT.
+- ↪️ The "MCP server wrapper" listed here shipped in v1.4 as `agent-bus-mcp`.
+
+## v1.4 — Session identity (SHIPPED 2026-09-21)
+
+An agent name covers a whole tree of projects, so the same agent routinely has several sessions open at once. The bus addressed them by name only, so they shared one queue, one registry card and one drain cursor. Found in production: two `kai` sessions, the registry card holding one's workspace and the other's start time.
+
+- ✅ **Two-level address**: `agent` reaches every live session, `agent/slug` reaches one. The message keeps the bare agent in `to`; the session lives in the path, so nothing existing needed migrating.
+- ✅ **Per-session inbox** `inboxes/<agent>/@<slug>/`, with the shared root still readable by all.
+- ✅ **Per-session registry** `registry/<agent>.d/<slug>.json`, TTL-based liveness (`AB_SESSION_TTL_MIN`, default 240). `ab_list_sessions` answers "which sessions exist right now" — previously unanswerable.
+- ✅ **Per-session drain cursor** `cursor@<slug>.json`: the Stop hook no longer blocks one session over another's unread mail.
+- ✅ `/inbox` scoped to the session (`--all` to widen), `/bus` lists live sessions with pending counts.
+- ✅ **MCP server** [`agent-bus-mcp`](https://github.com/mariomosca/agent-bus-mcp): six typed tools over the same filesystem. This was listed as a v2.0 item; it shipped here instead. `delegate_inline` is not implemented.
+
+Two defects surfaced on the way: `ab_mark_read` hoisted session messages into the shared archive, and under zsh a bare `local a b c` followed by assignments printed `name=value` to stdout, corrupting `ab_list_sessions` output when the lib was sourced outside a bash hook.
+
+Tests: `tests/test-session-identity.sh` (18 assertions, including a reproduction of the bug).
 
 ## v2.x — Autonomous with guard-rails (pattern L3)
 
