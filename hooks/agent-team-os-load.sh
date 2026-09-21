@@ -37,6 +37,10 @@ fi
 
 CWD="${CLAUDE_PROJECT_DIR:-$PWD}"
 AGENT=$(ab_detect_agent "$CWD")
+# v1.4: scope this session by workspace slug, so two sessions of the same agent
+# (e.g. two Kai) keep separate inboxes, cursors and registry entries.
+AB_SESSION_SLUG=$(ab_slug_for_cwd "$CWD")
+export AB_SESSION_SLUG
 
 # No agent → silent exit (session outside AGENT_MAP)
 [[ -z "$AGENT" ]] && exit 0

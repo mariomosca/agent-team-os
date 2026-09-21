@@ -66,6 +66,114 @@ ab_detect_agent() {
   ' "$AB_MAP" 2>/dev/null | head -1
 }
 
+# ---------- Session identity (v1.4) ----------
+# One agent name can have several live sessions (e.g. two Kai: microsoft-mcp and
+# noi-calendar). The bus addresses them as `agent` or `agent/slug`, where slug is the
+# workspace basename. Messages sent to the bare name stay readable by every session.
+
+ab_slug_for_cwd() {
+  # Workspace slug for a cwd: basename, lowercased, non-alphanumerics folded to '-'.
+  # Empty cwd or '/' yields "root" so callers always get a usable path segment.
+  local cwd="${1:-$PWD}"
+  local rcwd
+  rcwd=$(realpath "$cwd" 2>/dev/null || echo "$cwd")
+  local base
+  base=$(basename "$rcwd")
+  [[ -z "$base" || "$base" == "/" ]] && base="root"
+  printf '%s' "$base" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g'
+}
+
+ab_parse_addr_agent() {
+  # "kai/noi-calendar" -> "kai"   |   "kai" -> "kai"
+  printf '%s' "${1%%/*}"
+}
+
+ab_parse_addr_slug() {
+  # "kai/noi-calendar" -> "noi-calendar"   |   "kai" -> "" (broadcast)
+  local addr="$1"
+  [[ "$addr" == */* ]] || { printf ''; return 0; }
+  printf '%s' "${addr#*/}"
+}
+
+ab_session_inbox_dir() {
+  # Inbox directory for a specific session. Args: agent, slug
+  printf '%s/inboxes/%s/@%s' "$AB_HOME" "$1" "$2"
+}
+
+ab_registry_dir() {
+  printf '%s/registry/%s.d' "$AB_HOME" "$1"
+}
+
+ab_update_session_registry() {
+  # Register one live session as its own entry, so two sessions of the same agent
+  # no longer overwrite each other. Args: agent, active(true|false), workspace, [slug]
+  local agent="$1" active="${2:-true}" workspace="${3:-$PWD}"
+  local slug="${4:-$(ab_slug_for_cwd "$workspace")}"
+  local dir f ts tmp prev_started
+  dir=$(ab_registry_dir "$agent")
+  mkdir -p "$dir" || return 0
+  f="$dir/${slug}.json"
+  ts=$(ab_iso_now)
+  tmp="${f}.tmp"
+
+  if [[ "$active" != "true" ]]; then
+    rm -f "$f"
+    return 0
+  fi
+
+  # Keep the original session_started across heartbeats of the same session.
+  prev_started=""
+  if [[ -s "$f" ]] && jq empty "$f" 2>/dev/null; then
+    prev_started=$(jq -r '.session_started // ""' "$f" 2>/dev/null)
+  fi
+  [[ -z "$prev_started" || "$prev_started" == "null" ]] && prev_started="$ts"
+
+  jq -n --arg name "$agent" --arg slug "$slug" --arg ts "$ts" \
+        --arg ws "$workspace" --arg started "$prev_started" --arg pid "${PPID:-0}" \
+    '{name:$name, slug:$slug, active:true, last_seen:$ts,
+      workspace_path:$ws, session_started:$started, pid:($pid|tonumber)}' > "$tmp" \
+    && ab_json_promote "$tmp" "$f"
+}
+
+ab_list_sessions() {
+  # Live sessions for an agent, one slug per line, most recently seen first.
+  # A session is considered dead after AB_SESSION_TTL_MIN minutes without heartbeat.
+  local agent="$1"
+  local ttl="${AB_SESSION_TTL_MIN:-240}"
+  local dir
+  dir=$(ab_registry_dir "$agent")
+  [[ -d "$dir" ]] || return 0
+  local now_epoch
+  now_epoch=$(date -u +%s)
+  local f
+  for f in "$dir"/*.json; do
+    [[ -e "$f" ]] || continue
+    jq empty "$f" 2>/dev/null || continue
+    # Declare with an explicit value: under zsh a bare `local a b c` followed by
+    # assignments echoes "name=value" to stdout, which corrupts this function's
+    # output when the lib is sourced from a zsh shell instead of a bash hook.
+    local slug=""
+    local seen=""
+    local seen_epoch=0
+    slug=$(jq -r '.slug // ""' "$f" 2>/dev/null)
+    seen=$(jq -r '.last_seen // ""' "$f" 2>/dev/null)
+    [[ -z "$slug" ]] && continue
+    # BSD date (macOS) first, GNU as fallback. BSD `date -j -f` prints a partial
+    # parse to STDOUT on failure, which would leak into this function's output, so
+    # both branches are redirected and the result is validated as digits.
+    local ts_clean=""
+    ts_clean="${seen%%+*}"; ts_clean="${ts_clean%Z}"
+    seen_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$ts_clean" +%s 2>/dev/null) \
+      || seen_epoch=$(date -u -d "$seen" +%s 2>/dev/null) \
+      || seen_epoch=0
+    [[ "$seen_epoch" =~ ^[0-9]+$ ]] || seen_epoch=0
+    if [[ "$seen_epoch" -gt 0 ]] && (( (now_epoch - seen_epoch) / 60 > ttl )); then
+      continue
+    fi
+    printf '%s\t%s\n' "$seen" "$slug"
+  done | sort -r | cut -f2
+}
+
 ab_agent_exists() {
   local agent="$1"
   [[ -n "$agent" ]] && [[ -d "$AB_HOME/inboxes/$agent" ]]
@@ -116,12 +224,31 @@ ab_unlock() {
 # ---------- Inbox queries ----------
 
 ab_list_inbox() {
-  # List pending message files for agent (excluding .read/).
+  # List pending message files for agent (excluding .read/ and .done/).
   # Prints absolute paths, one per line.
+  #
+  # Session scoping (v1.4): messages addressed to `agent/slug` land in the
+  # per-session dir `inboxes/<agent>/@<slug>/`. A session sees its own dir PLUS the
+  # shared root (messages sent to the bare agent name stay visible to every session).
+  # Pass a slug as $2, or set AB_SESSION_SLUG, to scope; with neither, every
+  # session dir is listed, which keeps old callers and `/inbox --all` working.
   local agent="$1"
+  local slug="${2:-${AB_SESSION_SLUG:-}}"
   local dir="$AB_HOME/inboxes/$agent"
   [[ -d "$dir" ]] || return 0
-  find "$dir" -maxdepth 1 -name "msg-*.json" -type f 2>/dev/null | sort
+  {
+    # Shared root: always visible.
+    find "$dir" -maxdepth 1 -name "msg-*.json" -type f 2>/dev/null
+    if [[ -n "$slug" ]]; then
+      local sdir
+      sdir=$(ab_session_inbox_dir "$agent" "$slug")
+      [[ -d "$sdir" ]] && find "$sdir" -maxdepth 1 -name "msg-*.json" -type f 2>/dev/null
+    else
+      # No slug known → show every session dir, so nothing stays invisible.
+      find "$dir" -mindepth 2 -maxdepth 2 -name "msg-*.json" -type f \
+           -not -path "*/.read/*" -not -path "*/.done/*" 2>/dev/null
+    fi
+  } | sort
 }
 
 ab_count_inbox() {
@@ -145,26 +272,35 @@ ab_count_inbox_priority() {
 }
 
 ab_resolve_msg_path() {
-  # Given a msg-id (possibly partial), find file in inbox or .read/.
+  # Given a msg-id (possibly partial), find the file anywhere under the agent's
+  # inbox: shared root, per-session dirs (v1.4), and their .read/ archives.
   local agent="$1"
   local msg_id="$2"
+  local root="$AB_HOME/inboxes/$agent"
+  [[ -d "$root" ]] || return 1
   local f
-  for base in "$AB_HOME/inboxes/$agent" "$AB_HOME/inboxes/$agent/.read"; do
-    [[ -d "$base" ]] || continue
-    f=$(find "$base" -maxdepth 1 -name "${msg_id}*" -type f 2>/dev/null | head -1)
-    [[ -n "$f" ]] && { echo "$f"; return 0; }
-  done
+  # Pending first (root, then session dirs), so a live message wins over an archived one.
+  f=$(find "$root" -maxdepth 1 -name "${msg_id}*" -type f 2>/dev/null | head -1)
+  [[ -n "$f" ]] && { echo "$f"; return 0; }
+  f=$(find "$root" -mindepth 2 -maxdepth 2 -name "${msg_id}*" -type f \
+        -not -path "*/.read/*" -not -path "*/.done/*" 2>/dev/null | head -1)
+  [[ -n "$f" ]] && { echo "$f"; return 0; }
+  f=$(find "$root" -name "${msg_id}*" -type f \
+        \( -path "*/.read/*" -o -path "*/.done/*" \) 2>/dev/null | head -1)
+  [[ -n "$f" ]] && { echo "$f"; return 0; }
   return 1
 }
 
 ab_mark_read() {
-  # Move message file from inbox to .read/
+  # Move a message to .read/ NEXT TO where it lives, so a session message stays in
+  # its own session dir instead of being hoisted into the shared root.
   local agent="$1"
   local msg_path="$2"
-  local fname
+  local fname dest
   fname=$(basename "$msg_path")
-  mkdir -p "$AB_HOME/inboxes/$agent/.read"
-  mv "$msg_path" "$AB_HOME/inboxes/$agent/.read/$fname"
+  dest="$(dirname "$msg_path")/.read"
+  mkdir -p "$dest"
+  mv "$msg_path" "$dest/$fname"
 }
 
 # ---------- Write message ----------
@@ -193,9 +329,27 @@ ab_write_message() {
   local req_resp="${AB_REQUIRES_RESPONSE:-false}"
   local resp_by="${AB_RESPONSE_BY:-}"
 
+  # v1.4: `to` may be "agent" or "agent/slug". The slug picks one live session;
+  # the message JSON keeps the bare agent name so readers and threads are unchanged.
+  local to_addr="$to"
+  local to_slug
+  to_slug=$(ab_parse_addr_slug "$to_addr")
+  to=$(ab_parse_addr_agent "$to_addr")
+
   if ! ab_agent_exists "$to"; then
     echo "ERROR: unknown agent '$to'" >&2
     return 1
+  fi
+
+  # A slug that matches no live session is a typo, and silently dropping the message
+  # into a directory nobody reads is the failure mode we are fixing. Say so instead.
+  if [[ -n "$to_slug" ]]; then
+    local live
+    live=$(ab_list_sessions "$to")
+    if [[ -n "$live" ]] && ! printf '%s\n' "$live" | grep -qx "$to_slug"; then
+      echo "WARN: no live session '$to/$to_slug'. Live: $(printf '%s ' $live)" >&2
+      echo "      Delivering anyway; it will be read when that session starts." >&2
+    fi
   fi
 
   # Routing rules: check deny list in AGENT_MAP
@@ -217,7 +371,15 @@ ab_write_message() {
 
   ab_lock "$to" || { echo "ERROR: could not lock $to inbox" >&2; return 3; }
 
-  local target="$AB_HOME/inboxes/$to/${msg_id}.json"
+  local target_dir="$AB_HOME/inboxes/$to"
+  if [[ -n "$to_slug" ]]; then
+    target_dir=$(ab_session_inbox_dir "$to" "$to_slug")
+    # Create the archive dirs alongside the inbox: the recipient archives into
+    # .done/ right after reading, and a fresh session dir would otherwise make the
+    # very first targeted message land somewhere with nowhere to file it.
+    mkdir -p "$target_dir/.read" "$target_dir/.done"
+  fi
+  local target="$target_dir/${msg_id}.json"
   local tmp="${target}.tmp"
 
   # Build JSON via jq for safety
@@ -442,6 +604,11 @@ ab_update_registry() {
   local agent="$1"
   local active="${2:-true}"
   local workspace="${3:-$PWD}"
+  # v1.4: each live session gets its own registry entry. The flat file below is kept
+  # in sync for older readers (Onda plugin, /bus), but it can only describe one
+  # session — ab_list_sessions is the accurate source.
+  ab_update_session_registry "$agent" "$active" "$workspace"
+
   local f="$AB_HOME/registry/${agent}.json"
   [[ -f "$f" ]] || return 0
   local ts
@@ -568,9 +735,16 @@ ab_count_inbox_elsewhere() {
 # ---------- Drain-on-Stop (v2.0 §4) ----------
 
 ab_cursor_path() {
-  # Return path to cursor.json for given agent.
+  # Return path to cursor.json for the current session of this agent.
+  # v1.4: the loop guard is per session — two sessions of the same agent must not
+  # share a block counter, or one relents because the other already blocked.
   local agent="$1"
-  echo "$AB_HOME/agents/${agent}/cursor.json"
+  local slug="${2:-${AB_SESSION_SLUG:-}}"
+  if [[ -n "$slug" ]]; then
+    echo "$AB_HOME/agents/${agent}/cursor@${slug}.json"
+  else
+    echo "$AB_HOME/agents/${agent}/cursor.json"
+  fi
 }
 
 ab_cursor_get_last() {

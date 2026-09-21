@@ -26,6 +26,10 @@ source "$LIB"
 
 CWD="${CLAUDE_PROJECT_DIR:-$PWD}"
 AGENT=$(ab_detect_agent "$CWD" 2>/dev/null)
+# v1.4: scope this session by workspace slug, so two sessions of the same agent
+# (e.g. two Kai) keep separate inboxes, cursors and registry entries.
+AB_SESSION_SLUG=$(ab_slug_for_cwd "$CWD")
+export AB_SESSION_SLUG
 [[ -z "$AGENT" ]] && exit 0
 
 CAP="${CLAUDE_CODE_STOP_HOOK_BLOCK_CAP:-3}"
