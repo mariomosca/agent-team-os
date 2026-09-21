@@ -50,6 +50,19 @@ AB_PAYLOAD_JSON='{"summary":"nuova"}' AB_TO=kai/mai-vista ab_write_message >/dev
 ck "dir .done creata alla consegna" "$([[ -d $AB_HOME/inboxes/kai/@mai-vista/.done ]] && echo si)" "si"
 ck "dir .read creata alla consegna" "$([[ -d $AB_HOME/inboxes/kai/@mai-vista/.read ]] && echo si)" "si"
 
+echo "── il messaggio di una sessione NON blocca la sorella (segnalato da Kai)"
+# Situazione reale: Leo scrive a kai senza slug, il messaggio blocca la sessione
+# sbagliata. Ora: i mirati contano solo per il destinatario, i piatti per tutti.
+AB_PAYLOAD_JSON='"'"'{"summary":"per microsoft-mcp"}'"'"' AB_TO=kai/microsoft-mcp ab_write_message >/dev/null 2>&1
+before=$(AB_SESSION_SLUG=noi-calendar ab_drain_fresh_count kai "")
+AB_PAYLOAD_JSON='"'"'{"summary":"altro per microsoft-mcp"}'"'"' AB_TO=kai/microsoft-mcp ab_write_message >/dev/null 2>&1
+after=$(AB_SESSION_SLUG=noi-calendar ab_drain_fresh_count kai "")
+ck "un messaggio per la sorella non aumenta il mio drain" "$after" "$before"
+
+echo "── chi scrive a un agente multi-sessione viene avvisato"
+warn=$(AB_PAYLOAD_JSON='"'"'{"summary":"x"}'"'"' AB_TO=kai ab_write_message 2>&1 >/dev/null | head -1)
+ck "avviso sulle sessioni multiple" "$(echo "$warn" | grep -c "live sessions")" "1"
+
 echo "── retrocompat: destinatario nudo"
 ck "to nel JSON resta 'kai'" "$(jq -r '.to' $AB_HOME/inboxes/kai/msg-*.json | head -1)" "kai"
 mid=$(basename $(ls $AB_HOME/inboxes/kai/@microsoft-mcp/msg-*.json|head -1) .json)

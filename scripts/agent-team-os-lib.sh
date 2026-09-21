@@ -341,6 +341,20 @@ ab_write_message() {
     return 1
   fi
 
+  # Writing to a bare name while the recipient has several sessions open is how a
+  # message ends up in the shared queue and blocks whichever session gets there
+  # first — usually the wrong one. Name the sessions so the sender can qualify.
+  if [[ -z "$to_slug" ]]; then
+    local live_n live_list
+    live_list=$(ab_list_sessions "$to")
+    live_n=$(printf '%s\n' "$live_list" | grep -c . 2>/dev/null)
+    if [[ "${live_n:-0}" -gt 1 ]]; then
+      echo "NOTE: '$to' has ${live_n} live sessions ($(printf '%s ' $live_list))." >&2
+      echo "      Delivered to the shared queue, which all of them see. To reach one:" >&2
+      echo "      AB_TO=$to/<slug>" >&2
+    fi
+  fi
+
   # A slug that matches no live session is a typo, and silently dropping the message
   # into a directory nobody reads is the failure mode we are fixing. Say so instead.
   if [[ -n "$to_slug" ]]; then
@@ -819,10 +833,14 @@ ab_drain_for_stop() {
   # allow stop, to avoid trapping it forever.
   local agent="$1"
   local cap="${2:-3}"
+  local slug="${AB_SESSION_SLUG:-}"
 
-  # Count messages still in inbox (ab_list_inbox excludes .done/)
+  # Count messages still in inbox (ab_list_inbox excludes .done/).
+  # Scoped to this session: a message addressed to a SIBLING session must not
+  # hold this one hostage. Shared-root messages still count for everyone —
+  # they were sent to the agent, so whoever is around should deal with them.
   local pending
-  pending=$(ab_list_inbox "$agent" | grep -c . 2>/dev/null)
+  pending=$(ab_list_inbox "$agent" "$slug" | grep -c . 2>/dev/null)
   [[ -z "$pending" ]] && pending=0
 
   # Inbox empty → nothing to drain. Reset loop guard and allow stop.
@@ -853,7 +871,7 @@ ab_drain_for_stop() {
 
   # Build block reason from pending messages (up to 5)
   local msg_lines
-  msg_lines=$(ab_drain_fresh_list "$agent" "")
+  msg_lines=$(AB_SESSION_SLUG="$slug" ab_drain_fresh_list "$agent" "")
   local reason
   reason="${pending} unread message(s) in inbox (block ${block_count}/${cap}). Open the files in inbox/, act on each, then move handled ones to inbox/.done/ before stopping:
 ${msg_lines}"
