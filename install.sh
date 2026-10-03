@@ -70,6 +70,13 @@ cp "$REPO_DIR/skills/agent-team-os/SKILL.md" "$CLAUDE_HOME/skills/agent-team-os/
 # v2: GOD contract shipped alongside the skill (used by /god on)
 cp "$REPO_DIR/skills/agent-team-os/GOD-CONTRACT.md" "$CLAUDE_HOME/skills/agent-team-os/GOD-CONTRACT.md" 2>/dev/null || true
 
+echo "Copying bus-band mod → $CLAUDE_HOME/mods/bus-band/"
+rm -rf "$CLAUDE_HOME/mods/bus-band"
+mkdir -p "$CLAUDE_HOME/mods/bus-band"
+cp -R "$REPO_DIR/mods/bus-band/.claude-plugin" "$REPO_DIR/mods/bus-band/hooks" "$REPO_DIR/mods/bus-band/types" "$CLAUDE_HOME/mods/bus-band/"
+rm -rf "$CLAUDE_HOME/mods/bus-band/.claude-plugin/types"
+# NOTE: copied, NOT loaded. Opt in via CLAUDE_CODE_PLUGIN_DIRS (see step 4 below).
+
 # --- AGENT_MAP starter ---
 
 if [[ -f "$BUS_HOME/AGENT_MAP.json" ]]; then
@@ -133,4 +140,11 @@ cat <<'JSON'
            ]
 JSON
 echo ""
-echo "  4. Open a Claude Code session in a mapped workspace and try /inbox or /bus."
+echo "  4. (Optional, Claude Code 2.1.287+) Load the bus-band mod in every session —"
+echo "     a band above the prompt with pending messages. Add to the \"env\" block:"
+echo ""
+cat <<JSON
+           "CLAUDE_CODE_PLUGIN_DIRS": "$CLAUDE_HOME/mods/bus-band"
+JSON
+echo ""
+echo "  5. Open a Claude Code session in a mapped workspace and try /inbox or /bus."

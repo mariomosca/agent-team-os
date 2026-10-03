@@ -23,3 +23,7 @@ node_modules/
 # Anything under a "local/" sibling is user data and must stay out of git.
 assets/avatars/local/
 avatars/local/
+
+# Types the Claude Code engine writes beside a loaded mod
+mods/*/.claude-plugin/types/
+mods/*/tsconfig.json

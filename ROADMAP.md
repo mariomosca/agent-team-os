@@ -55,6 +55,15 @@ Dual-GOD orchestration + TaskProvider layer + drain-on-Stop + harvest. See `PLAN
 - ⏳ TODO: VoiceInk ingestion wiring, GOD persona files import GOD-CONTRACT.
 - ↪️ The "MCP server wrapper" listed here shipped in v1.4 as `agent-bus-mcp`.
 
+## v2.1 — Mods: bus-band (SHIPPED 2026-10-03)
+
+Claude Code 2.1.287 (1 Oct 2026) added mods: TypeScript hooks that run inside Claude Code and can draw UI. The SessionStart hook only told a session what was waiting when it opened; a message that arrived mid-session went unseen until the Stop hook or `/inbox`.
+
+- ✅ **`mods/bus-band`**: a band above the prompt with the session's pending messages (v1.4 scoping: shared root + `@<slug>`, `context.project_path` filter), priorities spelled out, toast on new `urgent`/`high`, `/bus-band` toggle. Polls every 20 s and on every turn end. Read-only.
+- ✅ Separate plugin, so manual installs don't double-register the classic hooks. `install.sh` copies it to `~/.claude/mods/bus-band/`; opt-in via `CLAUDE_CODE_PLUGIN_DIRS`.
+- ✅ Pure bus logic in `hooks/bus.ts` with tests (`claude plugin test mods/bus-band`).
+- ⏳ Next: a "Leggi" button that opens the message in place of `/read`; a pane with the thread.
+
 ## v1.4 — Session identity (SHIPPED 2026-09-21)
 
 An agent name covers a whole tree of projects, so the same agent routinely has several sessions open at once. The bus addressed them by name only, so they shared one queue, one registry card and one drain cursor. Found in production: two `kai` sessions, the registry card holding one's workspace and the other's start time.

@@ -28,6 +28,7 @@ No daemon. No server. No cloud. Just files on your machine.
 - **Routing rules** — declare which agents can talk to which (e.g. isolate work contexts from personal ones)
 - **Audit log** — append-only JSONL of every message sent, for free
 - **Slash commands** — `/inbox`, `/read`, `/send`, `/reply`, `/handoff`, `/thread`, `/bus`
+- **Live band above the prompt** (optional mod, Claude Code 2.1.287+) — pending messages for the session, toast on urgent ones: [`mods/bus-band`](./mods/bus-band)
 
 ## How it works
 
@@ -178,6 +179,7 @@ The installer:
 4. Copies the auto-attaching skill to `~/.claude/skills/agent-team-os/`
 5. Creates `~/.agent-team-os/` runtime folders
 6. Drops a starter `AGENT_MAP.json` you can edit
+7. Copies the `bus-band` mod to `~/.claude/mods/bus-band/` (loaded only once you opt in, see below)
 
 In both cases, edit `~/.agent-team-os/AGENT_MAP.json` to map your working directories to agent names.
 
@@ -190,6 +192,16 @@ The installer also copies a `Stop` hook (`agent-team-os-stop.sh`) but **does not
 ```
 
 Test it isolated first — see [`docs/agentic-v2/SETTINGS-DIFF.md`](./docs/agentic-v2/SETTINGS-DIFF.md). For the full v2 layers (dual-GOD orchestration, TaskProvider, telemetry) see [`AGENTS.md`](./AGENTS.md).
+
+### Optional: the `bus-band` mod (Claude Code 2.1.287+)
+
+A [mod](https://code.claude.com/docs/en/plugins/mods/overview) that keeps this session's pending messages in a band above the prompt and raises a toast when an urgent or high-priority one arrives. Read-only, no network. Turn it on for every session:
+
+```json
+{ "env": { "CLAUDE_CODE_PLUGIN_DIRS": "~/.claude/mods/bus-band" } }
+```
+
+or for one session with `claude --plugin-dir <repo>/mods/bus-band`. Details: [`mods/bus-band/README.md`](./mods/bus-band/README.md).
 
 ## Example: define your agents
 
@@ -295,6 +307,7 @@ You can declare blocked pairs in `AGENT_MAP.json` to keep contexts isolated — 
 
 - **v1.0**: file-based protocol, bash helpers, slash commands, `SessionStart` hook — battle-tested across five concurrent agents in production since May 2026.
 - **v1.4**: session identity — `agent/slug` addressing, per-session inbox, registry and drain cursor. Written after two sessions of the same agent were found stealing each other's messages.
+- **v2.1**: `bus-band` mod — the inbox as a live band above the prompt, built on Claude Code mods the day after they shipped.
 - **MCP server**: [`agent-bus-mcp`](https://github.com/mariomosca/agent-bus-mcp) exposes the bus as six typed tools (`bus_status`, `bus_inbox`, `bus_read`, `bus_send`, `bus_archive`, `bus_thread`), session addressing included. Optional: the slash commands keep working on the same files.
 - **v1.1+**: realtime delivery, conductor pattern, active driver, autonomous mode with guard-rails — see [ROADMAP.md](./ROADMAP.md).
 

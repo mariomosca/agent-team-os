@@ -1,0 +1,9 @@
+{
+  "name": "bus-band",
+  "version": "0.1.0",
+  "description": "Band above the Claude Code prompt with this session's pending Agent Team OS messages",
+  "author": { "name": "Mario Mosca", "url": "https://github.com/mariomosca" },
+  "homepage": "https://github.com/mariomosca/agent-team-os/tree/main/mods/bus-band",
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}
