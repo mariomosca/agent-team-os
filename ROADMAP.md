@@ -55,6 +55,12 @@ Dual-GOD orchestration + TaskProvider layer + drain-on-Stop + harvest. See `PLAN
 - ⏳ TODO: VoiceInk ingestion wiring, GOD persona files import GOD-CONTRACT.
 - ↪️ The "MCP server wrapper" listed here shipped in v1.4 as `agent-bus-mcp`.
 
+## v2.2 — bus-band shows the team (2026-10-14)
+
+- ✅ **"Squadra" section** under the messages: sibling sessions read from `$AB_HOME/onda/sessions.json` (written by Onda; contract in `schema/CONTRACT.md` "Onda → mod"). Stuck ones first: `TESTO FERMO da N min` (text left in the prompt box, no Enter), waiting for a permission or an answer. Hidden when the file is missing or Onda is not alive.
+- ✅ **"Rimetti nel mosaico"** button (only inside Onda): writes `onda/requests/req-*.json`, Onda mounts the workspace and focuses the pane.
+- ✅ Toast once per episode when a sibling becomes stuck. `/bus-band squadra` toggles just the section.
+
 ## v2.1 — Mods: bus-band (SHIPPED 2026-10-03)
 
 Claude Code 2.1.287 (1 Oct 2026) added mods: TypeScript hooks that run inside Claude Code and can draw UI. The SessionStart hook only told a session what was waiting when it opened; a message that arrived mid-session went unseen until the Stop hook or `/inbox`.
