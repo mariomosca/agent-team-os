@@ -1,0 +1,10 @@
+{
+  "_comment": "v2.5 two machines: merge 'hosts' (and optionally agents.<a>.host) into AGENT_MAP.json. Same file on both machines; each machine's name is in $AB_HOME/HOST (install.sh --host <name>), the hub needs none.",
+  "hosts": {
+    "laptop": { "hub": true },
+    "mini": { "ssh": "mini", "bus_home": "/Users/me/.agent-team-os" }
+  },
+  "agents": {
+    "nora": { "host": "mini" }
+  }
+}

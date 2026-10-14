@@ -7,8 +7,8 @@ Show the current agent's inbox.
 Run via Bash:
 
 ```bash
-LIB="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/scripts/agent-team-os-lib.sh"
-   [[ -f "$LIB" ]] || LIB="$HOME/.claude/scripts/agent-team-os-lib.sh"
+LIB="${CLAUDE_PLUGIN_ROOT:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}/scripts/agent-team-os-lib.sh"
+   [[ -f "$LIB" ]] || LIB="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/agent-team-os-lib.sh"
    source "$LIB"
 
 AGENT=$(ab_detect_agent "$PWD")
@@ -16,6 +16,11 @@ if [[ -z "$AGENT" ]]; then
   echo "This workspace is not mapped to any agent in AGENT_MAP.json."
   exit 0
 fi
+
+# v2.5: on the laptop, first pull what the other machines left for us
+# (throttled to once per 30 s; a host that is down costs at most 5 s).
+ab_collect_outbox >/dev/null 2>&1
+SELF=$(ab_host_self)
 
 # v1.4: one agent can have several live sessions (e.g. two Kai in different
 # workspaces). By default show only this session's messages — its own dir plus
@@ -60,8 +65,13 @@ ab_list_inbox "$AGENT" | while IFS= read -r f; do
     WHERE="→ all sessions"
   fi
   echo "─── $(basename "$f" .json)  ${WHERE} ───"
-  jq -r '
+  # v2.5: name the sender's machine when it is not this one, and the address a
+  # reply should use.
+  jq -r --arg self "$SELF" --arg reply "$(ab_reply_address "$f")" '
     "from: " + .from +
+    (if (.context.host // "") != "" and .context.host != $self then "@" + .context.host else "" end) +
+    (if .from_session then "  (session " + .from_session + ")" else "" end) +
+    "\nreply to: " + $reply +
     "\ntype: " + .type + " / " + .intent +
     "\npriority: " + .priority +
     (if .response_by then "\nresponse_by: " + .response_by else "" end) +
@@ -74,4 +84,4 @@ done
 
 After the listing, suggest `/read <msg-id>` to open a message in full (with `context_refs` resolved), or `/reply <msg-id> <type>` to respond.
 
-Messages are labelled by destination: `→ <slug>` for one session, `→ all sessions` for a broadcast. If a sibling session has its own queue, it is named at the top.
+Messages are labelled by destination: `→ <slug>` for one session, `→ all sessions` for a broadcast. If a sibling session has its own queue, it is named at the top. A sender on another machine shows as `from: kai@mini`; `reply to:` is the address `/reply` will use.

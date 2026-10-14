@@ -55,6 +55,18 @@ Dual-GOD orchestration + TaskProvider layer + drain-on-Stop + harvest. See `PLAN
 - ⏳ TODO: VoiceInk ingestion wiring, GOD persona files import GOD-CONTRACT.
 - ↪️ The "MCP server wrapper" listed here shipped in v1.4 as `agent-bus-mcp`.
 
+## v2.5 — Two machines, one bus (2026-10-14)
+
+A laptop that gets closed and a Mac mini that stays on, where only the laptop can open SSH. Agents on the mini must receive work from the laptop and report back to the hub, with the laptop possibly asleep in between.
+
+- ✅ **Host in the address**: `kai@mini`, `kai@mini/crewmoor`; no `@host` = the agent's own host (`agents.<a>.host`, hub agent → hub host) or this machine. `hosts` in AGENT_MAP, this machine's name in `$AB_HOME/HOST`.
+- ✅ **One-way transport**: laptop → mini over SSH (atomic write), queued in `outbox/mini/` when the mini is down; mini → laptop via the mini's `outbox/laptop/`, pulled by the laptop. Copy, verify, then delete; no duplicates.
+- ✅ **Collection** every 30 s at most from `/inbox`, `/bus`, `bus_inbox`, `bus_status` and the `UserPromptSubmit` hook (background), plus a launchd job every 60 s (`install.sh --host-sync`).
+- ✅ **Status across machines**: `/bus` and `bus_status` show the mini's sessions (SSH, cached 20 s) with a host column.
+- ✅ **`context.host`** in the message (additive), replies find their way back. Schema: `schema/bus-message.schema.json`.
+- ✅ `install.sh --host`, `--host-sync`, `--register-hooks`; hooks and commands work with any `CLAUDE_HOME` / `CLAUDE_CONFIG_DIR`.
+- ⏳ Not in: the mini cannot see the laptop's sessions (it never connects); thread logs are written on the side that sends or collects, not mirrored; more than two machines works in principle (any host with `ssh`) but is untested; no realtime push (worst case 60 s with the laptop open).
+
 ## v2.2 — bus-band shows the team (2026-10-14)
 
 - ✅ **"Squadra" section** under the messages: sibling sessions read from `$AB_HOME/onda/sessions.json` (written by Onda; contract in `schema/CONTRACT.md` "Onda → mod"). Stuck ones first: `TESTO FERMO da N min` (text left in the prompt box, no Enter), waiting for a permission or an answer. Hidden when the file is missing or Onda is not alive.
@@ -100,7 +112,6 @@ Run unattended for hours, escalate only when needed.
 These are intentionally **not** on the roadmap. PRs welcome if they fit the project, but they aren't on the maintainer's path:
 
 - Encrypted message payloads (the bus assumes a single-user trusted machine)
-- Multi-machine sync (the bus is local; cross-machine is a separate problem — `rsync` or git already works)
 - A graphical UI / web dashboard (CLI-first, plain JSON inspectable with `jq`)
 - A hosted/managed version (the entire pitch is "no daemon, no server, no cloud")
 

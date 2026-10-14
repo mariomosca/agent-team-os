@@ -5,8 +5,12 @@
 set -uo pipefail
 
 # Resolve the helper library (plugin mode or manual install).
+_HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" && -f "$CLAUDE_PLUGIN_ROOT/scripts/agent-team-os-lib.sh" ]]; then
     LIB="$CLAUDE_PLUGIN_ROOT/scripts/agent-team-os-lib.sh"
+elif [[ -f "$_HOOK_DIR/../scripts/agent-team-os-lib.sh" ]]; then
+    # Next to this hook: works for any CLAUDE_HOME (e.g. ~/.config/claude-mini).
+    LIB="$_HOOK_DIR/../scripts/agent-team-os-lib.sh"
 elif [[ -f "$HOME/.claude/scripts/agent-team-os-lib.sh" ]]; then
     LIB="$HOME/.claude/scripts/agent-team-os-lib.sh"
 else
@@ -25,6 +29,11 @@ export AB_SESSION_SLUG
 
 # Update last_seen silently
 ab_update_registry "$AGENT" true "$CWD" 2>/dev/null
+
+# v2.5: pull what other machines left for us, at most every AB_COLLECT_INTERVAL
+# (30 s), in the background so the prompt never waits on SSH. What it brings in
+# shows up at the next turn.
+ab_collect_outbox_bg 2>/dev/null
 
 # Count urgent/high pending
 HIGH_COUNT=$(ab_count_inbox_priority "$AGENT" 2>/dev/null || echo 0)

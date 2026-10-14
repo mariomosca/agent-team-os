@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mariomosca/agent-team-os/schema/bus-message.schema.json",
+  "title": "bus message",
+  "description": "One message on the bus: a file inboxes/<agent>/[@<slug>/]<id>.json, written atomically (tmp + rename). 'version' stays \"1.0\": every field added since (from_session, context.host) is optional and additive, and readers MUST ignore fields they do not know. Two machines (v2.5): the same file travels unchanged; the session and the machine of the RECIPIENT live in the path (inboxes/, or outbox/<host>/ while in transit with the same layout), not in 'to'. Written by the bash lib and agent-bus-mcp in the canonical shape; hand-written messages exist on real buses (no version, custom ids, other priorities), so the schema only requires what routing needs and readers MUST be lenient.",
+  "type": "object",
+  "required": [
+    "id",
+    "from",
+    "to",
+    "type",
+    "ts"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^msg-[A-Za-z0-9-]+$",
+      "description": "Also the file name. Canonical form msg-<YYYYMMDDTHHMMSSZ>-<rand8>, which sorts by time."
+    },
+    "version": {
+      "type": "string",
+      "description": "\"1.0\" from the lib and the MCP server."
+    },
+    "from": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Sender agent, bare name."
+    },
+    "from_session": {
+      "type": "string",
+      "pattern": "^[^/@]+/[a-z0-9._-]+$",
+      "description": "Optional. Sender agent and session, 'agent/slug' (written by agent-bus-mcp). Lets a reply reach that session."
+    },
+    "to": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Recipient agent, ALWAYS the bare name (no /slug, no @host): readers and threads stay unchanged."
+    },
+    "thread_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Travels with the message, so a thread continues across machines."
+    },
+    "in_reply_to": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "type": {
+      "type": "string",
+      "description": "request | brief | question | response | accept | decline | confirm | event | handoff | cc-notify"
+    },
+    "intent": {
+      "type": "string"
+    },
+    "priority": {
+      "type": "string",
+      "description": "Canonical: low | normal | high | urgent. Anything else reads as normal."
+    },
+    "payload": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Free form; 'summary' is shown in listings."
+    },
+    "context_refs": {
+      "type": "array",
+      "description": "Usually absolute paths; older messages carry objects ({type, path})."
+    },
+    "requires_response": {
+      "type": "boolean"
+    },
+    "response_by": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "context": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Optional. Where the message comes from and what it is about.",
+      "properties": {
+        "host": {
+          "type": "string",
+          "pattern": "^[a-z0-9._-]+$",
+          "description": "v2.5. Machine of the SENDER (its $AB_HOME/HOST, or the hub host). Absent on a single-machine bus. A reply goes to from@host (see ab_reply_address / Bus.reply_address)."
+        },
+        "project_path": {
+          "type": "string",
+          "description": "v1.2 workspace filter: the message is about this folder."
+        }
+      }
+    }
+  }
+}

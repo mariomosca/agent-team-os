@@ -36,6 +36,7 @@ The `Stop` hook is copied by the installer but **NOT auto-registered** — it's 
 - **Send a message**: use `/send <agent> <intent>`, or write a message JSON (schema below) — never write into another agent's folder directly; the protocol delivers it.
 - **Message schema (v1.1)**: `{ id, version, from, to, thread_id, in_reply_to, type, intent, priority, delivery, payload, context_refs, requires_response, ts }`.
 - **Reply in-thread**: `/reply <msg-id> <type>` (type = accept|decline|response|confirm).
+- **Two machines (v2.5)**: address `agent@host[/slug]` (e.g. `kai@mini/crewmoor`). Laptop → mini goes over SSH (queued in `outbox/<host>/` if down); mini → laptop waits in the mini's `outbox/laptop/` until the laptop collects. `/bus` shows both machines. See README "Two machines".
 - **Slash commands**: `/bus` (roster), `/inbox`, `/read <id>`, `/send`, `/reply`, `/handoff`, `/thread`.
 
 ## v2.0 — hive-GOD-agentic (optional layers)
@@ -52,6 +53,9 @@ The `Stop` hook is copied by the installer but **NOT auto-registered** — it's 
 | `scripts/agent-team-os-lib.sh` | core bash helpers (`ab_*`); auto-sources taskprovider |
 | `scripts/agent-team-os-taskprovider.sh` | v2 TaskProvider routing + mapping |
 | `scripts/agent-team-os-harvest.sh` | v2 token/cost telemetry |
+| `scripts/agent-team-os-collect.sh` | v2.5 one collection round with the other machines (launchd runs it) |
+| `schema/bus-message.schema.json` | message schema (incl. v2.5 `context.host`) |
+| `tests/test-hosts.sh` | v2.5 two-machine tests with a fake `ssh` (`tests/fake-ssh/`) |
 | `hooks/agent-team-os-{load,urgent,stop}.sh` | lifecycle hooks |
 | `commands/*.md` | slash commands |
 | `skills/agent-team-os/SKILL.md` | the skill (agent-invocable) |

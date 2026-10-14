@@ -1,0 +1,22 @@
+#!/bin/bash
+# Fake ssh for the tests: runs the "remote" command locally, in zsh like a macOS
+# login shell would (an empty glob aborts there, so the real code must not use one).
+# The second machine is just a second AB_HOME, named by bus_home in the test map.
+#   FAKE_SSH_DOWN=<file>  while that file exists the host is "down" (exit 255)
+#   FAKE_SSH_LOG=<file>   append "target command" per call
+#   FAKE_SSH_SLEEP=<s>    slow link: wait before running
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o) shift 2 ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+target="$1"; shift
+if [[ -n "${FAKE_SSH_DOWN:-}" && -e "$FAKE_SSH_DOWN" ]]; then
+  echo "ssh: connect to host $target port 22: Connection refused" >&2
+  exit 255
+fi
+[[ -n "${FAKE_SSH_SLEEP:-}" ]] && sleep "$FAKE_SSH_SLEEP"
+[[ -n "${FAKE_SSH_LOG:-}" ]] && printf '%s %s\n' "$target" "$*" >> "$FAKE_SSH_LOG"
+if command -v zsh >/dev/null 2>&1; then exec zsh -c "$*"; else exec bash -c "$*"; fi
