@@ -9,14 +9,18 @@ Steps:
 1. **Resolve the original message**:
 
    ```bash
-   LIB="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/scripts/agent-team-os-lib.sh"
-   [[ -f "$LIB" ]] || LIB="$HOME/.claude/scripts/agent-team-os-lib.sh"
+   LIB="${CLAUDE_PLUGIN_ROOT:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}/scripts/agent-team-os-lib.sh"
+   [[ -f "$LIB" ]] || LIB="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/agent-team-os-lib.sh"
    source "$LIB"
    AGENT=$(ab_detect_agent "$PWD")
    ORIG_PATH=$(ab_resolve_msg_path "$AGENT" "$1")
    [[ -z "$ORIG_PATH" ]] && { echo "Message $1 not found."; exit 1; }
    ORIG_FROM=$(jq -r '.from' "$ORIG_PATH")
    THREAD=$(jq -r '.thread_id' "$ORIG_PATH")
+   # v2.5: where the sender is — its session and, if it wrote from another
+   # machine, its host (e.g. kai@mini/crewmoor). Never just `.from`: a reply to
+   # an agent on the mini would otherwise stay on the laptop.
+   REPLY_TO=$(ab_reply_address "$ORIG_PATH")
    ```
 
 2. **Validate type**:
@@ -36,7 +40,7 @@ Steps:
 
    ```bash
    AB_FROM="$AGENT" \
-   AB_TO="$ORIG_FROM" \
+   AB_TO="$REPLY_TO" \
    AB_TYPE="<type>" \
    AB_INTENT="<keep-same-intent-as-original>" \
    AB_THREAD_ID="$THREAD" \

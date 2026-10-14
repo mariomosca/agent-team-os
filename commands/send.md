@@ -11,11 +11,16 @@ Steps:
    - `growth draft-post` → ask growth to draft a post
    - `ops handoff` → hand off current task to ops
 
+   `<to>` is an address: `kai` (every session of kai), `kai/crewmoor` (one session),
+   and with two machines (v2.5) `kai@mini` or `kai@mini/crewmoor`. Without `@host`
+   the message goes to the agent's own host (`agents.<a>.host`; the hub agent lives on
+   the hub host) or stays on this machine. Run `/bus` to see who is live where.
+
 2. **Detect sender** from cwd:
 
    ```bash
-   LIB="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/scripts/agent-team-os-lib.sh"
-   [[ -f "$LIB" ]] || LIB="$HOME/.claude/scripts/agent-team-os-lib.sh"
+   LIB="${CLAUDE_PLUGIN_ROOT:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}/scripts/agent-team-os-lib.sh"
+   [[ -f "$LIB" ]] || LIB="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/agent-team-os-lib.sh"
    source "$LIB"
    FROM=$(ab_detect_agent "$PWD")
    ```
@@ -75,6 +80,10 @@ Steps:
    ```
 
    Notes:
+   - Another host: on the laptop the message is written straight into the mini's inbox
+     over SSH; if the mini is unreachable it waits in `outbox/mini/` (stderr says
+     `queued`) and goes at the next collection. On the mini, messages for the laptop
+     always wait in `outbox/laptop/` until the laptop collects them. Not an error.
    - `type` defaults to `request`. Use `brief` for long tasks, `question` for quick questions, `event` for fire-and-forget notifications.
    - `requires_response` = true if you need a reply; false for events.
    - If routing is denied (exit code 2), explain and suggest an alternative.

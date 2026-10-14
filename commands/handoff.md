@@ -2,7 +2,7 @@
 description: Hand off the current task to another agent with auto-generated state summary. Args - "<to> [intent]".
 ---
 
-Hand off the current task to agent `$1` with optional intent `$2` (default: `handoff`).
+Hand off the current task to agent `$1` with optional intent `$2` (default: `handoff`). `$1` is a bus address: `kai`, `kai/slug`, or on another machine `kai@mini/slug` (see `/send`).
 
 Steps:
 
@@ -23,7 +23,7 @@ Steps:
 4. **Resolve recipient's workspace** from `AGENT_MAP.json` so the user knows where to open the next session:
 
    ```bash
-   TO_WORKSPACE=$(jq -r --arg a "$1" '.rules[] | select(.agent == $a) | .pattern' "$HOME/.agent-team-os/AGENT_MAP.json" | head -1)
+   TO_WORKSPACE=$(jq -r --arg a "$(ab_parse_addr_agent "$1")" '.rules[] | select(.agent == $a) | .pattern' "${AB_MAP:-$HOME/.agent-team-os/AGENT_MAP.json}" | head -1)
    ```
 
 5. **Show a preview** before sending:

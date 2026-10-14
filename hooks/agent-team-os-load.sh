@@ -5,9 +5,14 @@
 
 # Resolve the helper library. Two modes:
 #   1. Plugin mode: $CLAUDE_PLUGIN_ROOT is set by Claude Code (relative to plugin install).
-#   2. Manual install mode: lib copied to ~/.claude/scripts/ by install.sh.
+#   2. Manual install mode: lib copied to <CLAUDE_HOME>/scripts/ by install.sh,
+#      found next to this hook (so a CLAUDE_HOME other than ~/.claude works).
+_HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" && -f "$CLAUDE_PLUGIN_ROOT/scripts/agent-team-os-lib.sh" ]]; then
     LIB="$CLAUDE_PLUGIN_ROOT/scripts/agent-team-os-lib.sh"
+elif [[ -f "$_HOOK_DIR/../scripts/agent-team-os-lib.sh" ]]; then
+    # Next to this hook: works for any CLAUDE_HOME (e.g. ~/.config/claude-mini).
+    LIB="$_HOOK_DIR/../scripts/agent-team-os-lib.sh"
 elif [[ -f "$HOME/.claude/scripts/agent-team-os-lib.sh" ]]; then
     LIB="$HOME/.claude/scripts/agent-team-os-lib.sh"
 else
@@ -48,6 +53,10 @@ export AB_SESSION_SLUG
 # Update registry
 ab_update_registry "$AGENT" true "$CWD"
 
+# v2.5: on a machine that reaches others over SSH (the laptop), fetch what they
+# left for us. In the background: a host that is down must not delay the session.
+ab_collect_outbox_bg
+
 # Read inbox
 COUNT=$(ab_count_inbox "$AGENT")
 HIGH_COUNT=$(ab_count_inbox_priority "$AGENT")
@@ -55,7 +64,8 @@ DISPLAY=$(ab_agent_display "$AGENT")
 ROLE=$(ab_agent_role "$AGENT")
 
 echo "=== Agent Team OS ==="
-echo "You are ${DISPLAY} (${AGENT}). Role: ${ROLE}"
+HOST_SELF=$(ab_host_self)
+echo "You are ${DISPLAY} (${AGENT}${HOST_SELF:+@$HOST_SELF}). Role: ${ROLE}"
 echo "Workspace: ${CWD}"
 echo ""
 

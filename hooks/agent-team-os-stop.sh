@@ -14,8 +14,12 @@
 set -uo pipefail
 
 # Resolve the helper library (plugin mode or manual install).
+_HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" && -f "$CLAUDE_PLUGIN_ROOT/scripts/agent-team-os-lib.sh" ]]; then
     LIB="$CLAUDE_PLUGIN_ROOT/scripts/agent-team-os-lib.sh"
+elif [[ -f "$_HOOK_DIR/../scripts/agent-team-os-lib.sh" ]]; then
+    # Next to this hook: works for any CLAUDE_HOME (e.g. ~/.config/claude-mini).
+    LIB="$_HOOK_DIR/../scripts/agent-team-os-lib.sh"
 elif [[ -f "$HOME/.claude/scripts/agent-team-os-lib.sh" ]]; then
     LIB="$HOME/.claude/scripts/agent-team-os-lib.sh"
 else

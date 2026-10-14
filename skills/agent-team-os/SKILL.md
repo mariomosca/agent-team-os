@@ -27,11 +27,13 @@ File-based communication between separate Claude Code sessions. Replaces manual 
 ### Step 1 — Determine sender
 
 ```bash
-source ~/.claude/scripts/agent-team-os-lib.sh
+source "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/agent-team-os-lib.sh"
 FROM=$(ab_detect_agent "$PWD")
 ```
 
 If `FROM` is empty → "this workspace is outside AGENT_MAP, cannot send". Stop.
+
+**Addresses**: `kai` (every session), `kai/crewmoor` (one session), and with two machines `kai@mini` / `kai@mini/crewmoor`. Without `@host` the message goes to the agent's own host or stays here. A message to an unreachable host is queued, not lost: say so to the user (stderr `queued`), do not retry. To answer a message use `ab_reply_address <file>` (or the MCP `reply_to`), never the bare `.from`: it brings the reply back to the right session and machine. `/bus` lists who is live on each machine.
 
 ### Step 2 — Check routing before proposing
 

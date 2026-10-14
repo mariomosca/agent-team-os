@@ -181,6 +181,8 @@ The installer:
 6. Drops a starter `AGENT_MAP.json` you can edit
 7. Copies the `bus-band` mod to `~/.claude/mods/bus-band/` (loaded only once you opt in, see below)
 
+Options: `--register-hooks` adds the two hooks to `settings.json` for you; `--host` / `--host-sync` are for [two machines](#two-machines). `CLAUDE_HOME=<dir>` installs into another Claude Code config folder.
+
 In both cases, edit `~/.agent-team-os/AGENT_MAP.json` to map your working directories to agent names.
 
 ### Optional: drain-on-Stop hook (v2)
@@ -202,6 +204,47 @@ A [mod](https://code.claude.com/docs/en/plugins/mods/overview) that keeps this s
 ```
 
 or for one session with `claude --plugin-dir <repo>/mods/bus-band`. Details: [`mods/bus-band/README.md`](./mods/bus-band/README.md).
+
+## Two machines
+
+One bus across two Macs — say a laptop you close and a Mac mini that stays on — when only one of them can open SSH to the other. Same user, same paths, same `AGENT_MAP.json` on both. No server, no new daemon besides one launchd job on the laptop: the bus is still files.
+
+**Addresses.** Add `@host`: `kai@mini` reaches every session of `kai` on the mini, `kai@mini/crewmoor` one session. Without `@host` a message goes to the agent's own host (`agents.<a>.host`; the hub agent, `cc_awareness.hub`, lives on the host marked `hub`) or stays on the machine you are on. A host not in `hosts` is a clear error.
+
+```json
+"hosts": {
+  "laptop": { "hub": true },
+  "mini":   { "ssh": "mini", "bus_home": "/Users/me/.agent-team-os" }
+}
+```
+
+Each machine's own name is in `~/.agent-team-os/HOST` (`install.sh --host mini`); the hub needs none. Keeping it out of the map lets the map stay byte-identical on both machines.
+
+**Transport.** Only the machine that has an `ssh` target for the other one ever connects:
+
+| From → to | How |
+|---|---|
+| laptop → mini | SSH, atomic write (`tmp` + `mv`) into the mini's inbox |
+| laptop → mini, mini down | kept in the laptop's `outbox/mini/`, pushed at the next collection; the send says `queued`, it does not fail |
+| mini → laptop | written to the mini's `outbox/laptop/`; the laptop pulls it |
+| same machine | local, as before |
+
+`outbox/<host>/` always means *not yet delivered to `<host>`* and mirrors the inbox layout (`<agent>/[@slug/]msg-*.json`), so the session travels in the path. Messages carry the sender's machine in `context.host` (additive, schema in [`schema/bus-message.schema.json`](./schema/bus-message.schema.json)), so `/reply` and the MCP `reply_to` answer `kai@mini/crewmoor` instead of a local `kai`. Thread ids travel with the message.
+
+**Collection.** On the laptop, `/inbox`, `/bus`, the MCP `bus_inbox`/`bus_status` and the `UserPromptSubmit` hook collect when the last round is older than 30 s (the hooks in the background, so a prompt never waits on SSH). One round = push what is queued for the mini, then pull the mini's `outbox/laptop/` in one `tar` over SSH: copy into the local inbox, verify, and only then delete on the mini. A message already delivered (or already archived) is not delivered twice; an unreadable one stays on the mini. A launchd job (`com.agent-team-os.raccolta-mini`, every 60 s, from `install.sh --host-sync`) covers sessions that never touch the bus. SSH runs with `BatchMode=yes`, `ConnectTimeout=5` and a 10-minute `ControlMaster`, so a round costs milliseconds while the mini is up and at most 5 s when it is not.
+
+**Status.** `/bus` and `bus_status` list the mini's live sessions (its registry read over SSH, cached 20 s, last known list kept while it is down), with their `agent@host/slug` address, what is queued for it and the last collection.
+
+**Install.**
+
+```bash
+# on the mini (Claude Code config in ~/.config/claude-mini)
+CLAUDE_HOME=~/.config/claude-mini ./install.sh --host mini --register-hooks
+# on the laptop
+./install.sh --host-sync
+```
+
+Routing rules and cc-awareness are unchanged: the host changes the transport, not who may talk to whom.
 
 ## Example: define your agents
 

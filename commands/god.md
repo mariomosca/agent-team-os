@@ -7,8 +7,8 @@ GOD mode makes the current agent behave as a domain orchestrator (v2): decompose
 Parse the argument (`on`, `off`, or empty for status) and run:
 
 ```bash
-LIB="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/scripts/agent-team-os-lib.sh"
-[[ -f "$LIB" ]] || LIB="$HOME/.claude/scripts/agent-team-os-lib.sh"
+LIB="${CLAUDE_PLUGIN_ROOT:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}/scripts/agent-team-os-lib.sh"
+[[ -f "$LIB" ]] || LIB="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/agent-team-os-lib.sh"
 source "$LIB"
 
 AB_HOME="${AB_HOME:-$HOME/.agent-team-os}"

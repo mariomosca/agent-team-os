@@ -27,7 +27,7 @@ Steps:
 
    ```bash
    THREAD_ID="$1"
-   THREAD_FILE="$HOME/.agent-team-os/threads/${THREAD_ID}.json"
+   THREAD_FILE="${AB_HOME:-$HOME/.agent-team-os}/threads/${THREAD_ID}.json"
    [[ -f "$THREAD_FILE" ]] || { echo "Thread $THREAD_ID not found."; exit 1; }
    jq '.' "$THREAD_FILE"
    ```

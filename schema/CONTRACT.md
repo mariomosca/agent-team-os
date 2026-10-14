@@ -242,3 +242,34 @@ Onda osserva la cartella (`fs.watch` + scansione all'avvio), consuma ogni `req-*
 ## 13. Evoluzione
 
 Un campo nuovo e opzionale non cambia `v`. Un campo che cambia significato, o un nuovo valore di `state` che un lettore vecchio non saprebbe trattare, alza `v`. Un lettore deve trattare un `state` sconosciuto come `idle`.
+
+---
+
+# Due macchine (bus v2.5, 14 ott 2026)
+
+> Brief: `~/work-hub/plans/BRIEF-KAI-bus-mini-14ott.md` · Piano: `PLAN-MAC-MINI-WORKER.md`. Il messaggio ha ora uno schema: [`bus-message.schema.json`](./bus-message.schema.json).
+
+## 14. Host
+
+- `AGENT_MAP.json` → `hosts`: `{"laptop": {"hub": true}, "mini": {"ssh": "mini", "bus_home": "/Users/<utente>/.agent-team-os"}}`. Stesso file sulle due macchine.
+- Nome della macchina corrente: `$AB_HOME/HOST` (una riga), override `AB_HOST`; senza file vale l'host con `hub: true`. Sta fuori dalla mappa apposta: un campo `self` nella mappa la farebbe divergere fra le macchine.
+- `agents.<a>.host` (opzionale): la macchina su cui vive un agente. L'hub di `cc_awareness` vive sull'host `hub` senza bisogno di dichiararlo.
+- Senza `hosts` il bus è quello di prima: niente `context.host`, niente `host` nel registry, `@host` è un errore.
+
+## 15. Indirizzo
+
+`agent[@host][/slug]` (accettato anche `agent/slug@host`). Gli slug non contengono `@`. Nel JSON `to` resta il nome nudo; sessione e macchina del destinatario stanno nel percorso.
+
+## 16. Trasporto e cartelle
+
+- `outbox/<host>/<agent>/[@slug/]msg-*.json` = "per `<host>`, non ancora consegnato". Sul laptop è la coda verso il mini spento; sul mini è ciò che il laptop deve venire a prendere. Convive con i log `outbox/<giorno>.jsonl` (bash) e `outbox/<agent>.jsonl` (MCP): i log sono file, le code cartelle.
+- Scrittura remota atomica: `mkdir -p … && cat > X.tmp && mv X.tmp X`. I lettori ignorano già `*.tmp` (cercano `msg-*.json`).
+- Raccolta (solo da chi ha `ssh` verso l'altro): lock `locks/collect-<host>.lock` (mkdir, condiviso bash/MCP, scaduto dopo 120 s), timbro `hosts/<host>/last-collect` (soglia 30 s), esito `hosts/<host>/last-collect.json`. Ordine: push della coda, pull con un `tar` dell'outbox remota, copia nella inbox locale, verifica JSON, poi `rm` remoto dei soli file consegnati. Già presente in inbox, `.read/` o `.done/` = solo cancellazione remota. JSON illeggibile = resta sul mini.
+- Stato remoto: `hosts/<host>/status.json` `{host, fetched_at, ok, error?, sessions[], pending[]}`, TTL 20 s, all'errore conserva le sessioni con `ok:false`.
+- Comandi remoti senza glob (la shell di login del mini è zsh: glob vuoto = errore).
+
+## 17. Registry e messaggio
+
+- `registry/<agent>.d/<slug>.json` ha `host` quando l'host è configurato. Unico scrittore resta l'hook (o l'MCP) della macchina dove gira la sessione; l'altra macchina legge e basta.
+- Messaggio: `context.host` = macchina del mittente (additivo, `version` resta `"1.0"`). Risposta a `from@context.host[/slug di from_session]` (`ab_reply_address`, `Bus.reply_address`).
+
