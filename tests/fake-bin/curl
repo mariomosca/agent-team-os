@@ -1,0 +1,9 @@
+#!/bin/bash
+# Fake curl for test-custode.sh: logs args + the -K config read from stdin,
+# writes {"ok":true} to the -o file. Never touches the network.
+#   FAKE_CURL_LOG=<file>
+out=/dev/stdout
+prev=""
+for a in "$@"; do [[ "$prev" == "-o" ]] && out="$a"; prev="$a"; done
+{ echo "--- call"; printf '%s\n' "$@"; echo "--- stdin"; cat; } >> "${FAKE_CURL_LOG:-/dev/null}"
+echo '{"ok":true,"result":{}}' > "$out"

@@ -246,6 +246,34 @@ CLAUDE_HOME=~/.config/claude-mini ./install.sh --host mini --register-hooks
 
 Routing rules and cc-awareness are unchanged: the host changes the transport, not who may talk to whom.
 
+### Il custode
+
+The machine that stays on runs agents with nobody watching, so when it breaks nobody sees it: an expired Claude login, a bus MCP server that starts without tools. The custode is not an agent, it is a script: every morning at 7:00 (launchd) it checks the host, writes a report and, if something is wrong, sends it on Telegram with the command that fixes it.
+
+| Check | ok / warn / fail |
+|---|---|
+| `claude` | `claude -p "Rispondi solo: OK" --model haiku` with the host's `CLAUDE_CONFIG_DIR`, 120 s. **fail** on no answer or "login"/"expired" in the output |
+| `bus-mcp` | the `agent-bus` server (command read from `$CLAUDE_CONFIG_DIR/.claude.json`, as Claude Code starts it) answers `initialize` + `tools/list` with its 6 tools. **fail** with the last stderr line or the missing tools |
+| `python` | the Python `uv` resolves in the server folder: **fail** if >= 3.15, **warn** if `.python-version` is missing |
+| `coda` | messages waiting in `outbox/<hub>/`: **warn** older than 1 h, **fail** older than 24 h (the laptop has not collected) |
+| `identita` | `HOST` set, `AGENT_MAP.json` valid, `hosts.<HOST>` present |
+| `repo` | every git folder under `~/Projects` (depth 1-2) on a branch with an upstream and no tracked changes: `git pull --ff-only`. Dirty or diverged: **warn**, not touched. Never `reset`, never `stash` |
+| `disco` | **warn** under 20 GB free, **fail** under 5 |
+| `launchd` | every `com.portineria.*` / `com.agent-team-os.*` plist in `~/Library/LaunchAgents` is loaded, else **warn** |
+
+Telegram: token and chat from `~/.config/portineria-mini/telegram.env` (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`), the token goes to `curl` on stdin. All ok means silence, except one "tutto a posto" on Monday. No Telegram file: said in the report, the exit code still follows the checks.
+
+```bash
+# install on the mini (needs --host, or HOST already set to a non-hub host)
+CLAUDE_HOME=~/.config/claude-mini ./install.sh --host mini --custode
+CLAUDE_HOME=~/.config/claude-mini ./install.sh --custode --uninstall   # remove it
+# by hand (--no-telegram to just look, --json for the JSON)
+~/.config/claude-mini/scripts/agent-team-os-custode.sh --no-telegram
+jq '.status, (.checks[] | select(.status != "ok"))' ~/.agent-team-os/hosts/self/custode.json
+```
+
+Exit code `0` ok, `1` warn, `2` fail. `hosts/self/custode.json` is `{at, host, status, checks: [{name, status, detail, fix}], notify: {sent, note}}`, fails first, written atomically. Log in `~/.agent-team-os/logs/custode.log`. On the hub (no `HOST`, or `HOST` = the hub) it says so and exits 0.
+
 ## Example: define your agents
 
 ```json

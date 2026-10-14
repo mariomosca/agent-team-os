@@ -1,0 +1,11 @@
+#!/bin/bash
+# Fake claude for test-custode.sh.
+#   FAKE_CLAUDE_MODE=ok (default) | expired | hang | error
+#   FAKE_CLAUDE_LOG=<file>  append "CLAUDE_CONFIG_DIR args" per call
+[[ -n "${FAKE_CLAUDE_LOG:-}" ]] && printf '%s %s\n' "${CLAUDE_CONFIG_DIR:-}" "$*" >> "$FAKE_CLAUDE_LOG"
+case "${FAKE_CLAUDE_MODE:-ok}" in
+  ok) echo "OK" ;;
+  expired) echo "Invalid API key · Please run /login"; exit 1 ;;
+  hang) sleep 30 ;;
+  error) echo "boom" >&2; exit 3 ;;
+esac

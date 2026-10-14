@@ -16,6 +16,11 @@
 #   --register-hooks    add the SessionStart + UserPromptSubmit hooks to
 #                       $CLAUDE_HOME/settings.json (backup first, idempotent).
 #                       The Stop hook stays opt-in.
+#   --custode           install the custode (README "Il custode"): a launchd job at
+#                       7:00 that checks this host and warns on Telegram. Only on a
+#                       remote host: with --host <name>, or with $AB_HOME/HOST set
+#                       to a host that is not the hub.
+#   --custode --uninstall   remove the custode (job + script). Nothing else.
 #
 # Env: CLAUDE_HOME (default ~/.claude, e.g. ~/.config/claude-mini), AB_HOME
 # (default ~/.agent-team-os), LAUNCH_AGENTS_DIR (default ~/Library/LaunchAgents),
@@ -30,13 +35,17 @@ BUS_HOME="${AB_HOME:-$HOME/.agent-team-os}"
 HOST_NAME=""
 HOST_SYNC=0
 REGISTER_HOOKS=0
+CUSTODE=0
+UNINSTALL=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --host) HOST_NAME="${2:?--host needs a name}"; shift 2 ;;
     --host=*) HOST_NAME="${1#--host=}"; shift ;;
     --host-sync) HOST_SYNC=1; shift ;;
     --register-hooks) REGISTER_HOOKS=1; shift ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    --custode) CUSTODE=1; shift ;;
+    --uninstall) UNINSTALL=1; shift ;;
+    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "Unknown option: $1 (see --help)"; exit 1 ;;
   esac
 done
@@ -54,6 +63,37 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "  brew install jq         (macOS)"
   echo "  sudo apt install jq     (Debian/Ubuntu)"
   exit 1
+fi
+
+# --- Custode: checks that need nothing installed ---
+
+LA_DIR="${LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
+CUSTODE_LABEL="com.agent-team-os.custode"
+CUSTODE_PLIST="$LA_DIR/${CUSTODE_LABEL}.plist"
+
+if [[ "$UNINSTALL" -eq 1 ]]; then
+  if [[ "$CUSTODE" -ne 1 ]]; then
+    echo "ERROR: --uninstall works only together with --custode (it removes the custode, nothing else)."
+    exit 1
+  fi
+  if [[ "${AB_NO_LAUNCHCTL:-0}" != "1" ]] && command -v launchctl >/dev/null 2>&1; then
+    launchctl bootout "gui/$(id -u)/${CUSTODE_LABEL}" 2>/dev/null || true
+  fi
+  rm -f "$CUSTODE_PLIST" "$CLAUDE_HOME/scripts/agent-team-os-custode.sh"
+  echo "Custode removed ($CUSTODE_PLIST, $CLAUDE_HOME/scripts/agent-team-os-custode.sh)."
+  echo "Its last report stays in $BUS_HOME/hosts/self/custode.json."
+  exit 0
+fi
+
+if [[ "$CUSTODE" -eq 1 ]]; then
+  C_SELF="$HOST_NAME"
+  [[ -z "$C_SELF" && -s "$BUS_HOME/HOST" ]] && C_SELF=$(head -1 "$BUS_HOME/HOST" | tr -d '[:space:]')
+  C_HUB=$(jq -r '(.hosts // {}) | to_entries[] | select(.value.hub == true) | .key' "$BUS_HOME/AGENT_MAP.json" 2>/dev/null | head -1 || true)
+  if [[ -z "$C_SELF" || "$C_SELF" == "$C_HUB" || "$C_SELF" == "laptop" ]]; then
+    echo "ERROR: --custode runs on a remote host (the Mac mini), not on the hub."
+    echo "       Use it with --host <name>, or after $BUS_HOME/HOST names a non-hub host."
+    exit 1
+  fi
 fi
 
 # --- Layout target directories ---
@@ -226,6 +266,48 @@ PLIST
       launchctl bootstrap "gui/$(id -u)" "$PLIST" && echo "  loaded ($LABEL)"
     fi
   done
+fi
+
+# --- Custode: launchd job at 7:00 on the remote host ---
+
+if [[ "$CUSTODE" -eq 1 ]]; then
+  cp "$REPO_DIR/scripts/agent-team-os-custode.sh" "$CLAUDE_HOME/scripts/agent-team-os-custode.sh"
+  chmod +x "$CLAUDE_HOME/scripts/agent-team-os-custode.sh"
+  mkdir -p "$LA_DIR" "$BUS_HOME/logs"
+  cat > "$CUSTODE_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${CUSTODE_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>${CLAUDE_HOME}/scripts/agent-team-os-custode.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>AB_HOME</key><string>${BUS_HOME}</string>
+    <key>CLAUDE_CONFIG_DIR</key><string>${CLAUDE_HOME}</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>7</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>${BUS_HOME}/logs/custode.log</string>
+  <key>StandardErrorPath</key><string>${BUS_HOME}/logs/custode.log</string>
+</dict>
+</plist>
+PLIST
+  echo "Custode → $CUSTODE_PLIST (every day at 7:00, log $BUS_HOME/logs/custode.log)"
+  echo "  by hand: $CLAUDE_HOME/scripts/agent-team-os-custode.sh [--no-telegram]"
+  if [[ "${AB_NO_LAUNCHCTL:-0}" != "1" ]] && command -v launchctl >/dev/null 2>&1; then
+    launchctl bootout "gui/$(id -u)/${CUSTODE_LABEL}" 2>/dev/null || true
+    launchctl bootstrap "gui/$(id -u)" "$CUSTODE_PLIST" && echo "  loaded ($CUSTODE_LABEL)"
+  fi
 fi
 
 # --- Settings.json hint ---

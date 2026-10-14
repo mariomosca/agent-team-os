@@ -54,8 +54,10 @@ The `Stop` hook is copied by the installer but **NOT auto-registered** — it's 
 | `scripts/agent-team-os-taskprovider.sh` | v2 TaskProvider routing + mapping |
 | `scripts/agent-team-os-harvest.sh` | v2 token/cost telemetry |
 | `scripts/agent-team-os-collect.sh` | v2.5 one collection round with the other machines (launchd runs it) |
+| `scripts/agent-team-os-custode.sh` | the custode: daily health check of a remote host, report + Telegram (`install.sh --custode`) |
 | `schema/bus-message.schema.json` | message schema (incl. v2.5 `context.host`) |
 | `tests/test-hosts.sh` | v2.5 two-machine tests with a fake `ssh` (`tests/fake-ssh/`) |
+| `tests/test-custode.sh` | custode tests, fake `claude`/`uv`/`curl`/`launchctl`/`df` in `tests/fake-bin/`, real git on local remotes |
 | `hooks/agent-team-os-{load,urgent,stop}.sh` | lifecycle hooks |
 | `commands/*.md` | slash commands |
 | `skills/agent-team-os/SKILL.md` | the skill (agent-invocable) |
