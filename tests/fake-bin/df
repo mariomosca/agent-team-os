@@ -1,0 +1,4 @@
+#!/bin/bash
+# Fake df for test-custode.sh: FAKE_DF_AVAIL_KB available (default 100 GB).
+echo "Filesystem 1024-blocks Used Available Capacity iused ifree %iused Mounted on"
+echo "/dev/disk3s1 994662584 100000 ${FAKE_DF_AVAIL_KB:-104857600} 50% 1 1 1% /System/Volumes/Data"

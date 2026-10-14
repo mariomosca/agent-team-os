@@ -1,0 +1,14 @@
+#!/bin/bash
+# Fake launchctl for test-custode.sh.
+#   print gui/<uid>/<label>  exit 0 if <label> is a line of FAKE_LAUNCHCTL_LOADED, else 113
+#   bootout/bootstrap        logged to FAKE_LAUNCHCTL_LOG
+[[ -n "${FAKE_LAUNCHCTL_LOG:-}" ]] && echo "$*" >> "$FAKE_LAUNCHCTL_LOG"
+case "$1" in
+  print)
+    label="${2##*/}"
+    if [[ -n "${FAKE_LAUNCHCTL_LOADED:-}" ]] && grep -qx "$label" "$FAKE_LAUNCHCTL_LOADED" 2>/dev/null; then
+      echo "$label = { state = running }"; exit 0
+    fi
+    echo "Could not find service \"$label\" in domain" >&2; exit 113 ;;
+  *) exit 0 ;;
+esac
