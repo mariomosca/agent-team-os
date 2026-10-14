@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mariomosca/agent-team-os/schema/onda-sessions.schema.json",
+  "title": "onda sessions.json",
+  "description": "State of the agent sessions as seen by Onda, written to $AB_HOME/onda/sessions.json (default ~/.agent-team-os/onda/sessions.json). Written atomically (tmp + rename), on every state change, at most once per second. Onda never creates the bus folder. Readers MUST tolerate a missing, stale (dead ondaPid) or unparsable file and an unknown 'v'. Requests in the opposite direction are files in $AB_HOME/onda/requests/ (see $defs/request).",
+  "type": "object",
+  "required": ["v", "writtenAt", "ondaPid", "sessions"],
+  "additionalProperties": false,
+  "properties": {
+    "v": { "const": 1, "description": "Schema major version. A reader receiving an unknown v discards the file." },
+    "writtenAt": { "type": "string", "format": "date-time" },
+    "ondaPid": { "type": "integer", "minimum": 1, "description": "Pid of the writing Onda process. If it is not alive the file is a leftover." },
+    "sessions": { "type": "array", "items": { "$ref": "#/$defs/session" } }
+  },
+  "$defs": {
+    "state": {
+      "enum": ["working", "idle", "waiting_permission", "waiting_answer", "pending_input", "exited"],
+      "description": "pending_input = prompt box has text and no work signal for >= 60 s; before 60 s it stays idle. A reader treats an unknown state as idle."
+    },
+    "session": {
+      "type": "object",
+      "required": ["sessionId", "terminalId", "workspaceId", "agent", "slug", "cwd", "state", "stateSince", "mounted", "host"],
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": { "type": "string", "minLength": 1 },
+        "terminalId": { "type": "string", "minLength": 1 },
+        "workspaceId": { "type": "string", "minLength": 1 },
+        "agent": { "type": ["string", "null"], "description": "Agent from AGENT_MAP; null when the folder is not mapped." },
+        "slug": { "type": "string", "pattern": "^[a-z0-9._-]+$" },
+        "cwd": { "type": "string", "pattern": "^/", "description": "Absolute path." },
+        "state": { "$ref": "#/$defs/state" },
+        "stateSince": { "type": "string", "format": "date-time", "description": "Start of the current state. For pending_input, the start of the episode, not the moment the 60 s elapsed." },
+        "lastTool": { "type": ["string", "null"] },
+        "lastTarget": { "type": ["string", "null"], "description": "Target of the last tool, relative to cwd. Never file contents." },
+        "mounted": { "type": "boolean", "description": "The workspace is in the mosaic of an open window." },
+        "windowId": { "type": ["string", "null"], "description": "Hosting window; null when mounted is false." },
+        "host": { "type": "string", "description": "Machine the session runs on. Today always 'laptop'." }
+      }
+    },
+    "request": {
+      "title": "onda request",
+      "description": "File $AB_HOME/onda/requests/req-<ts>-<rand>.json, written by the mod (atomically; temp files must not start with 'req-'), consumed and deleted by Onda. Unknown actions are discarded and deleted.",
+      "type": "object",
+      "required": ["action", "workspaceId"],
+      "additionalProperties": false,
+      "properties": {
+        "action": { "const": "mount", "description": "Mount the workspace in the active (or first) window and focus the agent's pane." },
+        "workspaceId": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

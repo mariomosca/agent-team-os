@@ -16,8 +16,51 @@ export type BusSnapshot = {
   elsewhere: number
 }
 
+export type TeamState =
+  | 'working'
+  | 'idle'
+  | 'waiting_permission'
+  | 'waiting_answer'
+  | 'pending_input'
+  | 'exited'
+
+export type TeamSession = {
+  sessionId: string
+  workspaceId: string
+  agent: string | null
+  slug: string
+  cwd: string
+  state: TeamState
+  stateSince: string
+  lastTool: string | null
+  mounted: boolean
+  host: string
+}
+
+export type TeamRow = {
+  key: string
+  name: string
+  text: string
+  stuck: boolean
+  unmounted: boolean
+  workspaceId: string
+  canMount: boolean
+}
+
+export type TeamSnapshot = {
+  headline: string
+  rows: TeamRow[]
+  hidden: number
+  sessions: TeamSession[]
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    'bus-band': { snapshot: BusSnapshot | null; isHidden: boolean }
+    'bus-band': {
+      snapshot: BusSnapshot | null
+      isHidden: boolean
+      team: TeamSnapshot | null
+      isTeamHidden: boolean
+    }
   }
 }

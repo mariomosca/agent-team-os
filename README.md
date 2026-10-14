@@ -28,7 +28,7 @@ No daemon. No server. No cloud. Just files on your machine.
 - **Routing rules** — declare which agents can talk to which (e.g. isolate work contexts from personal ones)
 - **Audit log** — append-only JSONL of every message sent, for free
 - **Slash commands** — `/inbox`, `/read`, `/send`, `/reply`, `/handoff`, `/thread`, `/bus`
-- **Live band above the prompt** (optional mod, Claude Code 2.1.287+) — pending messages for the session, toast on urgent ones: [`mods/bus-band`](./mods/bus-band)
+- **Live band above the prompt** (optional mod, Claude Code 2.1.287+) — pending messages for the session plus the **team** (which sibling sessions are stuck, from Onda), toast on urgent ones: [`mods/bus-band`](./mods/bus-band)
 
 ## How it works
 
@@ -307,6 +307,7 @@ You can declare blocked pairs in `AGENT_MAP.json` to keep contexts isolated — 
 
 - **v1.0**: file-based protocol, bash helpers, slash commands, `SessionStart` hook — battle-tested across five concurrent agents in production since May 2026.
 - **v1.4**: session identity — `agent/slug` addressing, per-session inbox, registry and drain cursor. Written after two sessions of the same agent were found stealing each other's messages.
+- **v2.2**: `bus-band` shows the team — who is stuck (text left in the prompt box, waiting for a permission) and a button to put an out-of-mosaic workspace back in Onda.
 - **v2.1**: `bus-band` mod — the inbox as a live band above the prompt, built on Claude Code mods the day after they shipped.
 - **MCP server**: [`agent-bus-mcp`](https://github.com/mariomosca/agent-bus-mcp) exposes the bus as six typed tools (`bus_status`, `bus_inbox`, `bus_read`, `bus_send`, `bus_archive`, `bus_thread`), session addressing included. Optional: the slash commands keep working on the same files.
 - **v1.1+**: realtime delivery, conductor pattern, active driver, autonomous mode with guard-rails — see [ROADMAP.md](./ROADMAP.md).

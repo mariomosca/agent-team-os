@@ -1,7 +1,7 @@
 {
   "name": "agent-team-os",
   "displayName": "Agent Team OS",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "A minimal file-based protocol to coordinate multiple Claude Code instances across separate sessions",
   "author": {
     "name": "Mario Mosca",
