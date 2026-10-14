@@ -148,3 +148,97 @@ Serve il tuo ok: lo includo nello stream A o lo tengo separato?
 - [ ] Nomi `display_name` / `is_god` allineati alla mappa — confermato
 - [ ] Bug registry: dentro stream A o separato? — **da decidere**
 - [ ] Versione iniziale del marker: `agent-team@1.0.0`
+
+---
+
+# Onda → mod (bus-band, 14 ott 2026)
+
+> Stato: **congelato**, 14 ott 2026. Brief: `~/work-hub/plans/BRIEF-KAI-bus-band-squadra-14ott.md`.
+> Produttore: Onda (`onda-electron`, stream A). Consumatore: il mod `bus-band` (`mods/bus-band`, stream B).
+> Schema: `onda-sessions.schema.json`. Indipendente dal contratto "Agent Team nativo" sopra: qui il flusso è Onda → bus, non hook → Onda.
+
+Il dato su chi è fermo lo ha solo Onda (legge il buffer del TUI). Lo scrive su file; il mod lo legge. Un mod non apre socket, quindi la strada inversa (chiedere a Onda di fare qualcosa) passa anch'essa da file.
+
+## 11. `sessions.json` — stato delle sessioni
+
+```
+$AB_HOME/onda/sessions.json        (default ~/.agent-team-os/onda/sessions.json)
+```
+
+- Scritto da Onda in modo **atomico** (file temporaneo nella stessa cartella + `rename`), a ogni cambiamento di stato, **al massimo una volta al secondo**.
+- Onda **non crea** la cartella del bus: se `$AB_HOME` (o `~/.agent-team-os`) non esiste, non scrive nulla. La cartella `onda/` la crea Onda dentro un bus esistente.
+- Un lettore non deve mai assumere che il file esista, sia recente o sia valido: se manca, non parsa, o ha `v` ignoto, la sezione "squadra" semplicemente non compare.
+
+```json
+{
+  "v": 1,
+  "writtenAt": "2026-10-14T09:25:00Z",
+  "ondaPid": 23715,
+  "sessions": [
+    {
+      "sessionId": "…", "terminalId": "pane-…", "workspaceId": "workspace-…",
+      "agent": "kai", "slug": "portineria", "cwd": "/Users/…/portineria",
+      "state": "working",
+      "stateSince": "2026-10-14T09:12:00Z",
+      "lastTool": "Bash", "lastTarget": null,
+      "mounted": true, "windowId": "window-…",
+      "host": "laptop"
+    }
+  ]
+}
+```
+
+| Campo | Tipo | Note |
+|---|---|---|
+| `v` | `1` | Versione maggiore dello schema. Lettore: `v` ignoto → scarta il file. |
+| `writtenAt` | ISO 8601 UTC | Istante della scrittura. |
+| `ondaPid` | intero | Pid del processo Onda che scrive. Il lettore controlla che sia vivo: se no, il file è un residuo di un Onda chiuso male e va ignorato. |
+| `sessions[].sessionId` | string | Id di sessione Claude Code. |
+| `sessions[].terminalId` | string | Id stabile del terminale (`pane-…`). |
+| `sessions[].workspaceId` | string | Workspace che contiene la sessione. Serve per la richiesta `mount`. |
+| `sessions[].agent` | string | Agente da `AGENT_MAP` (`kai`, `leo`, …); `null` se la cartella non è mappata. |
+| `sessions[].slug` | string | Slug di sessione, stessa regola della lib (basename del cwd, minuscolo, `[a-z0-9._-]`). |
+| `sessions[].cwd` | string | Path assoluto. |
+| `sessions[].state` | enum | Vedi sotto. |
+| `sessions[].stateSince` | ISO 8601 UTC | Da quando la sessione è in questo stato. |
+| `sessions[].lastTool` | string \| null | Ultimo tool visto (`Bash`, `Edit`, …). |
+| `sessions[].lastTarget` | string \| null | Bersaglio dell'ultimo tool, **relativo** al cwd, mai contenuti (stessa regola di privacy di §6). |
+| `sessions[].mounted` | bool | Il workspace è nel mosaico di una finestra aperta. |
+| `sessions[].windowId` | string \| null | Finestra che lo ospita; `null` se `mounted` è falso. |
+| `sessions[].host` | string | Oggi sempre `laptop`. Esiste per il piano del Mac mini (`plans/PLAN-MAC-MINI-WORKER.md`). |
+
+### Stati
+
+| `state` | Significato |
+|---|---|
+| `working` | L'agente sta lavorando (segnale di lavoro a schermo, `BUSY_RE` di `submit-detection.ts`). |
+| `idle` | Fermo in attesa di input, casella vuota o testo da meno di 60 s. |
+| `waiting_permission` | Chiede un permesso: `Notification` del hook, oppure a schermo "Do you want to", "Allow", "trust this folder". |
+| `waiting_answer` | Pone una domanda (`AskUserQuestion` a schermo o `Notification`). |
+| `pending_input` | La casella del TUI ha testo (riga del prompt non vuota dopo il glifo `❯`/`>`, oppure `[Pasted text #N`) **e** nessun segnale di lavoro da almeno **60 s**. Prima dei 60 s resta `idle`. È il caso "testo scritto e mai inviato". |
+| `exited` | Il processo dell'agente è terminato. |
+
+`stateSince` per `pending_input` è l'istante in cui è **iniziato** l'episodio, non quello in cui sono scattati i 60 s: "TESTO FERMO da 12 min" si calcola da lì.
+
+Stati "fermi" (richiedono qualcuno): `pending_input`, `waiting_permission`, `waiting_answer`.
+
+## 12. `requests/` — richieste dal mod a Onda
+
+```
+$AB_HOME/onda/requests/req-<ts>-<rand>.json
+```
+
+Onda osserva la cartella (`fs.watch` + scansione all'avvio), consuma ogni `req-*.json` e **lo cancella** dopo averlo gestito (anche se la richiesta è invalida o il workspace non esiste: un file non consumato si accumulerebbe).
+
+```json
+{ "action": "mount", "workspaceId": "workspace-…" }
+```
+
+- Unica azione per ora: `mount`. Monta il workspace nella finestra attiva (o nella prima aperta) e mette a fuoco il pannello dell'agente.
+- `<ts>` è epoch in millisecondi, `<rand>` almeno 4 caratteri `[a-z0-9]`. Il mod scrive in modo atomico (tmp + rename) con il nome finale già `req-*.json`; i file temporanei **non** devono iniziare con `req-`.
+- Azioni ignote: Onda scarta e cancella.
+- Lo schema delle richieste è descritto in `onda-sessions.schema.json` (`$defs/request`).
+
+## 13. Evoluzione
+
+Un campo nuovo e opzionale non cambia `v`. Un campo che cambia significato, o un nuovo valore di `state` che un lettore vecchio non saprebbe trattare, alza `v`. Un lettore deve trattare un `state` sconosciuto come `idle`.
