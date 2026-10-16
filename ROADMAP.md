@@ -49,7 +49,7 @@ Let the conductor open workspaces and spawn teammates instead of pasting command
 Dual-GOD orchestration + TaskProvider layer + drain-on-Stop + harvest. See `PLAN-AGENT-TEAM-OS.md` §v2.0.
 
 - ✅ **Dual GOD**: `gods[]` in AGENT_MAP, per-agent `domain`/`god`. Semi-autonomous contract (`docs/agentic-v2/GOD-CONTRACT.md`): propose → confirm → dispatch.
-- ✅ **TaskProvider layer** (`scripts/agent-team-os-taskprovider.sh`): domain → provider routing (side→orbit, brandart→pmohub) + declared mapping per §6. Reference impls: Orbit + PMOHub (extended natively, separate repos).
+- ✅ **TaskProvider layer** (`scripts/agent-team-os-taskprovider.sh`): domain → provider routing (side→orbit; brandart senza provider dal 2026-10-01, PMOHub dismesso) + declared mapping per §6. Reference impl: Orbit (extended natively, separate repo).
 - ✅ **drain-on-Stop hook** (`hooks/agent-team-os-stop.sh`): blocks Stop on non-empty inbox, loop guard (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`). NOT auto-registered — gated, see `docs/agentic-v2/SETTINGS-DIFF.md`.
 - ✅ **harvest/telemetry** (`scripts/agent-team-os-harvest.sh`): token+cost per agent from `~/.claude/projects` JSONL, per-model pricing.
 - ⏳ TODO: VoiceInk ingestion wiring, GOD persona files import GOD-CONTRACT.

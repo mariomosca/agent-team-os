@@ -17,7 +17,7 @@
 AB_HOME="${AB_HOME:-$HOME/.agent-team-os}"
 AB_MAP="${AB_MAP:-$AB_HOME/AGENT_MAP.json}"
 
-# ab_task_domain <agent> → "side" | "brandart" | "" (unknown)
+# ab_task_domain <agent> → "side" | "brandart" | "global" | "lifeos" | "" (unknown)
 # Domain is read from AGENT_MAP agents[].domain, with a sensible fallback by god.
 ab_task_domain() {
   local agent="$1"
@@ -27,10 +27,10 @@ ab_task_domain() {
   echo "$dom"
 }
 
-# ab_task_provider <agent> → "orbit" | "pmohub" | "" (none)
+# ab_task_provider <agent> → "orbit" | "" (none)
 # Resolves the task provider for an agent's domain.
 #   side    → orbit
-#   brandart→ pmohub
+#   brandart→ (none) PMOHub dismesso il 2026-10-01: Leo lavora con agenda.md + PM Status
 ab_task_provider() {
   local agent="$1"
   [[ -z "$agent" ]] && return 0
@@ -40,7 +40,7 @@ ab_task_provider() {
   if [[ -n "$explicit" ]]; then echo "$explicit"; return 0; fi
   case "$(ab_task_domain "$agent")" in
     side)     echo "orbit" ;;
-    brandart) echo "pmohub" ;;
+    brandart) echo "" ;;   # PMOHub dismesso 2026-10-01: nessun provider
     *)        echo "" ;;
   esac
 }
@@ -65,6 +65,8 @@ ab_task_mapping() {
 JSON
       ;;
     pmohub)
+      # DEPRECATED 2026-10-01: PMOHub dismesso. Mapping tenuto solo come riferimento storico,
+      # nessun agente lo risolve piu' (ab_task_provider non restituisce mai "pmohub").
       cat <<'JSON'
 {
   "provider": "pmohub",

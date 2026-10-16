@@ -42,7 +42,7 @@ The `Stop` hook is copied by the installer but **NOT auto-registered** — it's 
 ## v2.0 — hive-GOD-agentic (optional layers)
 
 - **Dual GOD orchestration**: GOD agents (`gods[]` in AGENT_MAP) orchestrate a domain — they decompose, propose to the human, then dispatch. Contract: [docs/agentic-v2/GOD-CONTRACT.md](./docs/agentic-v2/GOD-CONTRACT.md). Semi-autonomous: propose → human confirms → dispatch.
-- **TaskProvider layer**: pluggable task manager per domain (`scripts/agent-team-os-taskprovider.sh`). `ab_task_provider <agent>` resolves the provider; `ab_task_mapping <provider>` returns the declared status/assignee/priority/dependsOn/meetingIngestion mapping. Reference impls: Orbit (side), PMOHub (brandart).
+- **TaskProvider layer**: pluggable task manager per domain (`scripts/agent-team-os-taskprovider.sh`). `ab_task_provider <agent>` resolves the provider; `ab_task_mapping <provider>` returns the declared status/assignee/priority/dependsOn/meetingIngestion mapping. Reference impl: Orbit (side). Brandart has no provider (PMOHub dismissed on 2026-10-01).
 - **drain-on-Stop hook**: keeps agents from closing with an unhandled inbox (opt-in, above).
 - **harvest/telemetry**: `scripts/agent-team-os-harvest.sh <cwd>` → token + USD cost per agent from `~/.claude/projects/*.jsonl`, per-model pricing.
 

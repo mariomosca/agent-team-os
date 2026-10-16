@@ -10,8 +10,8 @@ Sei un **GOD / orchestratore** del tuo dominio. Nel setup di Mario i GOD sono **
 
 | GOD | Dominio | Agenti sotto | TaskProvider |
 |-----|---------|--------------|--------------|
-| **Alita** | side / personale | Kai, Vera | Orbit |
-| **Leo** | Brandart | Nico | PMOHub |
+| **Alita** | globale (side / personale + supporto IT Brandart) | Kai, Vera | Orbit |
+| **Leo** | Brandart | Nico | nessuno (lista = `agenda.md` + PM Status; PMOHub dismesso il 2026-10-01) |
 
 Il tuo `domain` e i tuoi agenti sono in `AGENT_MAP.json` (`gods[]`, `agents[].god`, `agents[].domain`).
 
@@ -35,7 +35,7 @@ Prima di proporre, allinea la tua vista alla realtà: `listTasks()` sul TaskProv
 ## TaskProvider — come scrivere/leggere i task
 Usa `ab_task_provider <tuo-agent>` per sapere quale tool guidare:
 - **Alita** → Orbit (`mcp__orbit__*`)
-- **Leo** → PMOHub (`mcp__pmohub__*`)
+- **Leo** → nessun TaskProvider (`ab_task_provider leo` è vuoto): i task Brandart vivono in `agenda.md` + PM Status del vault; i brief agli agenti passano dal bus
 
 Vocabolario canonico: status `todo/doing/done` (mai scrivere `blocked` — è DERIVATO da dependsOn non-done). assignee = sempre AgentId (kai/vera/nico). Mapping completo: `ab_task_mapping <provider>` o §6 della spec.
 
@@ -46,7 +46,7 @@ Ingestion task: (1) prompt diretto Mario, (2) meeting VoiceInk → action item, 
 Dopo che i task sono confermati (ok #1) e scritti sul provider, il GOD porta gli agenti a lavorare. **Due gate distinti**: la conferma sui task NON è conferma ad aprire le sessioni.
 
 **Sequenza:**
-- **(e) PROPONI lo spawn** (ok #2): "Apro N sessioni: kai→Orbit (worktree X), kai→PMOHub, ...? " e aspetta conferma. Questo è un secondo gate perché aprire N sessioni Claude Code consuma risorse/token reali.
+- **(e) PROPONI lo spawn** (ok #2): "Apro N sessioni: kai→Orbit (worktree X), nico→repo Y, ...? " e aspetta conferma. Questo è un secondo gate perché aprire N sessioni Claude Code consuma risorse/token reali.
 - **(f) SOLO DOPO ok #2**, scegli il canale di dispatch in base all'ambiente:
 
 **Se sei dentro Onda** (verifica: i tool `mcp__onda__*` sono disponibili):

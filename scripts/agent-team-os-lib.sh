@@ -64,8 +64,9 @@ ab_detect_agent() {
   local rcwd
   rcwd=$(realpath "$cwd" 2>/dev/null || echo "$cwd")
   # Match against both raw and resolved path (rule may be written either way).
+  # Trailing "/" so the root of a rule like ".../07-Tooling/" matches too.
   jq -r --arg cwd "$cwd" --arg rcwd "$rcwd" '
-    .rules[] | select(.pattern as $p | ($cwd | startswith($p)) or ($rcwd | startswith($p))) | .agent
+    .rules[] | select(.pattern as $p | (($cwd + "/") | startswith($p)) or (($rcwd + "/") | startswith($p))) | .agent
   ' "$AB_MAP" 2>/dev/null | head -1
 }
 
@@ -531,6 +532,11 @@ ab_maybe_cc_hub() {
   dom_to=$(ab_agent_domain "$to")
   # Only cc on cross-domain traffic.
   [[ "$dom_from" == "$dom_to" ]] && return 0
+  # Isolated domains (cc_awareness.exclude_domains, e.g. lifeos): never cc the hub.
+  if jq -e --arg a "$dom_from" --arg b "$dom_to" \
+       '(.cc_awareness.exclude_domains // []) | any(. == $a or . == $b)' "$AB_MAP" >/dev/null 2>&1; then
+    return 0
+  fi
 
   # Build the cc-notify payload (references the original message, no response needed).
   local cc_id cc_ts cc_target cc_tmp cc_host

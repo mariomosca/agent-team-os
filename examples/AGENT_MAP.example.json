@@ -89,5 +89,5 @@
       "reason": "growth can talk to ops and dev"
     }
   },
-  "_v2_note": "v2.0 adds: gods[] (list of orchestrator agents), per-agent domain + god + optional task_provider. GOD agents drive a TaskProvider (orbit/pmohub) per domain. See PLAN-AGENT-TEAM-OS.md v2.0."
+  "_v2_note": "v2.0 adds: gods[] (list of orchestrator agents), per-agent domain + god + optional task_provider. GOD agents drive a TaskProvider (orbit) per domain. See PLAN-AGENT-TEAM-OS.md v2.0."
 }
