@@ -32,7 +32,8 @@ CWD="${CLAUDE_PROJECT_DIR:-$PWD}"
 AGENT=$(ab_detect_agent "$CWD" 2>/dev/null)
 # v1.4: scope this session by workspace slug, so two sessions of the same agent
 # (e.g. two Kai) keep separate inboxes, cursors and registry entries.
-AB_SESSION_SLUG=$(ab_slug_for_cwd "$CWD")
+# una sessione che ha gia' il suo slug (es. copia di un agente nello stesso workspace) lo tiene
+AB_SESSION_SLUG="${AB_SESSION_SLUG:-$(ab_slug_for_cwd "$CWD")}"
 export AB_SESSION_SLUG
 [[ -z "$AGENT" ]] && exit 0
 
