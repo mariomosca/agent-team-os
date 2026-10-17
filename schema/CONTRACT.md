@@ -273,3 +273,50 @@ Un campo nuovo e opzionale non cambia `v`. Un campo che cambia significato, o un
 - `registry/<agent>.d/<slug>.json` ha `host` quando l'host è configurato. Unico scrittore resta l'hook (o l'MCP) della macchina dove gira la sessione; l'altra macchina legge e basta.
 - Messaggio: `context.host` = macchina del mittente (additivo, `version` resta `"1.0"`). Risposta a `from@context.host[/slug di from_session]` (`ab_reply_address`, `Bus.reply_address`).
 
+
+---
+
+# Esiti attesi e sveglia (bus v2.6, 17 ott 2026)
+
+> Brief: `~/work-hub/plans/BRIEF-KAI-bus-hook-di-ritorno.md` · Piano: `plans/architettura-tool-ott-2026/PIANO.md` F4.
+> Schema: [`bus-wait.schema.json`](./bus-wait.schema.json), campi `task_id` e `wake_chain` in [`bus-message.schema.json`](./bus-message.schema.json).
+
+Problema: un `bus_send` a una sessione viva ma idle resta in casella finché qualcuno non la sveglia a mano.
+
+## 18. Atteso
+
+- Chi delega crea un `task_id` e lo registra come atteso sulla propria sessione: `waits/<agent>/@<slug>/<task_id>.json`, `state: expected`. Strade: `bus_send(expect_result=true)`, `bus_expect` (delega via `onda_agent_prompt`: restituisce la riga da mettere in fondo al prompt), `ab_expect` nella lib.
+- L'atteso registra come raggiungere il prompt della sessione, preso dal suo ambiente: `ONDA_TERMINAL_ID`, `CLAUDE_CODE_SESSION_ID`, `TMUX_PANE` (l'MCP stdio eredita l'ambiente della sessione).
+- **Un task_id, un solo atteso su tutto il bus**: una seconda registrazione dello stesso id è rifiutata.
+- Chi esegue risponde con `type: response` e lo stesso `task_id`. Con `in_reply_to` il `task_id` si eredita da solo (MCP e lib); `bus_read` di un messaggio con `task_id` porta `_task_hint` con la chiamata giusta.
+
+## 19. Sveglia
+
+`scripts/agent-team-os-wake.py` (python3 di sistema, solo stdlib), un giro ogni 10 s da launchd (`install.sh --sveglia`) e subito dopo l'invio di un messaggio con `task_id` (MCP e lib lo lanciano in background). Lock `locks/wake.lock`. Per ogni atteso `expected` della propria macchina:
+
+1. Cerca nella casella della sessione e in quella condivisa (archivi compresi, solo file più recenti dell'atteso) un messaggio con lo stesso `task_id`, escluso quello scritto dalla sessione stessa.
+2. Già in `.read/` o `.done/` → `seen`: l'ha letto da sola, niente sveglia.
+3. Con `wake_chain` → `blocked`.
+4. Altrimenti scrive nel prompt, una riga: `Esito del task <id> (<descrizione>) arrivato da <mittente>: leggilo con bus_read <msg> e prosegui.` Riuscito → `woken`, scritto **prima** di ogni altra cosa. Non riuscito → resta `expected` con `pending_wake.reason`, si riprova al giro dopo.
+5. Senza esito e oltre `deadline` → `expired` e un messaggio `type: event`, `intent: task-scaduto`, senza `task_id`, nella casella di chi aspetta. Una volta.
+
+### Canali
+
+| Canale | Quando | Controllo "è idle" |
+|---|---|---|
+| Onda | la sessione è in `onda/sessions.json` (per `claude_session_id`, poi `onda_terminal_id`, poi agent+slug), `ondaPid` vivo, file scritto da ≤ 60 s | `state == idle`, `hasText == false`, `stateSince` ≥ 5 s; poi `agent.prompt` con `onlyIfIdle: true`, che Onda rifiuta (`errorCode: not_idle`, `reason: busy\|has_text\|asking\|no_session`) senza scrivere un byte se nel frattempo è cambiato qualcosa. Controllo e scrittura stanno nello stesso tratto sincrono del main di Onda. |
+| tmux | nessuna sessione Onda, `target.tmux_pane` noto (Mac mini) | `capture-pane` dello schermo renderizzato: niente segnale di lavoro (`BUSY_RE`), niente domanda, casella vuota (porting di `readPromptBox`); poi `send-keys -l` + `Enter`. |
+
+Un Onda che non scrive `hasText` non ha la guardia: la sveglia **non scrive** (`pending_wake.reason: onda_senza_guardia`) finché Onda non viene aggiornato. Il caso "Mario sta scrivendo" non ammette eccezioni.
+
+### Le tre regole
+
+- **Solo idle**: lavoro in corso, domanda all'umano, testo nella casella (anche da meno di 60 s) rimandano la sveglia; si riprova ogni 10 s. Se intanto la sessione legge l'esito da sola, l'atteso diventa `seen`.
+- **Una sveglia per task**: `expected → woken` e mai indietro; un secondo esito dello stesso task non sveglia.
+- **Niente catene**: dopo una sveglia lo script scrive `waits/<agent>/@<slug>/.woken.json`; per `AB_WAKE_CHAIN_MIN` minuti (30) ogni messaggio spedito da quella sessione porta `wake_chain` e non sveglia nessuno (profondità 1). Più il tetto: `AB_WAKE_MAX_PER_HOUR` (6) sveglie per sessione all'ora, oltre si rimanda (`tetto_orario`).
+
+## 20. Visibilità
+
+- `bus_waits` (MCP) e `agent-team-os-wake.py list` elencano gli attesi.
+- bus-band 2.3: sezione **Aspetto** (`Aspetto 2 esiti`, chi, cosa, da quanto; `esito arrivato, sveglia rimandata (lavori)`; `SCADUTO` in testo, mai solo colore), toast una volta alla scadenza.
+- Log: `logs/sveglia.log`, una riga per cambio di stato (sveglia, rimando con motivo nuovo, visto, bloccato, scaduto).

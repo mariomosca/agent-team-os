@@ -33,6 +33,7 @@
         "lastTool": { "type": ["string", "null"] },
         "lastTarget": { "type": ["string", "null"], "description": "Target of the last tool, relative to cwd. Never file contents." },
         "mounted": { "type": "boolean", "description": "The workspace is in the mosaic of an open window." },
+        "hasText": { "type": ["boolean", "null"], "description": "Optional (bus v2.6). The prompt box holds text right now, even typed less than 60 s ago (stricter than pending_input). null when the screen is not read (pane not mounted, stale report). Its presence also tells a reader that agent.prompt accepts onlyIfIdle: the wake script refuses to inject into an Onda without it." },
         "windowId": { "type": ["string", "null"], "description": "Hosting window; null when mounted is false." },
         "host": { "type": "string", "description": "Machine the session runs on. Today always 'laptop'." }
       }

@@ -99,6 +99,26 @@
           "description": "v1.2 workspace filter: the message is about this folder."
         }
       }
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$",
+      "description": "Optional (v2.6). Id of a delegated task. On the delegation: the id the sender waits for (waits/, see bus-wait.schema.json). On the result (type response): the same id, which wakes the waiting session once if it is idle. A reply written with in_reply_to inherits it."
+    },
+    "wake_chain": {
+      "type": "object",
+      "description": "Optional (v2.6). Stamped by the sender when its session was woken by the bus in the last AB_WAKE_CHAIN_MIN minutes (default 30). A message carrying it never wakes anyone: depth 1 per chain.",
+      "properties": {
+        "task_id": {
+          "type": "string"
+        },
+        "at": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        }
+      }
     }
   }
 }

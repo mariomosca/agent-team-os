@@ -21,6 +21,9 @@
 #                       remote host: with --host <name>, or with $AB_HOME/HOST set
 #                       to a host that is not the hub.
 #   --custode --uninstall   remove the custode (job + script). Nothing else.
+#   --sveglia           install the wake (README "La sveglia", bus v2.6): a launchd job
+#                       every 10 s that wakes an idle session when the result it waits
+#                       for arrives. On every machine that runs sessions.
 #
 # Env: CLAUDE_HOME (default ~/.claude, e.g. ~/.config/claude-mini), AB_HOME
 # (default ~/.agent-team-os), LAUNCH_AGENTS_DIR (default ~/Library/LaunchAgents),
@@ -36,6 +39,7 @@ HOST_NAME=""
 HOST_SYNC=0
 REGISTER_HOOKS=0
 CUSTODE=0
+SVEGLIA=0
 UNINSTALL=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -44,6 +48,7 @@ while [[ $# -gt 0 ]]; do
     --host-sync) HOST_SYNC=1; shift ;;
     --register-hooks) REGISTER_HOOKS=1; shift ;;
     --custode) CUSTODE=1; shift ;;
+    --sveglia) SVEGLIA=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "Unknown option: $1 (see --help)"; exit 1 ;;
@@ -118,8 +123,9 @@ echo "Copying v2.0 modules → $CLAUDE_HOME/scripts/"
 cp "$REPO_DIR/scripts/agent-team-os-taskprovider.sh" "$CLAUDE_HOME/scripts/agent-team-os-taskprovider.sh"
 cp "$REPO_DIR/scripts/agent-team-os-harvest.sh"      "$CLAUDE_HOME/scripts/agent-team-os-harvest.sh"
 cp "$REPO_DIR/scripts/agent-team-os-collect.sh"      "$CLAUDE_HOME/scripts/agent-team-os-collect.sh"
+cp "$REPO_DIR/scripts/agent-team-os-wake.py"         "$CLAUDE_HOME/scripts/agent-team-os-wake.py"
 chmod +x "$CLAUDE_HOME/scripts/agent-team-os-taskprovider.sh" "$CLAUDE_HOME/scripts/agent-team-os-harvest.sh" \
-         "$CLAUDE_HOME/scripts/agent-team-os-collect.sh"
+         "$CLAUDE_HOME/scripts/agent-team-os-collect.sh" "$CLAUDE_HOME/scripts/agent-team-os-wake.py"
 
 echo "Copying hooks → $CLAUDE_HOME/hooks/"
 cp "$REPO_DIR/hooks/agent-team-os-load.sh"   "$CLAUDE_HOME/hooks/agent-team-os-load.sh"
@@ -266,6 +272,44 @@ PLIST
       launchctl bootstrap "gui/$(id -u)" "$PLIST" && echo "  loaded ($LABEL)"
     fi
   done
+fi
+
+# --- v2.6: the wake, every 10 s on each machine that runs sessions ---
+
+if [[ "$SVEGLIA" -eq 1 ]]; then
+  W_LABEL="com.agent-team-os.sveglia"
+  W_PLIST="$LA_DIR/${W_LABEL}.plist"
+  mkdir -p "$LA_DIR" "$BUS_HOME/logs" "$BUS_HOME/waits"
+  cat > "$W_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${W_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>-I</string>
+    <string>${CLAUDE_HOME}/scripts/agent-team-os-wake.py</string>
+    <string>tick</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>AB_HOME</key><string>${BUS_HOME}</string>
+  </dict>
+  <key>StartInterval</key><integer>10</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/dev/null</string>
+  <key>StandardErrorPath</key><string>${BUS_HOME}/logs/sveglia-errori.log</string>
+</dict>
+</plist>
+PLIST
+  echo "Wake → $W_PLIST (every 10 s, log $BUS_HOME/logs/sveglia.log)"
+  if [[ "${AB_NO_LAUNCHCTL:-0}" != "1" ]] && command -v launchctl >/dev/null 2>&1; then
+    launchctl bootout "gui/$(id -u)/${W_LABEL}" 2>/dev/null || true
+    launchctl bootstrap "gui/$(id -u)" "$W_PLIST" && echo "  loaded ($W_LABEL)"
+  fi
 fi
 
 # --- Custode: launchd job at 7:00 on the remote host ---

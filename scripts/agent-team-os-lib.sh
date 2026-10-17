@@ -340,6 +340,8 @@ ab_write_message() {
   #   AB_CONTEXT_REFS_JSON (JSON array, default [])
   #   AB_REQUIRES_RESPONSE (true|false, default false)
   #   AB_RESPONSE_BY (iso, optional)
+  #   AB_TASK_ID (optional, v2.6: id of a delegated task; inherited from
+  #     AB_IN_REPLY_TO when that message carries one)
   # Echoes the new msg-id on success.
   local from="${AB_FROM:?AB_FROM required}"
   local to="${AB_TO:?AB_TO required}"
@@ -354,6 +356,22 @@ ab_write_message() {
   local refs="${AB_CONTEXT_REFS_JSON:-[]}"
   local req_resp="${AB_REQUIRES_RESPONSE:-false}"
   local resp_by="${AB_RESPONSE_BY:-}"
+
+  # v2.6: a reply to a delegated task carries its id, so the waiter gets woken.
+  local task_id="${AB_TASK_ID:-}" orig
+  if [[ -z "$task_id" && -n "$in_reply_to" ]]; then
+    orig=$(ab_resolve_msg_path "$from" "$in_reply_to" 2>/dev/null) \
+      && task_id=$(jq -r '.task_id // .payload.task_id // empty' "$orig" 2>/dev/null)
+  fi
+  # A session woken in the last AB_WAKE_CHAIN_MIN minutes stamps what it sends:
+  # the wake script never lets such a message wake anyone (depth 1 per chain).
+  local chain='null' from_slug woken
+  from_slug="${AB_SESSION_SLUG:-$(ab_slug_for_cwd "$PWD")}"
+  woken="$AB_HOME/waits/$from/@$from_slug/.woken.json"
+  if [[ -s "$woken" ]] && (( $(ab_file_age "$woken") <= ${AB_WAKE_CHAIN_MIN:-30} * 60 )); then
+    chain=$(jq -c --arg s "$from/$from_slug" '{task_id, at, session: $s}' "$woken" 2>/dev/null) || chain='null'
+    [[ -z "$chain" ]] && chain='null'
+  fi
 
   # v1.4: `to` may be "agent" or "agent/slug". The slug picks one live session;
   # the message JSON keeps the bare agent name so readers and threads are unchanged.
@@ -451,6 +469,8 @@ ab_write_message() {
     --arg resp_by "$resp_by" \
     --arg ts "$ts" \
     --arg host "$self_host" \
+    --arg task "$task_id" \
+    --argjson chain "$chain" \
     '{
       id: $id,
       version: "1.0",
@@ -466,7 +486,9 @@ ab_write_message() {
       requires_response: $req,
       response_by: (if $resp_by == "" then null else $resp_by end),
       ts: $ts
-    } + (if $host == "" then {} else {context: {host: $host}} end)' > "$tmp"
+    } + (if $host == "" then {} else {context: {host: $host}} end)
+      + (if $task == "" then {} else {task_id: $task} end)
+      + (if $chain == null then {} else {wake_chain: $chain} end)' > "$tmp"
 
   # -s too: jq exits 0 on an empty file, which is what a failed build leaves.
   if ! [[ -s "$tmp" ]] || ! jq empty "$tmp" 2>/dev/null; then
@@ -501,7 +523,41 @@ ab_write_message() {
   # notify in the hub inbox so the hub keeps visibility without gatekeeping.
   ab_maybe_cc_hub "$from" "$to" "$msg_id" "$thread_id" "$type" "$intent" "$priority"
 
+  # A result for a waiting session: one wake round now, not at the next tick.
+  [[ -n "$task_id" && -z "$to_host" ]] && ab_wake_kick
+
   echo "$msg_id"
+}
+
+# ---------- v2.6: expected results and the wake ----------
+
+ab_wake_script() {
+  local d
+  d="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  printf '%s/agent-team-os-wake.py' "$d"
+}
+
+ab_wake_kick() {
+  # Fire and forget: a missing script only costs the latency of the launchd tick.
+  local s; s=$(ab_wake_script)
+  [[ -f "$s" ]] || return 0
+  ( /usr/bin/python3 -I "$s" tick >/dev/null 2>&1 & ) 2>/dev/null
+  return 0
+}
+
+ab_expect() {
+  # Register a result this session waits for. Echoes the task_id.
+  # Args: description, [delegated_to], [deadline ISO], [task_id]
+  # The session's pane comes from the environment (ONDA_TERMINAL_ID, TMUX_PANE).
+  local agent slug
+  agent="${AB_AGENT:-$(ab_detect_agent "$PWD")}"
+  [[ -n "$agent" ]] || { echo "ERROR: workspace not mapped to any agent" >&2; return 1; }
+  slug="${AB_SESSION_SLUG:-$(ab_slug_for_cwd "$PWD")}"
+  local args=(expect --agent "$agent" --slug "$slug" --description "$1")
+  [[ -n "${2:-}" ]] && args+=(--to "$2")
+  [[ -n "${3:-}" ]] && args+=(--deadline "$3")
+  [[ -n "${4:-}" ]] && args+=(--task-id "$4")
+  AB_HOME="$AB_HOME" /usr/bin/python3 -I "$(ab_wake_script)" "${args[@]}"
 }
 
 # ---------- Cross-domain cc-awareness ----------

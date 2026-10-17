@@ -1,0 +1,10 @@
+#!/bin/bash
+# tmux finto per tests/test_wake.py: capture-pane stampa $FAKE_TMUX_DIR/screen,
+# send-keys accoda gli argomenti in $FAKE_TMUX_DIR/sent (e svuota lo schermo).
+D="${FAKE_TMUX_DIR:?}"
+case "$1" in
+  capture-pane) [[ -f "$D/screen" ]] && cat "$D/screen" || exit 1 ;;
+  send-keys) shift; echo "$*" >> "$D/sent"
+             [[ "$*" == *Enter ]] && printf '✻ Working… (1s · esc to interrupt)\n' > "$D/screen"; exit 0 ;;
+  *) exit 0 ;;
+esac
