@@ -121,6 +121,15 @@ Exit codes:
 - 3 = lock failed (retry in a few seconds)
 - 4 = malformed JSON
 
+Delegating a task whose result you will wait for (v2.6): prefer the MCP `bus_send(..., expect_result=true)`. With the helper, register first and pass the id:
+
+```bash
+TASK=$(ab_expect "<what you wait for>" "<to>" "<deadline ISO, optional>")
+AB_TASK_ID="$TASK" ... MSG_ID=$(ab_write_message)
+```
+
+When the result arrives and this session is idle, the bus wakes it once with a line in the prompt. Executing a delegated task that carries a `task_id`: answer with `type: response` and the same `task_id` (`AB_IN_REPLY_TO=<msg-id>` carries it).
+
 ### Step 8 — Confirm and suggest next
 
 After a successful send:

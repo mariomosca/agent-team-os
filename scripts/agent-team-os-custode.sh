@@ -194,7 +194,7 @@ check_mcp() {
   fi
   local names want missing="" n
   names=$(jq -Rr 'fromjson? | select(.id == 2) | .result.tools[]?.name' "$w/out" | sort -u)
-  for want in bus_archive bus_inbox bus_read bus_send bus_status bus_thread; do
+  for want in bus_archive bus_expect bus_inbox bus_read bus_send bus_status bus_thread bus_waits; do
     printf '%s\n' "$names" | grep -qx "$want" || missing="$missing $want"
   done
   n=$(printf '%s\n' "$names" | grep -c . )
