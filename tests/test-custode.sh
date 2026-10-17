@@ -75,7 +75,7 @@ ck "status ok" "$(jq -r .status "$J")" "ok"
 ck "host nel json" "$(jq -r .host "$J")" "mini"
 ck "nessun Telegram" "$([[ -s $CURL_LOG ]] && echo inviato || echo silenzio)" "silenzio"
 ck "claude con la config del mini" "$(grep -c "^$CFG -p Rispondi solo: OK --model haiku" "$CLAUDE_LOG")" "1"
-ck "bus-mcp: 6 tool" "$(de bus-mcp)" "6 tool"
+ck "bus-mcp: 8 tool" "$(de bus-mcp)" "8 tool"
 ck "python ok" "$(st python)" "ok"
 ck "fresh aggiornato" "$(head_of "$OK/01-Building/fresh")" "$(git -C "$U/fresh.git" rev-parse main)"
 ck "riga repo" "$(de repo | grep -c '01-Building/fresh aggiornato (2 commit)')" "1"
@@ -149,7 +149,7 @@ rc=$(custode FAKE_MCP_MODE=broken)
 ck "server rotto: fail" "$(st bus-mcp)" "fail"
 ck "con l'ultima riga di stderr" "$(de bus-mcp | grep -c 'beartype')" "1"
 rc=$(custode FAKE_MCP_MODE=few)
-ck "tool mancanti nominati" "$(de bus-mcp)" "4 tool, mancano: bus_archive bus_thread"
+ck "tool mancanti nominati" "$(de bus-mcp)" "4 tool, mancano: bus_archive bus_expect bus_thread bus_waits"
 rc=$(custode FAKE_UV_PYTHON=3.15.0)
 ck "Python 3.15: fail" "$(st python)" "fail"
 rm "$MCP/.python-version"

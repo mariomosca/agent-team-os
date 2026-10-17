@@ -16,7 +16,7 @@ if [[ "$args" == *"agent_bus_mcp.server"* ]]; then
     echo "ImportError: cannot import name 'beartype' (Python 3.15)" >&2
     exit 1
   fi
-  tools='["bus_archive","bus_inbox","bus_read","bus_send","bus_status","bus_thread"]'
+  tools='["bus_archive","bus_expect","bus_inbox","bus_read","bus_send","bus_status","bus_thread","bus_waits"]'
   [[ "${FAKE_MCP_MODE:-ok}" == few ]] && tools='["bus_inbox","bus_read","bus_send","bus_status"]'
   echo "fastmcp banner" >&2
   while IFS= read -r line; do

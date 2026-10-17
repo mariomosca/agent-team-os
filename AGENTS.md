@@ -37,6 +37,7 @@ The `Stop` hook is copied by the installer but **NOT auto-registered** — it's 
 - **Message schema (v1.1)**: `{ id, version, from, to, thread_id, in_reply_to, type, intent, priority, delivery, payload, context_refs, requires_response, ts }`.
 - **Reply in-thread**: `/reply <msg-id> <type>` (type = accept|decline|response|confirm).
 - **Two machines (v2.5)**: address `agent@host[/slug]` (e.g. `kai@mini/crewmoor`). Laptop → mini goes over SSH (queued in `outbox/<host>/` if down); mini → laptop waits in the mini's `outbox/laptop/` until the laptop collects. `/bus` shows both machines. See README "Two machines".
+- **Delegating with a result to wait for (v2.6)**: `bus_send(expect_result=true)` or `bus_expect` → `task_id`; the executor answers `type: response` with the same `task_id`; when it arrives and the waiting session is idle, `scripts/agent-team-os-wake.py` writes one line into its prompt (Onda or tmux), once. See README "La sveglia".
 - **Slash commands**: `/bus` (roster), `/inbox`, `/read <id>`, `/send`, `/reply`, `/handoff`, `/thread`.
 
 ## v2.0 — hive-GOD-agentic (optional layers)
@@ -54,6 +55,9 @@ The `Stop` hook is copied by the installer but **NOT auto-registered** — it's 
 | `scripts/agent-team-os-taskprovider.sh` | v2 TaskProvider routing + mapping |
 | `scripts/agent-team-os-harvest.sh` | v2 token/cost telemetry |
 | `scripts/agent-team-os-collect.sh` | v2.5 one collection round with the other machines (launchd runs it) |
+| `scripts/agent-team-os-wake.py` | v2.6 the wake: expected results, one wake per task into an idle session (`install.sh --sveglia`) |
+| `schema/bus-wait.schema.json` | v2.6 expected-result file `waits/<agent>/@<slug>/<task_id>.json` |
+| `tests/test_wake.py` | wake tests, fake Onda socket and fake tmux (`python3 -I tests/test_wake.py`) |
 | `scripts/agent-team-os-custode.sh` | the custode: daily health check of a remote host, report + Telegram (`install.sh --custode`) |
 | `schema/bus-message.schema.json` | message schema (incl. v2.5 `context.host`) |
 | `tests/test-hosts.sh` | v2.5 two-machine tests with a fake `ssh` (`tests/fake-ssh/`) |

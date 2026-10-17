@@ -253,7 +253,7 @@ The machine that stays on runs agents with nobody watching, so when it breaks no
 | Check | ok / warn / fail |
 |---|---|
 | `claude` | `claude -p "Rispondi solo: OK" --model haiku` with the host's `CLAUDE_CONFIG_DIR`, 120 s. **fail** on no answer or "login"/"expired" in the output |
-| `bus-mcp` | the `agent-bus` server (command read from `$CLAUDE_CONFIG_DIR/.claude.json`, as Claude Code starts it) answers `initialize` + `tools/list` with its 6 tools. **fail** with the last stderr line or the missing tools |
+| `bus-mcp` | the `agent-bus` server (command read from `$CLAUDE_CONFIG_DIR/.claude.json`, as Claude Code starts it) answers `initialize` + `tools/list` with its 8 tools (v2.6: bus_expect, bus_waits). **fail** with the last stderr line or the missing tools |
 | `python` | the Python `uv` resolves in the server folder: **fail** if >= 3.15, **warn** if `.python-version` is missing |
 | `coda` | messages waiting in `outbox/<hub>/`: **warn** older than 1 h, **fail** older than 24 h (the laptop has not collected) |
 | `identita` | `HOST` set, `AGENT_MAP.json` valid, `hosts.<HOST>` present |
@@ -273,6 +273,20 @@ jq '.status, (.checks[] | select(.status != "ok"))' ~/.agent-team-os/hosts/self/
 ```
 
 Exit code `0` ok, `1` warn, `2` fail. `hosts/self/custode.json` is `{at, host, status, checks: [{name, status, detail, fix}], notify: {sent, note}}`, fails first, written atomically. Log in `~/.agent-team-os/logs/custode.log`. On the hub (no `HOST`, or `HOST` = the hub) it says so and exits 0.
+
+## La sveglia: esiti attesi (v2.6)
+
+A message to a session that is alive but idle used to wait in the inbox until somebody woke that session by hand. Now whoever delegates registers a `task_id` as *expected* on its own session; when the result with that `task_id` lands in its inbox and the session is idle, the bus writes one line into its prompt — once:
+
+```
+Esito del task t-20261017-j2mjbt (prova sveglia F4) arrivato da kai/f3: leggilo con bus_read msg-… e prosegui.
+```
+
+- **Delegate**: `bus_send(..., expect_result=true)` (returns the `task_id`), or `bus_expect(description, delegated_to)` when the work goes out another way (e.g. `onda_agent_prompt`: append the returned `prompt_line`). Bash: `ab_expect "<description>" <to> [deadline]`, then `AB_TASK_ID=<id>` on `ab_write_message`.
+- **Answer**: `message_type='response'` with the same `task_id`. Replying with `in_reply_to` carries it automatically; `bus_read` of a delegation shows `_task_hint`.
+- **Rules**: only an idle session is written to (never while it works, asks, or has text in the prompt box, even typed seconds ago); one wake per task; a message sent by a session within 30 min of its own wake carries `wake_chain` and wakes nobody (depth 1); a `task_id` has one waiter bus-wide; at most 6 wakes per session per hour. Past `deadline` with no result: one `task-scaduto` notice in the waiter's inbox, no wake.
+- **Channels**: Onda (`agent.prompt` with `onlyIfIdle`; needs an Onda that writes `hasText` in `sessions.json`, otherwise the wake waits) and tmux (`capture-pane` + `send-keys`, for the Mac mini).
+- **Where**: `scripts/agent-team-os-wake.py` (system python3, stdlib), every 10 s via launchd (`./install.sh --sveglia`; on a host with no GUI login, the headless mini, it goes into crontab), plus one round right after a result is sent. Files `waits/<agent>/@<slug>/<task_id>.json` ([schema](schema/bus-wait.schema.json)), log `logs/sveglia.log`. Visible with `bus_waits` and in the bus-band ("Aspetto 2 esiti"). Contract: [CONTRACT.md §18-20](schema/CONTRACT.md).
 
 ## Example: define your agents
 

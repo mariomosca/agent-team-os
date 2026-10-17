@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { BusMessage, BusSnapshot, TeamSnapshot } from '../types'
+import type { BusMessage, BusSnapshot, TeamSnapshot, WaitsSnapshot } from '../types'
 import {
   PRIORITY_LABEL,
   agentForCwd,
@@ -22,6 +22,8 @@ import {
   toRow,
   toastText,
 } from './team'
+import { orderWaits, parseWait, toWaitRow, waitsHeadline } from './waits'
+import type { Wait } from './waits'
 
 const snapshot = atom({ plugin: 'bus-band', key: 'snapshot' } as const, null)
 const isHidden = atom({ plugin: 'bus-band', key: 'isHidden' } as const, false)
@@ -29,9 +31,12 @@ const isHidden = atom({ plugin: 'bus-band', key: 'isHidden' } as const, false)
 const team = atom({ plugin: 'bus-band', key: 'team' } as const, null)
 const isTeamHidden = atom({ plugin: 'bus-band', key: 'isTeamHidden' } as const, false)
 
+const waits = atom({ plugin: 'bus-band', key: 'waits' } as const, null)
+
 const POLL_MS = 20_000
 const SHOWN = 3
 const TEAM_SHOWN = 4
+const WAITS_SHOWN = 3
 
 const busRoot = async ($: EngineInterface) => {
   const busHome = await $.env.get('AB_HOME')
@@ -70,6 +75,35 @@ const scanTeam = async ($: EngineInterface): Promise<TeamSnapshot | null> => {
     rows: rows.slice(0, TEAM_SHOWN),
     hidden: Math.max(0, rows.length - TEAM_SHOWN),
     sessions: others,
+  }
+}
+
+// The results this session waits for (bus v2.6). Null when there are none.
+const scanWaits = async ($: EngineInterface): Promise<WaitsSnapshot | null> => {
+  const root = await busRoot($)
+  if (root === null) return null
+  const cwd = await $.session.cwd()
+  const map = JSON.parse(await $.fs.read(`${root}/AGENT_MAP.json`))
+  const agent = agentForCwd(map.rules ?? [], cwd)
+  if (agent === undefined) return null
+  const dir = `${root}/waits/${agent}/@${slugForCwd(cwd)}`
+  if (!(await $.fs.exists(dir))) return null
+
+  const found: Wait[] = []
+  for (const entry of await $.fs.list(dir)) {
+    if (entry.kind !== 'file' || !/^[^.].*\.json$/.test(entry.name)) continue
+    const w = parseWait(await $.fs.read(`${dir}/${entry.name}`))
+    if (w !== null) found.push(w)
+  }
+  const now = Date.now()
+  const ordered = orderWaits(found, now)
+  if (ordered.length === 0) return null
+
+  return {
+    headline: waitsHeadline(ordered),
+    rows: ordered.slice(0, WAITS_SHOWN).map(w => toWaitRow(w, now)),
+    hidden: Math.max(0, ordered.length - WAITS_SHOWN),
+    expired: ordered.filter(w => w.state === 'expired').map(w => w.taskId),
   }
 }
 
@@ -129,6 +163,19 @@ let seen: Set<string> | null = null
 // Stuck episodes already announced (session:state), so a toast fires once per episode.
 let seenStuck: Set<string> | null = null
 
+// Expired waits already announced, so the deadline toasts once.
+let seenExpired: Set<string> | null = null
+
+async function refreshWaits($: EngineInterface) {
+  const next = await scanWaits($).catch(() => null)
+  const expired = next?.expired ?? []
+  const fresh = seenExpired === null ? [] : expired.filter(id => !seenExpired!.has(id))
+  seenExpired = new Set(expired)
+
+  await update($, waits, () => next)
+  if (fresh.length > 0) $.ui.toast(`Bus: nessun esito entro la scadenza per ${fresh.join(', ')}`)
+}
+
 async function refreshTeam($: EngineInterface) {
   const next = await scanTeam($).catch(() => null)
   const keys = stuckKeys(next?.sessions ?? [])
@@ -142,6 +189,7 @@ async function refreshTeam($: EngineInterface) {
 
 async function refresh($: EngineInterface) {
   await refreshTeam($)
+  await refreshWaits($)
   const next = await scan($)
   const ids = new Set(next?.messages.map(m => m.id) ?? [])
   const fresh = seen === null ? [] : (next?.messages ?? []).filter(m => !seen!.has(m.id))
@@ -195,7 +243,10 @@ export const register: Register = on => {
     const squadra = await read($, team)
     const showTeam = squadra !== null && !(await read($, isTeamHidden))
     const showMessages = snap !== null && snap.messages.length > 0
-    const isQuiet = e.props.hasSurvey || (!showMessages && !showTeam) || (await read($, isHidden))
+    const attese = await read($, waits)
+    const showWaits = attese !== null
+    const isQuiet =
+      e.props.hasSurvey || (!showMessages && !showTeam && !showWaits) || (await read($, isHidden))
 
     if (isQuiet) return next(e)
 
@@ -204,6 +255,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         {showMessages ? messagesBlock($, snap, Box, Button, Text) : null}
+        {showWaits ? waitsBlock(attese, Box, Text) : null}
         {showTeam ? teamBlock($, squadra, Box, Button, Text) : null}
       </Box>
     )
@@ -241,6 +293,19 @@ const messagesBlock = (
     </Box>
   )
 }
+
+const waitsBlock = (attese: WaitsSnapshot, Box: Els['Box'], Text: Els['Text']) => (
+  <Box flexDirection="column">
+    <Text bold>{attese.headline}</Text>
+    {attese.rows.map(r => (
+      <Text key={r.key} dimColor={!r.alert} bold={r.alert} wrap="truncate-end">
+        {r.alert ? '!! ' : '   '}
+        {r.text}
+      </Text>
+    ))}
+    {attese.hidden > 0 ? <Text dimColor>   +{attese.hidden}, bus_waits per la lista</Text> : null}
+  </Box>
+)
 
 const teamBlock = (
   $: EngineInterface,

@@ -17,6 +17,18 @@ Bus alita/work-hub: 2 in attesa, 1 urgenti o alta (+1 di altri workspace)  [Nasc
 - Read-only on messages: it never moves, archives or writes a message (the only thing it ever writes is the Onda request file above). `/read`, `/inbox` and the MCP tools stay the way to act on them.
 - Honours `AB_HOME` like the shell lib (default `~/.agent-team-os`).
 
+## Aspetto (v2.3)
+
+```
+Aspetto 2 esiti, 1 scaduto
+!! SCADUTO kai/f3: spike orbit
+   nico/b1: refactor login, da 12 min
+   leo: report licenze, esito arrivato, sveglia rimandata (lavori)
+```
+
+- Source: `$AB_HOME/waits/<agent>/@<slug>/*.json`, the results this session waits for (bus v2.6, README "La sveglia"). Expected ones, plus expired ones for a day.
+- A postponed wake says why, in words. `SCADUTO` is spelled out. A toast once when a wait expires.
+
 ## Squadra (v2.2)
 
 ```
@@ -57,7 +69,7 @@ Mods are not sandboxed: they run with Claude Code's own access. This one reads `
 
 ```bash
 claude plugin validate mods/bus-band   # manifest, hooks, calls, state contract
-claude plugin test mods/bus-band       # hooks/bus.test.ts and hooks/team.test.ts: cwd→agent, slug, scoping, sort, sessions.json parse, team order, self exclusion
+claude plugin test mods/bus-band       # hooks/bus.test.ts, hooks/team.test.ts and hooks/waits.test.ts: cwd→agent, slug, scoping, sort, sessions.json parse, team order, self exclusion
 ```
 
 The pure bus logic lives in `hooks/bus.ts` (mirrors `scripts/agent-team-os-lib.sh`); `hooks/register.tsx` holds the hooks and the drawing; `hooks/team.ts` is the pure team logic. Known gap: the shell lib also matches the `realpath` of the cwd; the mod matches the cwd Claude Code reports, which is already resolved in practice.

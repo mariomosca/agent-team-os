@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mariomosca/agent-team-os/schema/bus-wait.schema.json",
+  "title": "bus wait (expected result)",
+  "description": "Bus v2.6. One file $AB_HOME/waits/<agent>/@<slug>/<task_id>.json per delegated task whose result a session waits for, written atomically (tmp + rename). Created by whoever delegates (agent-bus-mcp bus_send expect_result / bus_expect, lib ab_expect); moved on ONLY by scripts/agent-team-os-wake.py (expected -> woken | seen | blocked | expired). A task_id has a single wait bus-wide. Dot-files in the same folder (.wakes.log, .woken.json) belong to the wake script. Readers ignore unknown fields.",
+  "type": "object",
+  "required": ["v", "task_id", "agent", "slug", "created_at", "state"],
+  "properties": {
+    "v": { "const": 1 },
+    "task_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$", "description": "Canonical t-<YYYYMMDD>-<rand6>. Also the file name." },
+    "agent": { "type": "string", "description": "The waiting session's agent." },
+    "slug": { "type": "string", "description": "The waiting session's slug." },
+    "host": { "type": ["string", "null"], "description": "Machine of the waiting session; only that machine's wake script touches the file." },
+    "description": { "type": "string", "maxLength": 200, "description": "A few words, shown in the wake prompt and in the bus-band." },
+    "delegated_to": { "type": ["string", "null"], "description": "Address of whoever does the work." },
+    "created_at": { "type": "string", "format": "date-time" },
+    "deadline": { "type": ["string", "null"], "format": "date-time", "description": "Past it with no result: state expired and one notice in the waiter's inbox (no wake)." },
+    "state": { "enum": ["expected", "woken", "seen", "blocked", "expired", "cancelled"], "description": "expected = waiting. woken = result arrived, prompt written once. seen = the session read the result itself before any wake. blocked = the result came from a session just woken (wake_chain): no chain. expired = deadline passed with no result. cancelled = withdrawn by hand." },
+    "target": {
+      "type": "object",
+      "description": "How to reach the waiting session's prompt, captured from its environment at registration.",
+      "properties": {
+        "onda_terminal_id": { "type": "string" },
+        "claude_session_id": { "type": "string" },
+        "tmux_pane": { "type": "string" }
+      }
+    },
+    "arrived": {
+      "type": "object",
+      "properties": { "msg_id": { "type": "string" }, "from": { "type": "string" }, "at": { "type": "string" } }
+    },
+    "pending_wake": {
+      "type": "object",
+      "description": "The result is in the inbox but the wake is postponed: reason (onda:working, onda:has_text, tmux:busy, tetto_orario, onda_senza_guardia, nessun_canale, ...), since, checked_at.",
+      "properties": { "reason": { "type": "string" }, "since": { "type": "string" }, "checked_at": { "type": "string" } }
+    },
+    "woken_at": { "type": "string" },
+    "woken_via": { "type": "string", "description": "onda | tmux, with :non_confermato when the submit was not seen on screen." },
+    "expired_at": { "type": "string" },
+    "closed_at": { "type": "string" },
+    "note": { "type": "string" }
+  }
+}
