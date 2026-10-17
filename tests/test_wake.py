@@ -289,6 +289,7 @@ class WakeTest(unittest.TestCase):
         wake.tick()
         woken = json.loads((self.home / "waits" / "alita" / "@work-hub" / ".woken.json").read_text())
         self.assertEqual(woken["task_id"], "t-20261017-abc123")
+        self.assertEqual([w["task_id"] for w in wake.list_waits("alita", include_closed=True)], ["t-20261017-abc123"])
 
     def test_deadline_expired_notifies_once(self):
         past = iso(datetime.now(timezone.utc) - timedelta(minutes=1))

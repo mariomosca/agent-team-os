@@ -188,6 +188,8 @@ def list_waits(agent: str | None = None, slug: str | None = None, include_closed
     pattern = f"{agent or '*'}/@{slug or '*'}/*.json"
     out = []
     for p in sorted(root.glob(pattern)):
+        if p.name.startswith("."):
+            continue  # .woken.json: stato della sveglia, non un atteso
         rec = read_json(p)
         if not rec or not rec.get("task_id"):
             continue
@@ -618,6 +620,8 @@ def tick() -> dict:
         if not ok:
             return {"skipped": ["un altro giro in corso"]}
         for p in sorted(root.glob("*/@*/*.json")):
+            if p.name.startswith("."):
+                continue
             try:
                 r = process(p)
             except Exception as exc:  # un atteso rotto non ferma gli altri
