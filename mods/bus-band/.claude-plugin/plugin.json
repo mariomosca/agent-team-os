@@ -1,6 +1,6 @@
 {
   "name": "bus-band",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Band above the Claude Code prompt with this session's pending Agent Team OS messages and the state of the sibling sessions (Onda)",
   "author": { "name": "Mario Mosca", "url": "https://github.com/mariomosca" },
   "homepage": "https://github.com/mariomosca/agent-team-os/tree/main/mods/bus-band",

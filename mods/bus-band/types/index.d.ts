@@ -54,6 +54,19 @@ export type TeamSnapshot = {
   sessions: TeamSession[]
 }
 
+export type WaitRow = {
+  key: string
+  text: string
+  alert: boolean
+}
+
+export type WaitsSnapshot = {
+  headline: string
+  rows: WaitRow[]
+  hidden: number
+  expired: string[]
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'bus-band': {
@@ -61,6 +74,7 @@ declare module 'claude-code' {
       isHidden: boolean
       team: TeamSnapshot | null
       isTeamHidden: boolean
+      waits: WaitsSnapshot | null
     }
   }
 }
