@@ -307,8 +307,19 @@ if [[ "$SVEGLIA" -eq 1 ]]; then
 PLIST
   echo "Wake → $W_PLIST (every 10 s, log $BUS_HOME/logs/sveglia.log)"
   if [[ "${AB_NO_LAUNCHCTL:-0}" != "1" ]] && command -v launchctl >/dev/null 2>&1; then
-    launchctl bootout "gui/$(id -u)/${W_LABEL}" 2>/dev/null || true
-    launchctl bootstrap "gui/$(id -u)" "$W_PLIST" && echo "  loaded ($W_LABEL)"
+    if launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
+      launchctl bootout "gui/$(id -u)/${W_LABEL}" 2>/dev/null || true
+      launchctl bootstrap "gui/$(id -u)" "$W_PLIST" && echo "  loaded ($W_LABEL)"
+    else
+      # No GUI login (the headless Mac mini, reached over SSH): LaunchAgents do not
+      # load there, cron does. Six rounds a minute, 10 s apart; the wake lock keeps
+      # rounds from overlapping. Same line replaced on every install.
+      rm -f "$W_PLIST"
+      W_SCRIPT="$CLAUDE_HOME/scripts/agent-team-os-wake.py"
+      W_LINE="* * * * * AB_HOME=$BUS_HOME PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin; for i in 1 2 3 4 5 6; do /usr/bin/python3 -I $W_SCRIPT tick >/dev/null 2>>$BUS_HOME/logs/sveglia-errori.log; sleep 10; done"
+      { crontab -l 2>/dev/null | grep -v 'agent-team-os-wake.py' || true; echo "$W_LINE"; } | crontab -
+      echo "  no GUI session here: installed in crontab instead (every minute, 6 rounds)"
+    fi
   fi
 fi
 
