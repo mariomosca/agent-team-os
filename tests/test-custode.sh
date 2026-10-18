@@ -197,10 +197,42 @@ ck "nessun json" "$([[ -e $Lp/hosts/self/custode.json ]] && echo si || echo no)"
 echo laptop > "$Lp/HOST"
 ck "HOST=laptop: idem" "$(AB_HOME="$Lp" bash "$R/scripts/agent-team-os-custode.sh" | grep -c 'non sono')" "1"
 
+echo "── --registro (OR18-F3.3)"
+RG="$M/registry"; mkdir -p "$RG/kai.d" "$RG/leo.d" "$RG/nico.d"
+sleep 300 & LIVE=$!
+reg(){ # agent slug pid last_seen [host]
+  jq -n --arg a "$1" --arg s "$2" --argjson p "$3" --arg t "$4" --arg h "${5:-mini}" \
+    '{name:$a, slug:$s, active:true, last_seen:$t, pid:$p, host:$h}' > "$RG/$1.d/$2.json"; }
+NOWI=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+reg kai crewmoor 999999 2026-10-14T10:00:00Z          # pid morto: via
+reg kai vivo "$LIVE" 2026-10-14T10:00:00Z             # pid vivo, anche se vecchio: resta
+reg kai senzapid 0 2026-10-14T10:00:00Z               # niente pid, vecchio: via
+reg kai fresco 0 "$NOWI"                              # niente pid, recente: resta
+reg kai altrohost 999999 2026-10-14T10:00:00Z laptop  # di un'altra macchina: non tocco
+reg leo vault 999999 2026-10-15T10:00:00Z             # unico di leo: via, poi active:false
+echo '{"name":"leo","active":true,"last_seen":"2026-10-15T10:00:00Z"}' > "$RG/leo.json"
+echo '{"name":"nico","active":true,"last_seen":"2026-10-15T10:00:00Z"}' > "$RG/nico.json"
+reg nico rotto 0 x; echo '' > "$RG/nico.d/rotto.json"  # vuoto: via
+dry=$(AB_HOME="$M" bash "$R/scripts/agent-team-os-custode.sh" --registro --dry-run)
+ck "dry-run: elenca" "$(grep -c 'tolgo' <<<"$dry")" "4"
+ck "dry-run: non tocca" "$(ls "$RG/kai.d" | wc -l | tr -d ' ')" "5"
+out=$(AB_HOME="$M" bash "$R/scripts/agent-team-os-custode.sh" --registro; echo "rc=$?")
+ck "rc 0" "$(tail -1 <<<"$out")" "rc=0"
+ck "restano vivo, fresco, altrohost" "$(ls "$RG/kai.d" | sort | tr '\n' ' ')" "altrohost.json fresco.json vivo.json "
+ck "pid morto nel log" "$(grep -c 'kai/crewmoor (pid 999999 morto)' <<<"$out")" "1"
+ck "leo senza sessioni: active false" "$(jq -r .active "$RG/leo.json")" "false"
+ck "nico senza sessioni: active false" "$(jq -r .active "$RG/nico.json")" "false"
+ck "riga con data" "$(grep -c '^20[0-9-]*T.* registro:' <<<"$out")" "6"
+again=$(AB_HOME="$M" bash "$R/scripts/agent-team-os-custode.sh" --registro)
+ck "secondo giro: niente" "$again" ""
+kill "$LIVE" 2>/dev/null; wait "$LIVE" 2>/dev/null
+
 echo "── install.sh --custode"
 IC="$T/inst-claude"; IB="$T/inst-bus"; ILA="$T/inst-la"; LC_LOG="$T/launchctl.log"
+GUI="$T/gui-loaded"; id -u > "$GUI"   # launchctl print gui/<uid> riesce: c'e' un login grafico
+export FAKE_CRONTAB="$T/crontab"
 inst(){ env CLAUDE_HOME="$IC" AB_HOME="$IB" LAUNCH_AGENTS_DIR="$ILA" FAKE_LAUNCHCTL_LOG="$LC_LOG" \
-  bash "$R/install.sh" "$@" > "$T/inst.out" 2>&1; echo $?; }
+  FAKE_LAUNCHCTL_LOADED="$GUI" bash "$R/install.sh" "$@" > "$T/inst.out" 2>&1; echo $?; }
 mkdir -p "$IB"; cp "$M/AGENT_MAP.json" "$IB/"
 ck "senza host remoto: rifiutato" "$(inst --custode)" "1"
 ck "e lo dice" "$(grep -c -- '--custode' "$T/inst.out")" "1"
@@ -215,7 +247,30 @@ if command -v plutil >/dev/null 2>&1; then
   ck "config Claude del mini" "$(plutil -extract EnvironmentVariables.CLAUDE_CONFIG_DIR raw "$PL")" "$IC"
   ck "log" "$(plutil -extract StandardOutPath raw "$PL")" "$IB/logs/custode.log"
 fi
-ck "bootout + bootstrap" "$(grep -c 'com.agent-team-os.custode' "$LC_LOG")" "2"
+ck "bootout + bootstrap" "$(grep -v registro "$LC_LOG" | grep -c 'com.agent-team-os.custode')" "2"
+RPL="$ILA/com.agent-team-os.custode-registro.plist"
+if command -v plutil >/dev/null 2>&1; then
+  ck "plist registro valido" "$(plutil -lint "$RPL" >/dev/null && echo ok)" "ok"
+  ck "registro ogni 10 min" "$(plutil -extract StartInterval raw "$RPL")" "600"
+  ck "registro: --registro" "$(plutil -extract ProgramArguments.2 raw "$RPL")" "--registro"
+  ck "registro: label" "$(plutil -extract Label raw "$RPL")" "com.agent-team-os.custode-registro"
+fi
+ck "registro caricato" "$(grep -c 'com.agent-team-os.custode-registro' "$LC_LOG")" "2"
+ck "con GUI niente crontab" "$([[ -e $FAKE_CRONTAB ]] && echo si || echo no)" "no"
+# Mini senza login grafico: cron al posto di launchd, la riga della sveglia resta.
+echo '* * * * * altro; agent-team-os-wake.py tick' > "$FAKE_CRONTAB"
+: > "$GUI"
+ck "headless: install" "$(inst --custode)" "0"
+ck "headless: niente plist" "$([[ -e $PL || -e $RPL ]] && echo resta || echo via)" "via"
+ck "headless: riga delle 7" "$(grep -c '^0 7 .*agent-team-os-custode.sh >>' "$FAKE_CRONTAB")" "1"
+ck "headless: riga registro" "$(grep -c '^\*/10 .*agent-team-os-custode.sh --registro' "$FAKE_CRONTAB")" "1"
+ck "headless: sveglia intatta" "$(grep -c 'agent-team-os-wake.py' "$FAKE_CRONTAB")" "1"
+inst --custode >/dev/null
+ck "headless: reinstall non duplica" "$(grep -c 'agent-team-os-custode.sh' "$FAKE_CRONTAB")" "2"
+ck "headless: --uninstall" "$(inst --custode --uninstall)" "0"
+ck "headless: righe tolte" "$(grep -c 'agent-team-os-custode.sh' "$FAKE_CRONTAB")" "0"
+id -u > "$GUI"
+inst --custode >/dev/null
 ck "HOST esistente basta" "$(inst --custode)" "0"
 ck "--uninstall" "$(inst --custode --uninstall)" "0"
 ck "plist tolto" "$([[ -e $PL ]] && echo resta || echo via)" "via"

@@ -83,8 +83,12 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
   fi
   if [[ "${AB_NO_LAUNCHCTL:-0}" != "1" ]] && command -v launchctl >/dev/null 2>&1; then
     launchctl bootout "gui/$(id -u)/${CUSTODE_LABEL}" 2>/dev/null || true
+    launchctl bootout "gui/$(id -u)/${CUSTODE_LABEL}-registro" 2>/dev/null || true
   fi
-  rm -f "$CUSTODE_PLIST" "$CLAUDE_HOME/scripts/agent-team-os-custode.sh"
+  if crontab -l 2>/dev/null | grep -q 'agent-team-os-custode.sh'; then
+    { crontab -l 2>/dev/null | grep -v 'agent-team-os-custode.sh' || true; } | crontab -
+  fi
+  rm -f "$CUSTODE_PLIST" "$LA_DIR/${CUSTODE_LABEL}-registro.plist" "$CLAUDE_HOME/scripts/agent-team-os-custode.sh"
   echo "Custode removed ($CUSTODE_PLIST, $CLAUDE_HOME/scripts/agent-team-os-custode.sh)."
   echo "Its last report stays in $BUS_HOME/hosts/self/custode.json."
   exit 0
@@ -359,9 +363,33 @@ if [[ "$CUSTODE" -eq 1 ]]; then
 PLIST
   echo "Custode → $CUSTODE_PLIST (every day at 7:00, log $BUS_HOME/logs/custode.log)"
   echo "  by hand: $CLAUDE_HOME/scripts/agent-team-os-custode.sh [--no-telegram]"
+  # v2.7 (OR18-F3.3): the registry cleanup, every 10 min.
+  R_LABEL="com.agent-team-os.custode-registro"
+  R_PLIST="$LA_DIR/${R_LABEL}.plist"
+  sed -e "s|<string>${CUSTODE_LABEL}</string>|<string>${R_LABEL}</string>|" \
+      -e "s|<string>${CLAUDE_HOME}/scripts/agent-team-os-custode.sh</string>|&<string>--registro</string>|" \
+      -e '/<key>StartCalendarInterval<\/key>/,/<\/dict>/c\
+  <key>StartInterval</key><integer>600</integer>' "$CUSTODE_PLIST" > "$R_PLIST"
+  echo "Registry cleanup → $R_PLIST (every 10 min, log $BUS_HOME/logs/custode.log)"
   if [[ "${AB_NO_LAUNCHCTL:-0}" != "1" ]] && command -v launchctl >/dev/null 2>&1; then
-    launchctl bootout "gui/$(id -u)/${CUSTODE_LABEL}" 2>/dev/null || true
-    launchctl bootstrap "gui/$(id -u)" "$CUSTODE_PLIST" && echo "  loaded ($CUSTODE_LABEL)"
+    if launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
+      for pl in "$CUSTODE_PLIST" "$R_PLIST"; do
+        lb=$(basename "$pl" .plist)
+        launchctl bootout "gui/$(id -u)/${lb}" 2>/dev/null || true
+        launchctl bootstrap "gui/$(id -u)" "$pl" && echo "  loaded ($lb)"
+      done
+    else
+      # No GUI login (the headless mini over SSH): cron, like the wake. Both lines
+      # replaced on every install.
+      rm -f "$CUSTODE_PLIST" "$R_PLIST"
+      C_SCRIPT="$CLAUDE_HOME/scripts/agent-team-os-custode.sh"
+      C_ENV="AB_HOME=$BUS_HOME CLAUDE_CONFIG_DIR=$CLAUDE_HOME PATH=\$HOME/.local/bin:\$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+      { crontab -l 2>/dev/null | grep -v 'agent-team-os-custode.sh' || true
+        echo "0 7 * * * $C_ENV $C_SCRIPT >> $BUS_HOME/logs/custode.log 2>&1"
+        echo "*/10 * * * * $C_ENV $C_SCRIPT --registro >> $BUS_HOME/logs/custode.log 2>&1"
+      } | crontab -
+      echo "  no GUI session here: installed in crontab instead (7:00 and --registro every 10 min)"
+    fi
   fi
 fi
 

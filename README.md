@@ -261,6 +261,8 @@ The machine that stays on runs agents with nobody watching, so when it breaks no
 | `disco` | **warn** under 20 GB free, **fail** under 5 |
 | `launchd` | every `com.portineria.*` / `com.agent-team-os.*` plist in `~/Library/LaunchAgents` is loaded, else **warn** |
 
+**Registry cleanup (v2.7, `--registro`)**: every 10 min (crontab on the headless mini, a second launchd job `com.agent-team-os.custode-registro` elsewhere) the custode removes from `registry/<agent>.d/` the sessions of this machine whose `pid` is dead (or, with no pid, `last_seen` older than `AB_SESSION_TTL_MIN`), so a crash or a closed tmux leaves no ghost at a desk in Orbit's Ufficio, and sets `active:false` on `<agent>.json` when no session is left. One line per removal in `logs/custode.log`; `--registro --dry-run` only lists.
+
 Telegram: token and chat from `~/.config/portineria-mini/telegram.env` (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`), the token goes to `curl` on stdin. All ok means silence, except one "tutto a posto" on Monday. No Telegram file: said in the report, the exit code still follows the checks.
 
 ```bash
@@ -269,12 +271,13 @@ CLAUDE_HOME=~/.config/claude-mini ./install.sh --host mini --custode
 CLAUDE_HOME=~/.config/claude-mini ./install.sh --custode --uninstall   # remove it
 # by hand (--no-telegram to just look, --json for the JSON)
 ~/.config/claude-mini/scripts/agent-team-os-custode.sh --no-telegram
+~/.config/claude-mini/scripts/agent-team-os-custode.sh --registro --dry-run   # ghosts in the registry
 jq '.status, (.checks[] | select(.status != "ok"))' ~/.agent-team-os/hosts/self/custode.json
 ```
 
 Exit code `0` ok, `1` warn, `2` fail. `hosts/self/custode.json` is `{at, host, status, checks: [{name, status, detail, fix}], notify: {sent, note}}`, fails first, written atomically. Log in `~/.agent-team-os/logs/custode.log`. On the hub (no `HOST`, or `HOST` = the hub) it says so and exits 0.
 
-## La sveglia: esiti attesi (v2.6)
+## La sveglia: esiti attesi (v2.6) e domande (v2.7)
 
 A message to a session that is alive but idle used to wait in the inbox until somebody woke that session by hand. Now whoever delegates registers a `task_id` as *expected* on its own session; when the result with that `task_id` lands in its inbox and the session is idle, the bus writes one line into its prompt — once:
 
@@ -284,9 +287,10 @@ Esito del task t-20261017-j2mjbt (prova sveglia F4) arrivato da kai/f3: leggilo 
 
 - **Delegate**: `bus_send(..., expect_result=true)` (returns the `task_id`), or `bus_expect(description, delegated_to)` when the work goes out another way (e.g. `onda_agent_prompt`: append the returned `prompt_line`). Bash: `ab_expect "<description>" <to> [deadline]`, then `AB_TASK_ID=<id>` on `ab_write_message`.
 - **Answer**: `message_type='response'` with the same `task_id`. Replying with `in_reply_to` carries it automatically; `bus_read` of a delegation shows `_task_hint`.
-- **Rules**: only an idle session is written to (never while it works, asks, or has text in the prompt box, even typed seconds ago); one wake per task; a message sent by a session within 30 min of its own wake carries `wake_chain` and wakes nobody (depth 1); a `task_id` has one waiter bus-wide; at most 6 wakes per session per hour. Past `deadline` with no result: one `task-scaduto` notice in the waiter's inbox, no wake.
+- **Questions (v2.7)**: the executor asks the delegator with `message_type='question'` and the same `task_id`. It wakes the delegator once per question (`Domanda sul task … che aspetta te: leggila con bus_read …`) without consuming the wait: the result still wakes it later. The asking session carries `waiting_agent` in its registry entry until it reads the answer (Orbit shows it as "waiting for <agent>"); the delegator sees the open question in `bus_waits.waiting_on_you` and at the top of the band's Aspetto section. A question without `task_id` wakes nobody.
+- **Rules**: only an idle session is written to (never while it works, asks, or has text in the prompt box, even typed seconds ago); one wake per expected message (each question, then the result); a message sent by a session within 30 min of its own wake carries `wake_chain` and wakes nobody (depth 1); a `task_id` has one waiter bus-wide; at most 6 wakes per session per hour. Past `deadline` with no result: one `task-scaduto` notice in the waiter's inbox, no wake.
 - **Channels**: Onda (`agent.prompt` with `onlyIfIdle`; needs an Onda that writes `hasText` in `sessions.json`, otherwise the wake waits) and tmux (`capture-pane` + `send-keys`, for the Mac mini).
-- **Where**: `scripts/agent-team-os-wake.py` (system python3, stdlib), every 10 s via launchd (`./install.sh --sveglia`; on a host with no GUI login, the headless mini, it goes into crontab), plus one round right after a result is sent. Files `waits/<agent>/@<slug>/<task_id>.json` ([schema](schema/bus-wait.schema.json)), log `logs/sveglia.log`. Visible with `bus_waits` and in the bus-band ("Aspetto 2 esiti"). Contract: [CONTRACT.md §18-20](schema/CONTRACT.md).
+- **Where**: `scripts/agent-team-os-wake.py` (system python3, stdlib), every 10 s via launchd (`./install.sh --sveglia`; on a host with no GUI login, the headless mini, it goes into crontab), plus one round right after a result is sent. Files `waits/<agent>/@<slug>/<task_id>.json` ([schema](schema/bus-wait.schema.json)), log `logs/sveglia.log`. Visible with `bus_waits` and in the bus-band ("Aspetto 2 esiti"). Contract: [CONTRACT.md §18-21](schema/CONTRACT.md).
 
 ## Example: define your agents
 

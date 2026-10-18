@@ -6,6 +6,12 @@
 # Non e' un agente: controlla, scrive un report e avvisa su Telegram.
 #
 #   agent-team-os-custode.sh [--no-telegram] [--json]
+#   agent-team-os-custode.sh --registro [--dry-run]
+#
+# --registro (v2.7, OR18-F3.3): solo la pulizia del registro, ogni 10 min da cron.
+# Toglie da registry/<agente>.d/ le sessioni con pid morto (SessionEnd non e'
+# girato: crash, tmux chiuso, riavvio) e mette active:false su <agente>.json
+# quando non ne restano. Log in logs/custode.log. Gira anche sul laptop a mano.
 #
 # Controlli (ok|warn|fail, ciascuno con il comando per sistemare): Claude
 # risponde, il server MCP del bus espone i suoi tool, il Python scelto da uv,
@@ -33,15 +39,23 @@ source "$LIB"
 # launchd parte con un PATH minimo: aggiungo in coda dove vivono claude, uv, jq.
 PATH="$PATH:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin"
 
-TELEGRAM=1; PRINT_JSON=0
+TELEGRAM=1; PRINT_JSON=0; REGISTRO=0; DRY=""
 for a in "$@"; do
   case "$a" in
     --no-telegram) TELEGRAM=0 ;;
     --json) PRINT_JSON=1 ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    --registro) REGISTRO=1 ;;
+    --dry-run) DRY="--dry-run" ;;
+    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "Opzione sconosciuta: $a (vedi --help)" >&2; exit 64 ;;
   esac
 done
+
+if (( REGISTRO )); then
+  out=$(ab_registry_prune $DRY)
+  [[ -n "$out" ]] && sed "s/^/$(ab_iso_now) /" <<<"$out"
+  exit 0
+fi
 
 SELF=$(ab_host_self)
 HUB=$(ab_hub_host)

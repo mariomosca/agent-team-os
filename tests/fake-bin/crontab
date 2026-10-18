@@ -1,0 +1,8 @@
+#!/bin/bash
+# Fake crontab for the tests: the table lives in FAKE_CRONTAB (never the real one).
+f="${FAKE_CRONTAB:?FAKE_CRONTAB not set: refusing to touch the real crontab}"
+case "${1:-}" in
+  -l) [[ -s "$f" ]] && cat "$f" || { echo "crontab: no crontab for $USER" >&2; exit 1; } ;;
+  -) t=$(cat); printf "%s\n" "$t" > "$f" ;;  # like the real one: written at EOF, after -l has read
+  *) echo "fake crontab: unsupported $*" >&2; exit 2 ;;
+esac
