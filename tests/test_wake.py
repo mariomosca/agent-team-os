@@ -181,6 +181,108 @@ class WakeTest(unittest.TestCase):
         self.assertEqual(wake.tick(), {})
         self.assertEqual(self.onda.calls, [])
 
+    # -- domande nel thread della delega (bus v2.7, DR18-F1.7)
+
+    def question(self, **extra) -> str:
+        return self.deliver(type="question", intent="domanda", thread_id="thread-20261017-q1",
+                            payload={"summary": "uso il tema scuro?"}, **extra)
+
+    def test_question_wakes_without_closing_wait(self):
+        self.sessions([self.alita()])
+        self.expect()
+        qid = self.question()
+        self.assertEqual(wake.tick(), {"woken_question": ["t-20261017-abc123"]})
+        self.assertEqual(len(self.onda.calls), 1)
+        prompt = self.onda.calls[0]["params"]["prompt"]
+        self.assertIn(f"bus_read {qid}", prompt)
+        self.assertIn("Domanda", prompt)
+        self.assertNotIn("\n", prompt)
+        st = self.wait_state()
+        self.assertEqual(st["state"], "expected")
+        self.assertEqual(st["questions"][qid]["state"], "woken")
+        self.assertEqual(st["questions"][qid]["summary"], "uso il tema scuro?")
+        # stessa domanda: nessuna seconda sveglia
+        self.assertEqual(wake.tick(), {})
+        self.assertEqual(len(self.onda.calls), 1)
+        # poi l'esito sveglia comunque
+        rid = self.deliver()
+        self.assertEqual(wake.tick(), {"woken": ["t-20261017-abc123"]})
+        self.assertEqual(len(self.onda.calls), 2)
+        self.assertIn(f"bus_read {rid}", self.onda.calls[1]["params"]["prompt"])
+        self.assertEqual(self.wait_state()["state"], "woken")
+
+    def test_two_questions_two_wakes(self):
+        self.sessions([self.alita()])
+        self.expect()
+        self.question()
+        self.question()
+        self.assertEqual(wake.tick(), {"woken_question": ["t-20261017-abc123"]})
+        self.assertEqual(wake.tick(), {"woken_question": ["t-20261017-abc123"]})
+        self.assertEqual(wake.tick(), {})
+        self.assertEqual(len(self.onda.calls), 2)
+
+    def test_question_busy_postponed_then_seen(self):
+        self.sessions([self.alita(state="working")])
+        self.expect()
+        qid = self.question()
+        self.assertEqual(wake.tick(), {"postponed": ["t-20261017-abc123"]})
+        q = self.wait_state()["questions"][qid]
+        self.assertEqual(q["state"], "pending")
+        self.assertEqual(q["pending_wake"]["reason"], "onda:working")
+        # la sessione l'ha letta da sola mentre lavorava: vista, niente sveglia
+        src = self.home / "inboxes" / "alita" / "@work-hub" / f"{qid}.json"
+        dst = src.parent / ".read" / src.name
+        dst.parent.mkdir(exist_ok=True)
+        src.rename(dst)
+        self.sessions([self.alita()])
+        wake.tick()
+        self.assertEqual(self.onda.calls, [])
+        q = self.wait_state()["questions"][qid]
+        self.assertEqual(q["state"], "seen")
+        self.assertNotIn("pending_wake", q)
+
+    def test_question_answered_from_thread(self):
+        self.sessions([self.alita(state="working")])
+        self.expect()
+        qid = self.question()
+        wake.tick()
+        later = iso(datetime.now(timezone.utc) + timedelta(seconds=5))
+        t = self.home / "threads"
+        t.mkdir()
+        (t / "thread-20261017-q1.jsonl").write_text(
+            json.dumps({"id": "msg-r", "from": "alita", "to": "kai", "type": "response", "ts": later}) + "\n")
+        self.sessions([self.alita()])
+        wake.tick()
+        q = self.wait_state()["questions"][qid]
+        self.assertEqual(q["state"], "seen")
+        self.assertIn("answered_at", q)
+        self.assertEqual(self.onda.calls, [])
+
+    def test_question_without_task_id_does_not_wake(self):
+        self.sessions([self.alita()])
+        self.expect()
+        self.deliver(task=None, type="question")
+        self.assertEqual(wake.tick(), {})
+        self.assertEqual(self.onda.calls, [])
+
+    def test_question_from_chain_blocked(self):
+        self.sessions([self.alita()])
+        self.expect()
+        qid = self.question(wake_chain={"task_id": "t-x", "at": iso(datetime.now(timezone.utc))})
+        wake.tick()
+        self.assertEqual(self.onda.calls, [])
+        self.assertEqual(self.wait_state()["questions"][qid]["state"], "blocked")
+        self.assertEqual(self.wait_state()["state"], "expected")
+
+    def test_question_respects_hourly_cap(self):
+        self.sessions([self.alita()])
+        self.expect()
+        d = self.home / "waits" / "alita" / "@work-hub"
+        (d / ".wakes.log").write_text("\n".join([f"{time.time():.0f}"] * wake.MAX_PER_HOUR) + "\n")
+        qid = self.question()
+        self.assertEqual(wake.tick(), {"postponed": ["t-20261017-abc123"]})
+        self.assertEqual(self.wait_state()["questions"][qid]["pending_wake"]["reason"], "tetto_orario")
+
     def test_busy_postponed_then_woken(self):
         self.sessions([self.alita(state="working")])
         self.expect()

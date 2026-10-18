@@ -130,6 +130,8 @@ AB_TASK_ID="$TASK" ... MSG_ID=$(ab_write_message)
 
 When the result arrives and this session is idle, the bus wakes it once with a line in the prompt. Executing a delegated task that carries a `task_id`: answer with `type: response` and the same `task_id` (`AB_IN_REPLY_TO=<msg-id>` carries it).
 
+Questions during a delegated task (v2.7): send them with `type: question` and **the same `task_id`** (`AB_IN_REPLY_TO=<delegation msg-id>` carries it; MCP: `bus_send(message_type='question', in_reply_to=...)` or `task_id=...`). Each such question wakes the delegator once, if idle, and the result still wakes it later; your session shows as "waiting for <agent>" until you read the answer. A question without the `task_id` wakes nobody. Delegator, woken by a question: read it, answer in the thread (`in_reply_to` the question) or straight in the executor's pane.
+
 ### Step 8 — Confirm and suggest next
 
 After a successful send:

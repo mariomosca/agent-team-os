@@ -148,15 +148,96 @@ ab_update_session_registry() {
 
   # v2.5: the machine the session runs on, so a remote reader of this registry
   # (`/bus` on the laptop reading the mini's) can label it. Omitted on one machine.
-  local host
+  local host waiting='null'
   host=$(ab_host_self)
+  # v2.7: a question waiting for another agent survives the heartbeat.
+  [[ -s "$f" ]] && waiting=$(jq -c '.waiting_agent // null' "$f" 2>/dev/null)
+  [[ -z "$waiting" ]] && waiting='null'
   jq -n --arg name "$agent" --arg slug "$slug" --arg ts "$ts" \
         --arg ws "$workspace" --arg started "$prev_started" --arg pid "${PPID:-0}" \
-        --arg host "$host" \
+        --arg host "$host" --argjson waiting "$waiting" \
     '{name:$name, slug:$slug, active:true, last_seen:$ts,
       workspace_path:$ws, session_started:$started, pid:($pid|tonumber)}
-     + (if $host == "" then {} else {host:$host} end)' > "$tmp" \
+     + (if $host == "" then {} else {host:$host} end)
+     + (if $waiting == null then {} else {waiting_agent:$waiting} end)' > "$tmp" \
     && ab_json_promote "$tmp" "$f"
+}
+
+# ---------- v2.7: a session waiting for another agent ----------
+# A question inside a delegation (type question + task_id) marks the asking
+# session's registry entry with waiting_agent until the answer is read, the task
+# result is sent, or the session ends. Same field as agent-bus-mcp (Bus.set_waiting_agent).
+
+ab_set_waiting_agent() {
+  # Args: agent, slug, waiting_agent JSON
+  local f; f="$(ab_registry_dir "$1")/$2.json"
+  [[ -s "$f" ]] || return 0
+  jq --argjson w "$3" '.waiting_agent = $w' "$f" > "$f.tmp" && ab_json_promote "$f.tmp" "$f"
+}
+
+ab_clear_waiting_agent() {
+  # Args: agent, slug, [task_id], [answer message path]. With a message: only if it
+  # comes from the awaited agent and answers the question (in_reply_to) or the task.
+  local agent="$1" slug="$2" task="${3:-}" ans="${4:-}" f w
+  f="$(ab_registry_dir "$agent")/$slug.json"
+  [[ -s "$f" ]] || return 0
+  w=$(jq -c '.waiting_agent // empty' "$f" 2>/dev/null)
+  [[ -n "$w" ]] || return 0
+  if [[ -n "$ans" ]]; then
+    jq -e --argjson w "$w" '.from == $w.agent and (.in_reply_to == $w.msg_id
+        or ((.task_id // .payload.task_id // "") as $t | $t != "" and $t == $w.task_id))' \
+      "$ans" >/dev/null 2>&1 || return 0
+  elif [[ -n "$task" ]]; then
+    [[ "$(jq -r '.task_id // ""' <<<"$w")" == "$task" ]] || return 0
+  fi
+  jq 'del(.waiting_agent)' "$f" > "$f.tmp" && ab_json_promote "$f.tmp" "$f"
+}
+
+ab_registry_prune() {
+  # v2.7 (OR18-F3.3): drop registry entries of sessions that are gone without a
+  # SessionEnd hook (crash, killed tmux, reboot). An entry of this machine goes when
+  # its pid is dead; one without a pid when last_seen is older than
+  # AB_SESSION_TTL_MIN. An agent with no entry left gets active:false in its flat
+  # file. Prints one line per change. Args: [--dry-run]
+  local dry=0; [[ "${1:-}" == "--dry-run" ]] && dry=1
+  local ttl=$(( ${AB_SESSION_TTL_MIN:-240} * 60 )) now me f d agent pid host seen age why ts
+  now=$(date -u +%s); me=$(ab_host_self)
+  for d in "$AB_HOME"/registry/*.d; do
+    [[ -d "$d" ]] || continue
+    agent=$(basename "$d" .d)
+    for f in "$d"/*.json; do
+      [[ -e "$f" ]] || continue
+      why=""
+      if ! jq empty "$f" 2>/dev/null || [[ ! -s "$f" ]]; then
+        why="file illeggibile"
+      else
+        host=$(jq -r '.host // ""' "$f")
+        [[ -n "$host" && -n "$me" && "$host" != "$me" ]] && continue  # not ours to judge
+        pid=$(jq -r '.pid // 0 | tostring' "$f")
+        seen=$(jq -r '(.last_seen // "") | (try fromdateiso8601 catch 0)' "$f" 2>/dev/null)
+        age=$(( now - ${seen:-0} ))
+        if [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 1 ]]; then
+          kill -0 "$pid" 2>/dev/null || why="pid $pid morto"
+        elif (( age > ttl )); then
+          why="nessun pid, last_seen di $(( age / 60 )) min fa"
+        fi
+      fi
+      [[ -n "$why" ]] || continue
+      echo "registro: tolgo $agent/$(basename "$f" .json) ($why)"
+      (( dry )) || rm -f "$f"
+    done
+    f="$AB_HOME/registry/${agent}.json"
+    if ! compgen -G "$d/*.json" >/dev/null && [[ -s "$f" ]] \
+       && [[ "$(jq -r '.active // false' "$f" 2>/dev/null)" == "true" ]]; then
+      echo "registro: $agent senza sessioni, active:false"
+      if (( ! dry )); then
+        ts=$(ab_iso_now)
+        jq --arg ts "$ts" '.active = false | .last_seen = (.last_seen // $ts)' "$f" > "$f.tmp" \
+          && ab_json_promote "$f.tmp" "$f"
+      fi
+    fi
+  done
+  return 0
 }
 
 ab_list_sessions() {
@@ -324,6 +405,8 @@ ab_mark_read() {
   fname=$(basename "$msg_path")
   dest="$(dirname "$msg_path")/.read"
   mkdir -p "$dest"
+  # v2.7: reading the answer to our question ends the wait on that agent.
+  ab_clear_waiting_agent "$agent" "${AB_SESSION_SLUG:-$(ab_slug_for_cwd "$PWD")}" "" "$msg_path"
   mv "$msg_path" "$dest/$fname"
 }
 
@@ -518,6 +601,17 @@ ab_write_message() {
     ab_log_outbox "$target"
   fi
   ab_thread_append "$thread_id" "$msg_id" "$from" "$to" "$type" "$intent"
+
+  # v2.7: a question inside a delegation means this session now waits on $to.
+  if [[ -n "$task_id" && "$type" == "question" ]]; then
+    local w_addr="$to${to_host:+@$to_host}${to_slug:+/$to_slug}"
+    ab_set_waiting_agent "$from" "$from_slug" "$(jq -cn --arg a "$to" --arg ad "$w_addr" \
+      --arg t "$task_id" --arg m "$msg_id" --arg ts "$ts" \
+      --arg s "$(jq -r '.summary // ""' <<<"$payload" 2>/dev/null | tr -s '[:space:]' ' ' | cut -c1-160)" \
+      '{agent:$a, address:$ad, task_id:$t, msg_id:$m, since:$ts, summary:$s}')"
+  elif [[ -n "$task_id" && "$type" == "response" ]]; then
+    ab_clear_waiting_agent "$from" "$from_slug" "$task_id"
+  fi
 
   # Cross-domain cc-awareness (full-mesh graph mode): drop a non-blocking
   # notify in the hub inbox so the hub keeps visibility without gatekeeping.

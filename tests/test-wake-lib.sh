@@ -42,6 +42,27 @@ ck "atteso scritto" "$(jq -r '.state + " " + .delegated_to + " " + .target.onda_
 dup=$(AB_AGENT=kai AB_SESSION_SLUG=f3 "$BASH" -c "source scripts/agent-team-os-lib.sh; ab_expect x '' '' $tid" 2>&1)
 ck "un solo atteso per task" "$([[ "$dup" == *"un solo atteso"* ]] && echo rifiutato)" "rifiutato"
 
+echo "── waiting_agent (v2.7)"
+reg(){ mkdir -p "$AB_HOME/registry/kai.d"
+  echo '{"name":"kai","slug":"f3","active":true,"last_seen":"2026-10-18T10:00:00Z","pid":1}' > "$AB_HOME/registry/kai.d/f3.json"; }
+R3="$AB_HOME/registry/kai.d/f3.json"
+reg
+qid=$(send kai f3 alita/work-hub question AB_TASK_ID=t-20261018-qqq111)
+ck "domanda con task_id segna l'attesa" "$(jq -r '.waiting_agent | .agent + " " + .address + " " + .task_id + " " + (.msg_id == "'"$qid"'" | tostring)' "$R3")" "alita alita/work-hub t-20261018-qqq111 true"
+"$BASH" -c "source scripts/agent-team-os-lib.sh; ab_update_session_registry kai true /w/f3 f3" 2>/dev/null
+ck "il heartbeat la conserva" "$(jq -r '.waiting_agent.task_id' "$R3")" "t-20261018-qqq111"
+eid=$(send alita work-hub kai/f3 brief)
+AB_SESSION_SLUG=f3 "$BASH" -c "source scripts/agent-team-os-lib.sh; ab_mark_read kai '$(msg "$eid")'"
+ck "un messaggio estraneo non la toglie" "$(jq -r 'has("waiting_agent")' "$R3")" "true"
+aid=$(send alita work-hub kai/f3 response AB_IN_REPLY_TO="$qid")
+AB_SESSION_SLUG=f3 "$BASH" -c "source scripts/agent-team-os-lib.sh; ab_mark_read kai '$(msg "$aid")'"
+ck "leggere la risposta la toglie" "$(jq -r 'has("waiting_agent")' "$R3")" "false"
+send kai f3 alita/work-hub question AB_TASK_ID=t-20261018-qqq222 >/dev/null
+send kai f3 alita/work-hub response AB_TASK_ID=t-20261018-qqq222 >/dev/null
+ck "mandare l'esito la toglie" "$(jq -r 'has("waiting_agent")' "$R3")" "false"
+send kai f3 alita/work-hub question >/dev/null
+ck "domanda senza task_id: niente attesa" "$(jq -r 'has("waiting_agent")' "$R3")" "false"
+
 rm -rf "$T"
 echo "── $P PASS, $F FAIL"
 [[ $F -eq 0 ]]

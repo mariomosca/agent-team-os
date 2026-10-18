@@ -312,7 +312,7 @@ Un Onda che non scrive `hasText` non ha la guardia: la sveglia **non scrive** (`
 ### Le tre regole
 
 - **Solo idle**: lavoro in corso, domanda all'umano, testo nella casella (anche da meno di 60 s) rimandano la sveglia; si riprova ogni 10 s. Se intanto la sessione legge l'esito da sola, l'atteso diventa `seen`.
-- **Una sveglia per task**: `expected → woken` e mai indietro; un secondo esito dello stesso task non sveglia.
+- **Una sveglia per messaggio atteso** (v2.7): ogni `question` con il `task_id` sveglia una volta, poi l'esito una volta (`expected → woken` e mai indietro); un secondo esito dello stesso task non sveglia. Vedi §21.
 - **Niente catene**: dopo una sveglia lo script scrive `waits/<agent>/@<slug>/.woken.json`; per `AB_WAKE_CHAIN_MIN` minuti (30) ogni messaggio spedito da quella sessione porta `wake_chain` e non sveglia nessuno (profondità 1). Più il tetto: `AB_WAKE_MAX_PER_HOUR` (6) sveglie per sessione all'ora, oltre si rimanda (`tetto_orario`).
 
 ## 20. Visibilità
@@ -320,3 +320,13 @@ Un Onda che non scrive `hasText` non ha la guardia: la sveglia **non scrive** (`
 - `bus_waits` (MCP) e `agent-team-os-wake.py list` elencano gli attesi.
 - bus-band 2.3: sezione **Aspetto** (`Aspetto 2 esiti`, chi, cosa, da quanto; `esito arrivato, sveglia rimandata (lavori)`; `SCADUTO` in testo, mai solo colore), toast una volta alla scadenza.
 - Log: `logs/sveglia.log`, una riga per cambio di stato (sveglia, rimando con motivo nuovo, visto, bloccato, scaduto).
+
+## 21. Domande dentro una delega (bus v2.7, 18 ott 2026, DR18-F1.7)
+
+Problema: la sveglia scattava solo per l'esito. Un esecutore fermo su una domanda al delegante restava fermo finché il delegante non guardava da solo (3 volte il 18/10).
+
+- **Chi esegue** manda la domanda con `type: question` e lo stesso `task_id` della delega. Con `in_reply_to` sul messaggio di delega lo eredita da solo; passato a mano è accettato. `bus_expect.prompt_line` e `_task_hint` di `bus_read` lo dicono. Una `question` senza `task_id` non sveglia nessuno, come prima.
+- **Sveglia**: una `question` con il `task_id` di un atteso `expected` sveglia il delegante se idle, con le regole di §19 (solo idle, `wake_chain`, tetto orario, stessi canali), una volta per messaggio, **senza chiudere l'atteso**: lo stato resta `expected` e l'esito sveglia comunque dopo. Riga nel prompt: `Domanda sul task <id> (<descrizione>) da <mittente>, che aspetta te: leggila con bus_read <msg> e rispondi nel thread. L'esito ti sveglia dopo.` Al più una sveglia per atteso per giro.
+- **Stato sul file d'attesa**: `questions.<msg_id> = {from, at, summary, state: pending|woken|seen|blocked, pending_wake?, woken_at?, woken_via?, answered_at?, host?}`. `seen` = letta dalla sessione prima della sveglia, oppure già risposta, oppure superata dall'esito arrivato. `answered_at` = nel thread della domanda (`threads/<id>.jsonl` o `.json`) c'è un messaggio successivo dell'agente che aspetta. Domanda **aperta** = senza `answered_at`.
+- **Chi chiede** (v2.7): la sua voce di registro `registry/<agent>.d/<slug>.json` porta `waiting_agent = {agent, address, task_id, msg_id, since, summary}`, scritto all'invio della domanda (MCP e lib), conservato dal heartbeat, tolto quando la sessione legge una risposta dell'agente atteso (`in_reply_to` = la domanda, o stesso `task_id`), quando manda l'esito del task, o con la voce di registro a fine sessione. Orbit (Ufficio, OR18-F4.3) lo usa per la posa "in attesa di <agente>", distinta dalla mano alzata verso Mario.
+- **Visibilità**: `bus_waits` aggiunge `waiting_on_you` (le domande aperte); bus-band 2.5 le mette in testa alla sezione Aspetto come `DOMANDA da kai/f3, aspetta te da 5 min: … (bus_read msg-…)`, con `!!` e titolo `Aspetto 1 esito (1 domanda aspetta te)`.

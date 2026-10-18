@@ -9,10 +9,12 @@ Quando nella casella di quella sessione arriva un messaggio con lo stesso
 task_id, questo script sveglia la sessione, una volta sola, scrivendo nel suo
 prompt "Esito del task ... arrivato da ...: leggilo con bus_read ... e prosegui".
 
-Regole (brief F4, 17 ott 2026):
+Regole (brief F4, 17 ott 2026; domande da DR18-F1.7, bus v2.7):
   1. si sveglia solo una sessione idle: mai mentre lavora, chiede qualcosa,
      o ha testo nella casella (Mario sta scrivendo);
-  2. una sola sveglia per task: expected -> woken, e il file non torna indietro;
+  2. una sola sveglia per messaggio atteso: ogni question con il task_id
+     sveglia una volta (questions[msg_id], l'atteso resta expected), poi l'esito
+     sveglia una volta (expected -> woken, e il file non torna indietro);
   3. niente catene: un messaggio scritto da una sessione appena svegliata
      (campo wake_chain, timbrato da chi spedisce) non sveglia nessuno; un
      task_id ha un solo atteso su tutto il bus; tetto di sveglie per sessione
@@ -209,11 +211,15 @@ def _msg_task_id(msg: dict) -> str | None:
     return tid if isinstance(tid, str) else None
 
 
-def find_arrival(rec: dict) -> tuple[Path, dict, str] | None:
-    """Il primo messaggio con il task_id dell'atteso: (path, msg, 'pending'|'archived').
+def _is_question(msg: dict) -> bool:
+    return msg.get("type") == "question"
+
+
+def find_arrivals(rec: dict) -> list[tuple[Path, dict, str]]:
+    """I messaggi con il task_id dell'atteso, dal piu' vecchio: (path, msg, 'pending'|'archived').
 
     Cerca nella casella della sessione e in quella condivisa dell'agente, archivi
-    compresi: un esito che la sessione ha gia' letto da sola non va svegliato.
+    compresi: un messaggio che la sessione ha gia' letto da sola non va svegliato.
     Si guardano solo i file piu' recenti dell'atteso, cosi' .done/ lunghi costano poco.
     """
     agent, slug, tid = rec["agent"], rec["slug"], rec["task_id"]
@@ -238,11 +244,34 @@ def find_arrival(rec: dict) -> tuple[Path, dict, str] | None:
                 if msg.get("from_session") == own:
                     continue  # chi aspetta non si sveglia da solo
                 hits.append((msg.get("ts") or "", p, msg, state))
-    if not hits:
-        return None
     hits.sort(key=lambda h: (h[0], str(h[1])))
-    _, p, msg, state = hits[0]
-    return p, msg, state
+    return [(p, msg, state) for _, p, msg, state in hits]
+
+
+def find_arrival(rec: dict) -> tuple[Path, dict, str] | None:
+    """Il primo esito (non una question) con il task_id dell'atteso."""
+    return next((h for h in find_arrivals(rec) if not _is_question(h[1])), None)
+
+
+def answered(rec: dict, msg: dict) -> bool:
+    """Chi aspetta ha gia' scritto nel thread della domanda, dopo la domanda."""
+    tid = msg.get("thread_id")
+    if not isinstance(tid, str) or "/" in tid:
+        return False
+    # Due formati: threads/<id>.jsonl (agent-bus-mcp) e threads/<id>.json (lib, .messages[]).
+    entries: list = []
+    try:
+        for line in (bus_home() / "threads" / f"{tid}.jsonl").read_text(encoding="utf-8").splitlines():
+            try:
+                entries.append(json.loads(line))
+            except ValueError:
+                continue
+    except OSError:
+        pass
+    entries += (read_json(bus_home() / "threads" / f"{tid}.json") or {}).get("messages") or []
+    at = msg.get("ts") or ""
+    return any(isinstance(e, dict) and e.get("from") == rec["agent"] and (e.get("ts") or "") > at
+               and e.get("id") != msg.get("id") for e in entries)
 
 
 # ---------------------------------------------------------------- schermo
@@ -482,6 +511,17 @@ def wake_text(rec: dict, msg: dict) -> str:
             f"leggilo con bus_read {msg.get('id')} e prosegui.")
 
 
+def question_text(rec: dict, msg: dict) -> str:
+    sender = msg.get("from_session") or msg.get("from") or "?"
+    host = (msg.get("context") or {}).get("host")
+    if host and host != rec.get("host"):
+        sender = f"{sender}@{host}"
+    desc = re.sub(r"\s+", " ", rec.get("description") or "").strip()
+    what = f" ({desc})" if desc else ""
+    return (f"Domanda sul task {rec['task_id']}{what} da {sender}, che aspetta te: "
+            f"leggila con bus_read {msg.get('id')} e rispondi nel thread. L'esito ti sveglia dopo.")
+
+
 def notify_expired(rec: dict) -> None:
     """Avviso di scadenza nella casella di chi aspetta. Non sveglia: niente task_id."""
     agent, slug = rec["agent"], rec["slug"]
@@ -510,6 +550,78 @@ def notify_expired(rec: dict) -> None:
 
 # ---------------------------------------------------------------- giro
 
+def try_wake(rec: dict, d: Path, text: str) -> str:
+    """Scrive text nel prompt della sessione che aspetta. Postpone se non ora."""
+    if wakes_last_hour(d) >= MAX_PER_HOUR:
+        raise Postpone("tetto_orario")
+    sess = onda_session(rec)
+    pane = (rec.get("target") or {}).get("tmux_pane")
+    if sess is not None:
+        return wake_via_onda(sess, text)
+    if pane:
+        return wake_via_tmux(pane, text)
+    raise Postpone("nessun_canale")
+
+
+def note_postponed(holder: dict, reason: str, label: str) -> None:
+    prev = holder.get("pending_wake") or {}
+    if prev.get("reason") != reason:
+        log(f"rimandata {label}: {reason}")
+    holder["pending_wake"] = {"reason": reason, "since": prev.get("since") or now_iso(),
+                              "checked_at": now_iso()}
+
+
+def process_questions(path: Path, rec: dict, questions: list, has_result: bool) -> str | None:
+    """Una sveglia per ogni question del task, senza chiudere l'atteso. Al piu' una per giro."""
+    qs = rec.setdefault("questions", {})
+    label = f"{rec['task_id']} {rec['agent']}/{rec['slug']}"
+    out = None
+    for _, msg, where in questions:
+        qid = msg.get("id")
+        if not isinstance(qid, str):
+            continue
+        q = qs.get(qid) or {
+            "from": msg.get("from_session") or msg.get("from"),
+            "at": msg.get("ts") or now_iso(),
+            "summary": re.sub(r"\s+", " ", str((msg.get("payload") or {}).get("summary") or ""))[:160],
+            "state": "pending",
+        }
+        if (msg.get("context") or {}).get("host") and msg["context"]["host"] != rec.get("host"):
+            q["host"] = msg["context"]["host"]
+        qs[qid] = q
+        if not q.get("answered_at") and answered(rec, msg):
+            q["answered_at"] = now_iso()
+        if q["state"] != "pending":
+            continue
+        if where == "archived" or q.get("answered_at") or has_result:
+            q["state"] = "seen"
+            q.pop("pending_wake", None)
+            log(f"domanda vista {label} ({qid}): niente sveglia")
+            continue
+        if chain_blocked(msg):
+            q["state"] = "blocked"
+            q.pop("pending_wake", None)
+            log(f"catena bloccata domanda {label} ({qid})")
+            continue
+        if out == "woken_question":
+            continue  # una sveglia per giro: la prossima domanda al giro dopo
+        try:
+            how = try_wake(rec, path.parent, question_text(rec, msg))
+        except Postpone as p:
+            note_postponed(q, str(p), f"domanda {label} ({qid})")
+            out = out or "postponed"
+            continue
+        q.update(state="woken", woken_at=now_iso(), woken_via=how)
+        q.pop("pending_wake", None)
+        # Prima si scrive lo stato, poi il resto: una sveglia per messaggio.
+        write_json(path, rec)
+        note_wake(path.parent, rec["task_id"])
+        log(f"sveglia domanda {label} via {how} (msg {qid})")
+        out = "woken_question"
+    write_json(path, rec)
+    return out
+
+
 def process(path: Path) -> str | None:
     rec = read_json(path)
     if not rec or rec.get("state") != "expected":
@@ -517,9 +629,12 @@ def process(path: Path) -> str | None:
     me = host_self()
     if rec.get("host") and me and rec["host"] != me:
         return None  # l'atteso di un'altra macchina lo sveglia la sua sveglia
-    arrival = find_arrival(rec)
+    hits = find_arrivals(rec)
+    questions = [h for h in hits if _is_question(h[1])]
+    results = [h for h in hits if not _is_question(h[1])]
+    q_out = process_questions(path, rec, questions, bool(results)) if questions else None
     now = time.time()
-    if arrival is None:
+    if not results:
         dl = parse_iso(rec.get("deadline"))
         if dl is not None and now > dl:
             rec.update(state="expired", expired_at=now_iso())
@@ -527,9 +642,9 @@ def process(path: Path) -> str | None:
             notify_expired(rec)
             log(f"scaduto {rec['task_id']} {rec['agent']}/{rec['slug']}")
             return "expired"
-        return None
+        return q_out
 
-    mpath, msg, where = arrival
+    mpath, msg, where = results[0]
     rec["arrived"] = {"msg_id": msg.get("id"), "from": msg.get("from_session") or msg.get("from"),
                       "at": rec.get("arrived", {}).get("at") or now_iso()}
     if where == "archived":
@@ -546,26 +661,10 @@ def process(path: Path) -> str | None:
         log(f"catena bloccata {rec['task_id']} {rec['agent']}/{rec['slug']}")
         return "blocked"
 
-    d = path.parent
     try:
-        if wakes_last_hour(d) >= MAX_PER_HOUR:
-            raise Postpone("tetto_orario")
-        text = wake_text(rec, msg)
-        sess = onda_session(rec)
-        pane = (rec.get("target") or {}).get("tmux_pane")
-        if sess is not None:
-            how = wake_via_onda(sess, text)
-        elif pane:
-            how = wake_via_tmux(pane, text)
-        else:
-            raise Postpone("nessun_canale")
+        how = try_wake(rec, path.parent, wake_text(rec, msg))
     except Postpone as p:
-        reason = str(p)
-        prev = rec.get("pending_wake") or {}
-        if prev.get("reason") != reason:
-            log(f"rimandata {rec['task_id']} {rec['agent']}/{rec['slug']}: {reason}")
-        rec["pending_wake"] = {"reason": reason, "since": prev.get("since") or now_iso(),
-                               "checked_at": now_iso()}
+        note_postponed(rec, str(p), f"{rec['task_id']} {rec['agent']}/{rec['slug']}")
         write_json(path, rec)
         return "postponed"
 
@@ -573,7 +672,7 @@ def process(path: Path) -> str | None:
     rec.update(state="woken", woken_at=now_iso(), woken_via=how)
     rec.pop("pending_wake", None)
     write_json(path, rec)
-    note_wake(d, rec["task_id"])
+    note_wake(path.parent, rec["task_id"])
     log(f"sveglia {rec['task_id']} {rec['agent']}/{rec['slug']} via {how} (msg {msg.get('id')})")
     return "woken"
 

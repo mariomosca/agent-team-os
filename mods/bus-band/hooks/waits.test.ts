@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { orderWaits, parseWait, reasonText, toWaitRow, waitsHeadline } from './waits'
+import { askRows, orderWaits, parseWait, reasonText, toWaitRow, waitsHeadline } from './waits'
 
 const NOW = Date.parse('2026-10-17T11:00:00Z')
 
@@ -59,5 +59,32 @@ describe('rows', () => {
     const ordered = orderWaits([open, late, old], NOW)
     expect(ordered.map(w => w.taskId)).toEqual(['t-b', 't-a'])
     expect(waitsHeadline(ordered)).toBe('Aspetto 1 esito, 1 scaduto')
+  })
+})
+
+describe('questions (bus v2.7)', () => {
+  const questions = {
+    'msg-q1': { from: 'kai/f3', at: '2026-10-17T10:55:00Z', summary: 'tema scuro?', state: 'woken' },
+    'msg-q0': { from: 'kai/f3', at: '2026-10-17T10:50:00Z', summary: 'vecchia', state: 'seen', answered_at: '2026-10-17T10:52:00Z' },
+  }
+
+  test('open questions only, as alerts', () => {
+    const w = parseWait(wait({ questions }))!
+    expect(w.asks.map(a => a.msgId)).toEqual(['msg-q1'])
+    const rows = askRows([w], NOW)
+    expect(rows).toEqual([
+      { key: 'msg-q1', text: 'DOMANDA da kai/f3, aspetta te da 5 min: tema scuro? (bus_read msg-q1)', alert: true },
+    ])
+  })
+
+  test('headline counts them', () => {
+    const w = parseWait(wait({ questions }))!
+    expect(waitsHeadline([w])).toBe('Aspetto 1 esito (1 domanda aspetta te)')
+  })
+
+  test('no questions field, no rows', () => {
+    const w = parseWait(wait({}))!
+    expect(w.asks).toEqual([])
+    expect(askRows([w], NOW)).toEqual([])
   })
 })

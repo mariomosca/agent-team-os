@@ -4,6 +4,15 @@ import type { WaitRow } from '../types'
 // $AB_HOME/waits/<agent>/@<slug>/<task_id>.json (schema/bus-wait.schema.json,
 // written by agent-bus-mcp and the lib, moved on by agent-team-os-wake.py). No `$` here.
 
+// A question on the task, from whoever executes it, still without an answer
+// (bus v2.7): the delegated session is waiting for this one.
+export type Ask = {
+  msgId: string
+  from: string
+  at: string
+  summary: string
+}
+
 export type Wait = {
   taskId: string
   description: string
@@ -13,6 +22,7 @@ export type Wait = {
   state: string
   expiredAt: string | null
   pendingReason: string | null
+  asks: Ask[]
 }
 
 const str = (v: unknown) => (typeof v === 'string' && v !== '' ? v : null)
@@ -20,6 +30,20 @@ const str = (v: unknown) => (typeof v === 'string' && v !== '' ? v : null)
 // A wait the band shows: still expected, or expired in the last day.
 const SHOWN_STATES = new Set(['expected', 'expired'])
 const EXPIRED_SHOWN_MS = 24 * 60 * 60_000
+
+const parseAsks = (questions: unknown): Ask[] => {
+  if (typeof questions !== 'object' || questions === null) return []
+
+  return Object.entries(questions as Record<string, Record<string, unknown>>)
+    .filter(([, q]) => typeof q === 'object' && q !== null && str(q.answered_at) === null)
+    .map(([msgId, q]) => ({
+      msgId,
+      from: str(q.from) ?? '?',
+      at: str(q.at) ?? '',
+      summary: str(q.summary) ?? '',
+    }))
+    .sort((a, b) => a.at.localeCompare(b.at))
+}
 
 export const parseWait = (text: string): Wait | null => {
   try {
@@ -37,6 +61,7 @@ export const parseWait = (text: string): Wait | null => {
       state,
       expiredAt: str(raw.expired_at),
       pendingReason: str(raw.pending_wake?.reason),
+      asks: parseAsks(raw.questions),
     }
   } catch {
     return null
@@ -85,6 +110,17 @@ export const toWaitRow = (w: Wait, now: number): WaitRow => {
   return { key: w.taskId, text: `${who}: ${what}, da ${since}`, alert: false }
 }
 
+// One row per open question: the delegated session waits for you, so it is an alert.
+export const askRows = (waits: readonly Wait[], now: number): WaitRow[] =>
+  waits
+    .filter(w => w.state === 'expected')
+    .flatMap(w => w.asks)
+    .map(a => ({
+      key: a.msgId,
+      text: `DOMANDA da ${a.from}, aspetta te da ${age(minutes(a.at, now))}: ${a.summary === '' ? a.msgId : a.summary} (bus_read ${a.msgId})`,
+      alert: true,
+    }))
+
 // Expired first, then the oldest wait.
 export const orderWaits = (waits: readonly Wait[], now: number) =>
   waits
@@ -98,9 +134,12 @@ export const orderWaits = (waits: readonly Wait[], now: number) =>
 export const waitsHeadline = (waits: readonly Wait[]) => {
   const open = waits.filter(w => w.state === 'expected').length
   const expired = waits.length - open
+  const asks = waits.filter(w => w.state === 'expected').reduce((n, w) => n + w.asks.length, 0)
   const parts = []
   if (open > 0) parts.push(open === 1 ? '1 esito' : `${open} esiti`)
   if (expired > 0) parts.push(expired === 1 ? '1 scaduto' : `${expired} scaduti`)
 
-  return `Aspetto ${parts.join(', ')}`
+  const ask = asks === 0 ? '' : asks === 1 ? ' (1 domanda aspetta te)' : ` (${asks} domande aspettano te)`
+
+  return `Aspetto ${parts.join(', ')}${ask}`
 }

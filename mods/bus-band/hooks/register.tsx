@@ -22,7 +22,7 @@ import {
   toRow,
   toastText,
 } from './team'
-import { orderWaits, parseWait, toWaitRow, waitsHeadline } from './waits'
+import { askRows, orderWaits, parseWait, toWaitRow, waitsHeadline } from './waits'
 import type { Wait } from './waits'
 
 const snapshot = atom({ plugin: 'bus-band', key: 'snapshot' } as const, null)
@@ -101,10 +101,13 @@ const scanWaits = async ($: EngineInterface): Promise<WaitsSnapshot | null> => {
   const ordered = orderWaits(found, now)
   if (ordered.length === 0) return null
 
+  // Questions waiting for this session first: they are the ones that block someone.
+  const rows = [...askRows(ordered, now), ...ordered.map(w => toWaitRow(w, now))]
+
   return {
     headline: waitsHeadline(ordered),
-    rows: ordered.slice(0, WAITS_SHOWN).map(w => toWaitRow(w, now)),
-    hidden: Math.max(0, ordered.length - WAITS_SHOWN),
+    rows: rows.slice(0, WAITS_SHOWN),
+    hidden: Math.max(0, rows.length - WAITS_SHOWN),
     expired: ordered.filter(w => w.state === 'expired').map(w => w.taskId),
   }
 }
