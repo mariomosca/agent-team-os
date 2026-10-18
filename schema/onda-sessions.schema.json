@@ -42,11 +42,12 @@
     },
     "subagent": {
       "type": "object",
-      "required": ["id", "type", "state", "startedAt", "endedAt"],
+      "required": ["id", "type", "description", "state", "startedAt", "endedAt"],
       "additionalProperties": false,
       "properties": {
         "id": { "type": "string", "minLength": 1, "description": "Claude's agent id (agent-<id>.meta.json)." },
         "type": { "type": "string", "minLength": 1, "description": "agentType of the meta: general-purpose, Explore, a custom agent; 'unknown' when absent." },
+        "description": { "type": ["string", "null"], "maxLength": 80, "description": "Short title of the task (description of the meta), one line; null when absent." },
         "state": { "enum": ["running", "finished"], "description": "A reader treats an unknown value as finished." },
         "startedAt": { "type": "string", "format": "date-time" },
         "endedAt": { "type": ["string", "null"], "format": "date-time", "description": "null while running." }

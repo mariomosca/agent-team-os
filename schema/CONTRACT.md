@@ -183,7 +183,7 @@ $AB_HOME/onda/sessions.json        (default ~/.agent-team-os/onda/sessions.json)
       "lastTool": "Bash", "lastTarget": null,
       "hasText": false,
       "subagents": [
-        { "id": "a47b76fd03e4ca6d0", "type": "Explore", "state": "running",
+        { "id": "a47b76fd03e4ca6d0", "type": "Explore", "description": "Study Onda local API", "state": "running",
           "startedAt": "2026-10-14T09:20:00Z", "endedAt": null }
       ],
       "ask": null,
@@ -239,6 +239,7 @@ Onda li legge dai file che Claude Code tiene per la sessione (`<config>/projects
 |---|---|---|
 | `subagents[].id` | string | Id del sub-agent di Claude. |
 | `subagents[].type` | string | `agentType`: `general-purpose`, `Explore`, un agent custom; `unknown` se manca. |
+| `subagents[].description` | string \| null | Titolo breve del compito (`description` del meta), una riga, max 80 caratteri; `null` se manca. |
 | `subagents[].state` | `running` \| `finished` | `finished` quando il meta ha `finished: true`. Un sub-agent non finito e muto da 30 min, o di una sessione `exited`, non compare. Un lettore tratta un valore ignoto come `finished`. |
 | `subagents[].startedAt` | ISO 8601 | Inizio. |
 | `subagents[].endedAt` | ISO 8601 \| null | Fine; `null` finché è in corso. |
