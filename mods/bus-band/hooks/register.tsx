@@ -47,8 +47,10 @@ const busRoot = async ($: EngineInterface) => {
 }
 
 // The team as Onda sees it. Null (section absent) when the file is missing,
-// unusable, or written by an Onda that is no longer alive.
+// unusable, or written by an Onda that is no longer alive, and in a session another
+// agent opened for a delegated task (SESSIONE_DELEGATA=1): there it is only noise.
 const scanTeam = async ($: EngineInterface): Promise<TeamSnapshot | null> => {
+  if ((await $.env.get('SESSIONE_DELEGATA')) === '1') return null
   const root = await busRoot($)
   if (root === null) return null
   const file = `${root}/onda/sessions.json`

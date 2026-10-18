@@ -44,6 +44,7 @@ Squadra: 3 vive, 1 ferma
 - Order: stuck first (`TESTO FERMO` = text in the prompt box with no Enter, waiting for a permission, waiting for an answer), then by time in state. State is always in words, never only colour. At most 4 rows, then `+N`.
 - **Toast** once per episode when a sibling session becomes stuck (not for sessions already stuck when this one starts: they are in the band).
 - `/bus-band` hides/shows the whole band; `/bus-band squadra` only the team section.
+- **Delegated sessions**: with `SESSIONE_DELEGATA=1` in the session's environment (a session another agent opened through Onda for a task) the team section is never drawn and raises no toasts. The messages for that session stay.
 
 ### The button
 
@@ -69,7 +70,7 @@ Mods are not sandboxed: they run with Claude Code's own access. This one reads `
 
 ```bash
 claude plugin validate mods/bus-band   # manifest, hooks, calls, state contract
-claude plugin test mods/bus-band       # hooks/bus.test.ts, hooks/team.test.ts and hooks/waits.test.ts: cwd→agent, slug, scoping, sort, sessions.json parse, team order, self exclusion
+claude plugin test mods/bus-band       # hooks/bus.test.ts, hooks/team.test.ts, hooks/waits.test.ts and hooks/register.test.tsx (band with and without SESSIONE_DELEGATA): cwd→agent, slug, scoping, sort, sessions.json parse, team order, self exclusion
 ```
 
 The pure bus logic lives in `hooks/bus.ts` (mirrors `scripts/agent-team-os-lib.sh`); `hooks/register.tsx` holds the hooks and the drawing; `hooks/team.ts` is the pure team logic. Known gap: the shell lib also matches the `realpath` of the cwd; the mod matches the cwd Claude Code reports, which is already resolved in practice.
