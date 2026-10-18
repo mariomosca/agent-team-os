@@ -49,6 +49,7 @@ R3="$AB_HOME/registry/kai.d/f3.json"
 reg
 qid=$(send kai f3 alita/work-hub question AB_TASK_ID=t-20261018-qqq111)
 ck "domanda con task_id segna l'attesa" "$(jq -r '.waiting_agent | .agent + " " + .address + " " + .task_id + " " + (.msg_id == "'"$qid"'" | tostring)' "$R3")" "alita alita/work-hub t-20261018-qqq111 true"
+ck "summary senza spazi in coda" "$(jq -r '.waiting_agent.summary' "$R3")" "s"
 "$BASH" -c "source scripts/agent-team-os-lib.sh; ab_update_session_registry kai true /w/f3 f3" 2>/dev/null
 ck "il heartbeat la conserva" "$(jq -r '.waiting_agent.task_id' "$R3")" "t-20261018-qqq111"
 eid=$(send alita work-hub kai/f3 brief)

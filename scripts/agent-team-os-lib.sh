@@ -607,7 +607,7 @@ ab_write_message() {
     local w_addr="$to${to_host:+@$to_host}${to_slug:+/$to_slug}"
     ab_set_waiting_agent "$from" "$from_slug" "$(jq -cn --arg a "$to" --arg ad "$w_addr" \
       --arg t "$task_id" --arg m "$msg_id" --arg ts "$ts" \
-      --arg s "$(jq -r '.summary // ""' <<<"$payload" 2>/dev/null | tr -s '[:space:]' ' ' | cut -c1-160)" \
+      --arg s "$(jq -r '.summary // ""' <<<"$payload" 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//' | cut -c1-160)" \
       '{agent:$a, address:$ad, task_id:$t, msg_id:$m, since:$ts, summary:$s}')"
   elif [[ -n "$task_id" && "$type" == "response" ]]; then
     ab_clear_waiting_agent "$from" "$from_slug" "$task_id"
