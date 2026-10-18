@@ -219,6 +219,7 @@ ck "dry-run: non tocca" "$(ls "$RG/kai.d" | wc -l | tr -d ' ')" "5"
 out=$(AB_HOME="$M" bash "$R/scripts/agent-team-os-custode.sh" --registro; echo "rc=$?")
 ck "rc 0" "$(tail -1 <<<"$out")" "rc=0"
 ck "restano vivo, fresco, altrohost" "$(ls "$RG/kai.d" | sort | tr '\n' ' ')" "altrohost.json fresco.json vivo.json "
+ck "messi da parte, non cancellati" "$(ls "$RG"/.stale-*/ | sort | tr '\n' ' ')" "kai.d_crewmoor.json kai.d_senzapid.json leo.d_vault.json nico.d_rotto.json "
 ck "pid morto nel log" "$(grep -c 'kai/crewmoor (pid 999999 morto)' <<<"$out")" "1"
 ck "leo senza sessioni: active false" "$(jq -r .active "$RG/leo.json")" "false"
 ck "nico senza sessioni: active false" "$(jq -r .active "$RG/nico.json")" "false"

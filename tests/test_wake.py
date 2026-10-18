@@ -283,6 +283,28 @@ class WakeTest(unittest.TestCase):
         self.assertEqual(wake.tick(), {"postponed": ["t-20261017-abc123"]})
         self.assertEqual(self.wait_state()["questions"][qid]["pending_wake"]["reason"], "tetto_orario")
 
+    # -- pulizia del registro nel giro (OR18-F3.3)
+
+    def test_tick_prunes_registry_every_interval(self):
+        d = self.home / "registry" / "kai.d"
+        d.mkdir(parents=True)
+        dead = {"name": "kai", "slug": "ripasso", "active": True, "last_seen": "2026-10-18T10:00:00Z", "pid": 999999}
+        live = dict(dead, slug="vivo", pid=os.getpid())
+        (d / "ripasso.json").write_text(json.dumps(dead))
+        (d / "vivo.json").write_text(json.dumps(live))
+        (self.home / "registry" / "kai.json").write_text(json.dumps({"name": "kai", "active": True}))
+        out = wake.tick()
+        self.assertEqual(len(out.get("registro", [])), 1)
+        self.assertIn("kai/ripasso (pid 999999 morto)", out["registro"][0])
+        self.assertFalse((d / "ripasso.json").exists())
+        self.assertTrue((d / "vivo.json").exists())
+        stale = list((self.home / "registry").glob(".stale-*/kai.d_ripasso.json"))
+        self.assertEqual(len(stale), 1)
+        # entro l'intervallo non riparte
+        (d / "altro.json").write_text(json.dumps(dict(dead, slug="altro")))
+        self.assertNotIn("registro", wake.tick())
+        self.assertTrue((d / "altro.json").exists())
+
     def test_busy_postponed_then_woken(self):
         self.sessions([self.alita(state="working")])
         self.expect()

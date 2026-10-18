@@ -31,7 +31,7 @@ Canali per scrivere nel prompt:
 Gira con il python3 di sistema (3.9), solo stdlib. launchd lo lancia ogni 10 s
 (install.sh --sveglia); chi spedisce un esito lo lancia subito in background.
 
-    agent-team-os-wake.py [tick]                      un giro
+    agent-team-os-wake.py [tick]                      un giro (e ogni 10 min la pulizia del registro)
     agent-team-os-wake.py expect --agent A --slug S --description D [--to ADDR]
                           [--deadline ISO] [--task-id ID]       stampa il task_id
     agent-team-os-wake.py list [--agent A [--slug S]] [--all]   JSON
@@ -710,14 +710,54 @@ class Lock:
                 pass
 
 
+# Pulizia del registro (OR18-F3.3): ogni REGISTRO_S secondi il giro della sveglia
+# chiama ab_registry_prune della lib accanto a questo script. 0 = mai.
+REGISTRO_S = float(os.environ.get("AB_WAKE_REGISTRO_S", "600"))
+
+
+def registro_due() -> bool:
+    if REGISTRO_S <= 0:
+        return False
+    stamp = bus_home() / "locks" / "registro.last"
+    try:
+        return time.time() - stamp.stat().st_mtime >= REGISTRO_S
+    except OSError:
+        return True
+
+
+def registro_prune() -> list[str]:
+    """Le voci di registro di sessioni morte vanno in registry/.stale-<data>/ (lib)."""
+    stamp = bus_home() / "locks" / "registro.last"
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.touch()
+    lib = Path(__file__).resolve().parent / "agent-team-os-lib.sh"
+    if not lib.is_file():
+        return []
+    env = dict(os.environ, AB_HOME=str(bus_home()))
+    env["PATH"] = env.get("PATH", "") + ":/opt/homebrew/bin:/usr/local/bin"
+    try:
+        r = subprocess.run(["/bin/bash", "-c", 'source "$1" && ab_registry_prune', "registro", str(lib)],
+                           capture_output=True, text=True, timeout=60, env=env)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log(f"registro: errore {exc!r}")
+        return []
+    lines = [l for l in r.stdout.splitlines() if l.strip()]
+    for l in lines:
+        log(l)
+    return lines
+
+
 def tick() -> dict:
     out: dict[str, list[str]] = {}
     root = waits_root()
-    if not root.is_dir():
-        return out
     with Lock() as ok:
         if not ok:
             return {"skipped": ["un altro giro in corso"]}
+        if registro_due():
+            if pruned := registro_prune():
+                out["registro"] = pruned
+        if not root.is_dir():
+            return out
         for p in sorted(root.glob("*/@*/*.json")):
             if p.name.startswith("."):
                 continue

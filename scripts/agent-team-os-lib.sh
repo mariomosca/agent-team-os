@@ -194,7 +194,7 @@ ab_clear_waiting_agent() {
 }
 
 ab_registry_prune() {
-  # v2.7 (OR18-F3.3): drop registry entries of sessions that are gone without a
+  # v2.7 (OR18-F3.3): set aside registry entries of sessions that are gone without a
   # SessionEnd hook (crash, killed tmux, reboot). An entry of this machine goes when
   # its pid is dead; one without a pid when last_seen is older than
   # AB_SESSION_TTL_MIN. An agent with no entry left gets active:false in its flat
@@ -224,7 +224,12 @@ ab_registry_prune() {
       fi
       [[ -n "$why" ]] || continue
       echo "registro: tolgo $agent/$(basename "$f" .json) ($why)"
-      (( dry )) || rm -f "$f"
+      # Moved aside, not deleted: registry/.stale-<YYYYMMDD>/<agent>.d_<slug>.json
+      # (readers glob registry/*.d/, so a dot folder is invisible to them).
+      if (( ! dry )); then
+        mkdir -p "$AB_HOME/registry/.stale-$(date +%Y%m%d)" \
+          && mv -f "$f" "$AB_HOME/registry/.stale-$(date +%Y%m%d)/${agent}.d_$(basename "$f")"
+      fi
     done
     f="$AB_HOME/registry/${agent}.json"
     if ! compgen -G "$d/*.json" >/dev/null && [[ -s "$f" ]] \
