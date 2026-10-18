@@ -32,10 +32,34 @@
         "stateSince": { "type": "string", "format": "date-time", "description": "Start of the current state. For pending_input, the start of the episode, not the moment the 60 s elapsed." },
         "lastTool": { "type": ["string", "null"] },
         "lastTarget": { "type": ["string", "null"], "description": "Target of the last tool, relative to cwd. Never file contents." },
+        "subagents": { "type": "array", "maxItems": 12, "items": { "$ref": "#/$defs/subagent" }, "description": "Optional (Onda 2.1, 18 Oct 2026). Sub-agents of the session, read from Claude Code's subagents/*.meta.json: running ones and those finished less than 10 min ago, newest first. Empty when none or when the session's files are not found." },
+        "ask": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/ask" }], "description": "Optional (Onda 2.1, 18 Oct 2026). What the session asks the human: an object exactly when state is waiting_permission or waiting_answer, null otherwise." },
         "mounted": { "type": "boolean", "description": "The workspace is in the mosaic of an open window." },
         "hasText": { "type": ["boolean", "null"], "description": "Optional (bus v2.6). The prompt box holds text right now, even typed less than 60 s ago (stricter than pending_input). null when the screen is not read (pane not mounted, stale report). Its presence also tells a reader that agent.prompt accepts onlyIfIdle: the wake script refuses to inject into an Onda without it." },
         "windowId": { "type": ["string", "null"], "description": "Hosting window; null when mounted is false." },
         "host": { "type": "string", "description": "Machine the session runs on. Today always 'laptop'." }
+      }
+    },
+    "subagent": {
+      "type": "object",
+      "required": ["id", "type", "state", "startedAt", "endedAt"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "Claude's agent id (agent-<id>.meta.json)." },
+        "type": { "type": "string", "minLength": 1, "description": "agentType of the meta: general-purpose, Explore, a custom agent; 'unknown' when absent." },
+        "state": { "enum": ["running", "finished"], "description": "A reader treats an unknown value as finished." },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "endedAt": { "type": ["string", "null"], "format": "date-time", "description": "null while running." }
+      }
+    },
+    "ask": {
+      "type": "object",
+      "required": ["kind", "tool", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["permission", "answer"] },
+        "tool": { "type": ["string", "null"], "description": "Tool asked for (Bash, Edit, AskUserQuestion…); null when no call is pending (e.g. the trust prompt)." },
+        "text": { "type": ["string", "null"], "maxLength": 500, "description": "Only the text of the question: the questions of AskUserQuestion (one per line), the Bash command, the Edit/Write file (relative to cwd, ~/ under home), the WebFetch url. Read from Claude's transcript, never from the screen. null when unknown. The file is written 0600 because this can hold a command." }
       }
     },
     "request": {

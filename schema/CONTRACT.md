@@ -181,6 +181,12 @@ $AB_HOME/onda/sessions.json        (default ~/.agent-team-os/onda/sessions.json)
       "state": "working",
       "stateSince": "2026-10-14T09:12:00Z",
       "lastTool": "Bash", "lastTarget": null,
+      "hasText": false,
+      "subagents": [
+        { "id": "a47b76fd03e4ca6d0", "type": "Explore", "state": "running",
+          "startedAt": "2026-10-14T09:20:00Z", "endedAt": null }
+      ],
+      "ask": null,
       "mounted": true, "windowId": "window-…",
       "host": "laptop"
     }
@@ -203,6 +209,9 @@ $AB_HOME/onda/sessions.json        (default ~/.agent-team-os/onda/sessions.json)
 | `sessions[].stateSince` | ISO 8601 UTC | Da quando la sessione è in questo stato. |
 | `sessions[].lastTool` | string \| null | Ultimo tool visto (`Bash`, `Edit`, …). |
 | `sessions[].lastTarget` | string \| null | Bersaglio dell'ultimo tool, **relativo** al cwd, mai contenuti (stessa regola di privacy di §6). |
+| `sessions[].hasText` | bool \| null | Opzionale (bus v2.6). La casella del prompt ha testo adesso. `null` se lo schermo non è letto. Vedi §19. |
+| `sessions[].subagents` | array | Opzionale (Onda 2.1, 18 ott 2026). Sub-agent della sessione: quelli in corso e quelli finiti da meno di 10 min, al massimo 12, i più recenti prima. Vuoto se non ce ne sono o se Onda non trova i file della sessione. Vedi sotto. |
+| `sessions[].ask` | object \| null | Opzionale (Onda 2.1, 18 ott 2026). Cosa chiede la sessione: presente **solo** quando `state` è `waiting_permission` o `waiting_answer`, altrimenti `null`. Vedi sotto. |
 | `sessions[].mounted` | bool | Il workspace è nel mosaico di una finestra aperta. |
 | `sessions[].windowId` | string \| null | Finestra che lo ospita; `null` se `mounted` è falso. |
 | `sessions[].host` | string | Oggi sempre `laptop`. Esiste per il piano del Mac mini (`plans/PLAN-MAC-MINI-WORKER.md`). |
@@ -221,6 +230,23 @@ $AB_HOME/onda/sessions.json        (default ~/.agent-team-os/onda/sessions.json)
 `stateSince` per `pending_input` è l'istante in cui è **iniziato** l'episodio, non quello in cui sono scattati i 60 s: "TESTO FERMO da 12 min" si calcola da lì.
 
 Stati "fermi" (richiedono qualcuno): `pending_input`, `waiting_permission`, `waiting_answer`.
+
+### `subagents[]` e `ask` (per la vista Ufficio di Orbit, 18 ott 2026)
+
+Onda li legge dai file che Claude Code tiene per la sessione (`<config>/projects/<cartella>/<sessionId>.jsonl` e `…/<sessionId>/subagents/agent-<id>.meta.json`, cercati in `~/.claude` e `~/.claude-a`), mai dallo schermo.
+
+| Campo | Tipo | Note |
+|---|---|---|
+| `subagents[].id` | string | Id del sub-agent di Claude. |
+| `subagents[].type` | string | `agentType`: `general-purpose`, `Explore`, un agent custom; `unknown` se manca. |
+| `subagents[].state` | `running` \| `finished` | `finished` quando il meta ha `finished: true`. Un sub-agent non finito e muto da 30 min, o di una sessione `exited`, non compare. Un lettore tratta un valore ignoto come `finished`. |
+| `subagents[].startedAt` | ISO 8601 | Inizio. |
+| `subagents[].endedAt` | ISO 8601 \| null | Fine; `null` finché è in corso. |
+| `ask.kind` | `permission` \| `answer` | Segue lo `state`. |
+| `ask.tool` | string \| null | Tool chiesto (`Bash`, `Edit`, `AskUserQuestion`, …). `null` se non c'è una chiamata in sospeso (es. "trust this folder"). |
+| `ask.text` | string \| null | **Solo** il testo della domanda: le domande di `AskUserQuestion` (una per riga), il comando di `Bash`, il file di `Edit`/`Write` (relativo al cwd, `~/…` sotto la home), l'url di `WebFetch`. Senza caratteri di controllo, al massimo 500 caratteri. `null` se non si sa. |
+
+Privacy (decisione di Mario, 18 ott 2026): nel file va solo il testo della domanda, mai lo schermo, mai il prompt dell'utente né la prosa dell'assistente. Poiché `ask.text` può contenere un comando, Onda scrive `sessions.json` con permessi `0600`; il file resta locale e non viaggia verso altre macchine.
 
 ## 12. `requests/` — richieste dal mod a Onda
 
