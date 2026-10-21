@@ -178,6 +178,7 @@ echo "── lunedi': una volta"
 : > "$CURL_LOG"
 rc=$(WD=1 custode)
 ck "riepilogo settimanale" "$(grep -c 'tutto a posto, 0 repo aggiornati' "$CURL_LOG")" "1"
+ck "con la misura della sveglia (BS21-F3.2)" "$(grep -c 'Sveglia del bus' "$CURL_LOG")" "1"
 rc=$(WD=1 custode)
 ck "non due volte lo stesso giorno" "$(grep -c -- '--- call' "$CURL_LOG")" "1"
 rc=$(WD=1 custode FAKE_CLAUDE_MODE=expired)

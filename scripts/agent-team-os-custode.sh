@@ -415,7 +415,11 @@ if [[ $TELEGRAM -eq 1 ]]; then
   elif [[ "${CUSTODE_WEEKDAY:-$(date +%u)}" == "1" ]]; then
     stamp="$STATE/custode-weekly"
     if [[ "$(cat "$stamp" 2>/dev/null)" != "$(date +%Y-%m-%d)" ]]; then
-      send_telegram "$HOST_LABEL, custode del lunedi': tutto a posto, $REPO_UPDATED repo aggiornati."
+      # BS21-F3.2: la misura della sveglia di questa macchina, calcolata ora.
+      sveglia=$(AB_HOME="$AB_HOME" /usr/bin/python3 -I "$(ab_wake_script)" report 2>/dev/null)
+      send_telegram "$HOST_LABEL, custode del lunedi': tutto a posto, $REPO_UPDATED repo aggiornati.${sveglia:+
+
+$sveglia}"
       [[ "$NOTIFY_SENT" == true ]] && date +%Y-%m-%d > "$stamp"
     fi
   fi

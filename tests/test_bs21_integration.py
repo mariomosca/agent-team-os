@@ -59,6 +59,7 @@ class Bs21Integration(unittest.TestCase):
         os.environ["ONDA_SOCKET"] = self.sock
         self.onda = FakeOnda(self.sock)
         wake.SETTLE_S = 0
+        wake.REPORT_HOUR = 99  # niente report del lunedi' nei giri dei test
         (self.home / "onda").mkdir()
         sess = lambda agent, slug: {"sessionId": f"s-{agent}", "terminalId": f"pane-{agent}", "agent": agent,
                                     "slug": slug, "state": "idle", "hasText": False, "stateSince": "2026-01-01T00:00:00Z"}

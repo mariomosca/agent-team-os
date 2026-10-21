@@ -83,6 +83,7 @@ class WakeTest(unittest.TestCase):
         os.environ["FAKE_TMUX_DIR"] = str(self.home / "tmux")
         (self.home / "tmux").mkdir()
         wake.SETTLE_S = 0
+        wake.REPORT_HOUR = 99  # niente report del lunedi' nei giri dei test
         self.sessions([])
 
     def tearDown(self) -> None:
@@ -690,6 +691,43 @@ class WakeTest(unittest.TestCase):
         src.rename(src.parent / ".read" / src.name)
         self.sessions([self.alita()])
         self.assertEqual(wake.tick(), {})
+
+    # -- misura settimanale (BS21-F3.2)
+
+    def test_report_counts_returns_caps_and_unhandled(self):
+        self.sessions([self.alita()])
+        self.expect()
+        a = self.deliver()
+        wake.tick()  # a: con sveglia
+        b = self.deliver(where=".done")  # b: letto prima
+        wake.task_log("t-20261017-abc123").write_text(f"{time.time():.0f}\n" * wake.TASK_MAX_PER_HOUR)
+        c = self.deliver()  # c: fermato dal tetto
+        wake.tick()
+        old = self.deliver(task=None, **{"from": "vera", "from_session": "vera/growth"})
+        p = next(self.home.rglob(f"{old}.json"))
+        os.utime(p, (time.time() - 7200, time.time() - 7200))
+        r = wake.report()
+        self.assertEqual(r["ritorni"]["totale"], 3)
+        self.assertEqual((r["ritorni"]["con_sveglia"], r["ritorni"]["letti_prima"], r["ritorni"]["in_attesa"]), (1, 1, 1))
+        self.assertAlmostEqual(r["serviti"], 0.667, places=3)
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["tetti"]["per_motivo"], {"tetto_task": 1})
+        self.assertEqual(r["non_gestiti_oltre_1h"], {"alita/work-hub": 1})
+        self.assertEqual(r["deleghe"]["aperte"], 1)
+        text = wake.report_text(r)
+        self.assertIn("ritorni serviti 67% (obiettivo 95%) SOTTO OBIETTIVO", text)
+        self.assertIn("alita/work-hub 1", text)
+
+    def test_weekly_report_once_and_to_the_hub(self):
+        (self.home / "AGENT_MAP.json").write_text(json.dumps(
+            {"agents": {"alita": {}, "kai": {}}, "rules": [], "cc_awareness": {"hub": "alita"}}))
+        f = wake.weekly_report("2026-W43")
+        self.assertTrue(f.exists() and f.with_suffix(".txt").exists())
+        [note] = list((self.home / "inboxes" / "alita").glob("msg-*.json"))
+        msg = json.loads(note.read_text())
+        self.assertEqual((msg["type"], msg["intent"]), ("event", "report-sveglia"))
+        self.assertIn("Sveglia del bus", msg["payload"]["summary"])
+        self.assertNotIn("task_id", msg)
 
     # -- aggancio (BS21-F1.3): i ritorni scritti come messaggi nuovi
 

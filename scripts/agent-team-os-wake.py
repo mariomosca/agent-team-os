@@ -36,6 +36,7 @@ Gira con il python3 di sistema (3.9), solo stdlib. launchd lo lancia ogni 10 s
                           [--deadline ISO] [--task-id ID]       stampa il task_id
     agent-team-os-wake.py list [--agent A [--slug S]] [--all]   JSON
     agent-team-os-wake.py gestisci --agent A --slug S --msg-path P --esito E [--task-id T]
+    agent-team-os-wake.py report [--days 7] [--json]            misura della sveglia (BS21-F3.2)
 """
 
 from __future__ import annotations
@@ -1237,6 +1238,161 @@ def gestisci(agent: str, slug: str, msg_path: Path, esito: str, task_id: str | N
     return out
 
 
+# ---------------------------------------------------------------- misura (BS21-F3.2)
+#
+# Report settimanale di questa macchina: ritorni sulle deleghe e quanti hanno
+# svegliato, messaggi non gestiti da oltre un'ora, attese scadute, sveglie
+# fermate da un tetto. Obiettivo: oltre il 95% dei ritorni serviti (sveglia, o
+# letti dalla sessione prima che servisse). Il giro della sveglia lo scrive il
+# lunedi' dopo REPORT_HOUR in reports/, e sulla macchina dell'hub lo lascia nella
+# casella dell'agente hub; sul mini lo aggiunge il custode al Telegram del lunedi'.
+
+REPORT_HOUR = int(os.environ.get("AB_WAKE_REPORT_HOUR", "8"))
+REPORT_TARGET = 0.95
+
+
+def _in_window(iso_s: str | None, since: float) -> bool:
+    t = parse_iso(iso_s)
+    return t is not None and t >= since
+
+
+def report(days: float = 7.0) -> dict:
+    now = time.time()
+    since = now - days * 86400
+    me = host_self()
+    r = {"host": me, "from": datetime.fromtimestamp(since, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+         "to": now_iso(), "deleghe": {"nuove": 0, "aperte": 0, "chiuse": 0, "scadute": 0, "scadute_inattive": 0},
+         "ritorni": {"totale": 0, "con_sveglia": 0, "letti_prima": 0, "in_attesa": 0, "in_attesa_oltre_1h": 0},
+         "risposte_esecutore": {"totale": 0, "con_sveglia": 0},
+         "urgenti": {"totale": 0, "con_sveglia": 0},
+         "tetti": {"episodi": 0, "per_motivo": {}},
+         "non_gestiti_oltre_1h": {}, "obiettivo": REPORT_TARGET}
+    for p in sorted(waits_root().glob("*/@*/*.json")) if waits_root().is_dir() else []:
+        if p.name.startswith("."):
+            continue
+        w = read_json(p) or {}
+        if not w.get("task_id") or (w.get("host") and me and w["host"] != me):
+            continue
+        st = w.get("state")
+        if _in_window(w.get("created_at"), since):
+            r["deleghe"]["nuove"] += 1
+        if st == "expected":
+            r["deleghe"]["aperte"] += 1
+        if st == "closed" and _in_window(w.get("closed_at"), since):
+            r["deleghe"]["chiuse"] += 1
+        if st == "expired" and _in_window(w.get("expired_at"), since):
+            r["deleghe"]["scadute_inattive" if w.get("note", "").startswith("inattiva") else "scadute"] += 1
+        rets = dict(w.get("returns") or {})
+        # v2.6/v2.7: l'esito in arrived (woken = con sveglia, seen = letto prima) e le domande
+        if w.get("arrived", {}).get("msg_id") and w["arrived"]["msg_id"] not in rets:
+            a = w["arrived"]
+            rets[a["msg_id"]] = {"at": a.get("at"), "woken_at": w.get("woken_at"),
+                                 "state": {"woken": "woken", "seen": "seen", "blocked": "blocked"}.get(
+                                     st, "pending" if st == "expected" else "seen")}
+        for qid, q in (w.get("questions") or {}).items():
+            rets.setdefault(qid, q)
+        for e in rets.values():
+            if not _in_window(e.get("at"), since):
+                continue
+            r["ritorni"]["totale"] += 1
+            if e.get("woken_at"):
+                r["ritorni"]["con_sveglia"] += 1
+            elif e.get("state") in ("seen", "handled"):
+                r["ritorni"]["letti_prima"] += 1
+            elif e.get("state") == "pending":
+                r["ritorni"]["in_attesa"] += 1
+                if now - (parse_iso(e.get("at")) or now) > 3600:
+                    r["ritorni"]["in_attesa_oltre_1h"] += 1
+    for name, key in ((".answers.json", "risposte_esecutore"), (".urgent.json", "urgenti")):
+        for f in waits_root().glob(f"*/@*/{name}") if waits_root().is_dir() else []:
+            for e in (read_json(f) or {}).values():
+                if not isinstance(e, dict) or e.get("state") == "ignored" or not _in_window(e.get("at"), since):
+                    continue
+                r[key]["totale"] += 1
+                if e.get("woken_at"):
+                    r[key]["con_sveglia"] += 1
+    try:
+        for line in (bus_home() / "logs" / "sveglia.log").read_text(encoding="utf-8").splitlines():
+            ts, _, rest = line.partition(" ")
+            m = re.search(r": (tetto_[a-z]+)$", rest)
+            if m and rest.startswith("rimandata") and _in_window(ts, since):
+                r["tetti"]["episodi"] += 1
+                r["tetti"]["per_motivo"][m.group(1)] = r["tetti"]["per_motivo"].get(m.group(1), 0) + 1
+    except OSError:
+        pass
+    inbox = bus_home() / "inboxes"
+    for d in sorted(inbox.glob("*")) if inbox.is_dir() else []:
+        for f in list(d.glob("msg-*.json")) + list(d.glob("@*/msg-*.json")):
+            try:
+                if now - f.stat().st_mtime <= 3600:
+                    continue
+            except OSError:
+                continue
+            who = d.name + ("/" + f.parent.name[1:] if f.parent != d else "")
+            r["non_gestiti_oltre_1h"][who] = r["non_gestiti_oltre_1h"].get(who, 0) + 1
+    rt = r["ritorni"]
+    served = rt["con_sveglia"] + rt["letti_prima"]
+    r["serviti"] = round(served / rt["totale"], 3) if rt["totale"] else None
+    r["ok"] = r["serviti"] is None or r["serviti"] >= REPORT_TARGET
+    return r
+
+
+def report_text(r: dict) -> str:
+    d, rt = r["deleghe"], r["ritorni"]
+    pct = "n.d." if r["serviti"] is None else f"{r['serviti'] * 100:.0f}%"
+    lines = [
+        f"Sveglia del bus, {r['host'] or 'questa macchina'}, ultimi 7 giorni: ritorni serviti {pct} "
+        f"(obiettivo {r['obiettivo'] * 100:.0f}%){'' if r['ok'] else ' SOTTO OBIETTIVO'}.",
+        f"Deleghe: {d['nuove']} nuove, {d['aperte']} aperte, {d['chiuse']} chiuse, "
+        f"{d['scadute']} scadute senza esito, {d['scadute_inattive']} chiuse per inattivita'.",
+        f"Ritorni: {rt['totale']}, {rt['con_sveglia']} con sveglia, {rt['letti_prima']} letti prima, "
+        f"{rt['in_attesa']} in attesa ({rt['in_attesa_oltre_1h']} da oltre un'ora).",
+        f"Risposte all'esecutore: {r['risposte_esecutore']['totale']} ({r['risposte_esecutore']['con_sveglia']} con sveglia); "
+        f"urgenti fuori delega: {r['urgenti']['totale']} ({r['urgenti']['con_sveglia']} con sveglia).",
+        f"Sveglie fermate da un tetto: {r['tetti']['episodi']}"
+        + (" (" + ", ".join(f"{k} {v}" for k, v in sorted(r["tetti"]["per_motivo"].items())) + ")"
+           if r["tetti"]["per_motivo"] else "") + ".",
+    ]
+    ng = r["non_gestiti_oltre_1h"]
+    lines.append("Messaggi non gestiti da oltre un'ora: "
+                 + (", ".join(f"{k} {v}" for k, v in sorted(ng.items(), key=lambda kv: -kv[1])) if ng else "nessuno") + ".")
+    return "\n".join(lines)
+
+
+def report_due() -> str | None:
+    """La settimana ISO del report da scrivere ora, o None."""
+    lt = time.localtime()
+    if lt.tm_wday != 0 or lt.tm_hour < REPORT_HOUR:
+        return None
+    week = time.strftime("%G-W%V", lt)
+    return None if (bus_home() / "reports" / f"sveglia-{week}.json").exists() else week
+
+
+def weekly_report(week: str) -> Path:
+    r = report()
+    d = bus_home() / "reports"
+    write_json(d / f"sveglia-{week}.json", r)
+    (d / f"sveglia-{week}.txt").write_text(report_text(r) + "\n", encoding="utf-8")
+    amap = read_json(bus_home() / "AGENT_MAP.json") or {}
+    hub = (amap.get("cc_awareness") or {}).get("hub")
+    hub_host = next((h for h, c in (amap.get("hosts") or {}).items() if (c or {}).get("hub") is True), None)
+    me = host_self()
+    if hub and (amap.get("agents") or {}).get(hub) is not None and (not hub_host or not me or me == hub_host):
+        ts = now_iso()
+        rand = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        mid = f"msg-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{rand}"
+        msg = {"id": mid, "version": "1.0", "from": hub, "to": hub, "type": "event", "intent": "report-sveglia",
+               "thread_id": f"thread-{ts[:10].replace('-', '')}-sveglia", "in_reply_to": None,
+               "priority": "normal" if r["ok"] else "high",
+               "payload": {"summary": report_text(r), "report": str(d / f"sveglia-{week}.json")},
+               "context_refs": [str(d / f"sveglia-{week}.json")], "requires_response": False, "ts": ts}
+        if me:
+            msg["context"] = {"host": me}
+        write_json(bus_home() / "inboxes" / hub / f"{mid}.json", msg)
+    log(f"report settimanale {week}: serviti {r['serviti']}")
+    return d / f"sveglia-{week}.json"
+
+
 class Lock:
     def __init__(self) -> None:
         self.path = bus_home() / "locks" / "wake.lock"
@@ -1323,6 +1479,11 @@ def tick() -> dict:
             log(f"errore aggancio: {exc!r}")
         for k, v in wake_round().items():
             out.setdefault(k, []).extend(v)
+        try:
+            if (week := report_due()) is not None:
+                out["report"] = [str(weekly_report(week))]
+        except Exception as exc:  # il report non ferma la sveglia
+            log(f"errore report: {exc!r}")
     return out
 
 
@@ -1345,6 +1506,9 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--msg-path", required=True)
     g.add_argument("--esito", required=True, choices=ESITI)
     g.add_argument("--task-id")
+    rp = sub.add_parser("report")
+    rp.add_argument("--days", type=float, default=7.0)
+    rp.add_argument("--json", action="store_true")
     l = sub.add_parser("list")
     l.add_argument("--agent")
     l.add_argument("--slug")
@@ -1370,6 +1534,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
         print(json.dumps(res, ensure_ascii=False))
+        return 0
+    if a.cmd == "report":
+        r = report(a.days)
+        print(json.dumps(r, ensure_ascii=False, indent=2) if a.json else report_text(r))
         return 0
     if a.cmd == "list":
         print(json.dumps(list_waits(a.agent, a.slug, a.all), ensure_ascii=False, indent=2))
