@@ -914,7 +914,9 @@ ab_update_registry() {
   # v1.4: each live session gets its own registry entry. The flat file below is kept
   # in sync for older readers (Onda plugin, /bus), but it can only describe one
   # session — ab_list_sessions is the accurate source.
-  ab_update_session_registry "$agent" "$active" "$workspace"
+  # BS21-F1.5: the session's own slug (AB_SESSION_SLUG, e.g. a second copy of an agent
+  # in the same folder), not the folder name: two sessions there must not share one entry.
+  ab_update_session_registry "$agent" "$active" "$workspace" "${AB_SESSION_SLUG:-}"
 
   local f="$AB_HOME/registry/${agent}.json"
   [[ -f "$f" ]] || return 0
