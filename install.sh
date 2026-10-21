@@ -129,6 +129,12 @@ cp "$REPO_DIR/scripts/agent-team-os-taskprovider.sh" "$CLAUDE_HOME/scripts/agent
 cp "$REPO_DIR/scripts/agent-team-os-harvest.sh"      "$CLAUDE_HOME/scripts/agent-team-os-harvest.sh"
 cp "$REPO_DIR/scripts/agent-team-os-collect.sh"      "$CLAUDE_HOME/scripts/agent-team-os-collect.sh"
 cp "$REPO_DIR/scripts/agent-team-os-wake.py"         "$CLAUDE_HOME/scripts/agent-team-os-wake.py"
+# An installed custode (the mini) gets the new script on every install; its jobs
+# (cron, launchd) are only touched by --custode.
+if [[ -f "$CLAUDE_HOME/scripts/agent-team-os-custode.sh" ]]; then
+  cp "$REPO_DIR/scripts/agent-team-os-custode.sh" "$CLAUDE_HOME/scripts/agent-team-os-custode.sh"
+  chmod +x "$CLAUDE_HOME/scripts/agent-team-os-custode.sh"
+fi
 chmod +x "$CLAUDE_HOME/scripts/agent-team-os-taskprovider.sh" "$CLAUDE_HOME/scripts/agent-team-os-harvest.sh" \
          "$CLAUDE_HOME/scripts/agent-team-os-collect.sh" "$CLAUDE_HOME/scripts/agent-team-os-wake.py"
 
@@ -207,6 +213,10 @@ fi
 
 if [[ "$REGISTER_HOOKS" -eq 1 ]]; then
   SETTINGS="$CLAUDE_HOME/settings.json"
+  # A settings.json shared through a symlink (~/.claude-a/settings.json -> ~/.claude/...)
+  # is written through its real path: tmp + mv on the link would replace it with a
+  # regular file and silently split the two accounts' config.
+  [[ -L "$SETTINGS" ]] && SETTINGS=$(/usr/bin/python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$SETTINGS")
   [[ -s "$SETTINGS" ]] || echo '{}' > "$SETTINGS"
   if ! jq empty "$SETTINGS" 2>/dev/null; then
     echo "ERROR: $SETTINGS is not valid JSON; hooks not registered."
@@ -407,6 +417,20 @@ fi
 
 echo ""
 echo "Install complete."
+# BS21-F3.3b: another Claude config dir on this machine (the second account,
+# ~/.claude-a, keeps its own scripts/) with an older lib runs the old wake through
+# its sessions. Say so: install there too with CLAUDE_HOME=<dir> ./install.sh.
+for other in "$HOME/.claude" "$HOME/.claude-a" "$HOME/.config/claude-mini"; do
+  [[ -d "$other" ]] || continue
+  [[ "$(cd "$other" && pwd -P)" == "$(cd "$CLAUDE_HOME" && pwd -P)" ]] && continue
+  o_lib="$other/scripts/agent-team-os-lib.sh"
+  [[ -f "$o_lib" ]] || continue
+  if ! cmp -s "$o_lib" "$REPO_DIR/scripts/agent-team-os-lib.sh"; then
+    echo "WARN: $other has a different agent-team-os lib: its sessions run the old bus."
+    echo "      Fix: CLAUDE_HOME=$other ./install.sh"
+  fi
+done
+
 echo ""
 echo "Next steps:"
 echo "  1. Edit $BUS_HOME/AGENT_MAP.json — map your workspaces to agent names."
