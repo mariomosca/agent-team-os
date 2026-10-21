@@ -545,30 +545,43 @@ def onda_call(method: str, params: dict) -> dict:
 
 
 def onda_session(rec: dict) -> dict | None:
-    """La sessione dell'atteso in sessions.json, se Onda e' vivo e la conosce."""
+    """La sessione dell'atteso in sessions.json, se Onda e' vivo e la conosce.
+
+    BS21-F3.3b: Onda scrive "exited" anche per una sessione solo ferma da oltre 30
+    minuti senza eventi (SILENT_EXIT_MS, onda-sessions.ts): e' proprio la sessione
+    da svegliare. Una voce exited del target vale quindi come canale; se la
+    sessione e' finita davvero, la guardia di agent.prompt lo dice (no_session).
+    Prima le voci vive, poi quelle exited; per sessione Claude, pane, agente/slug.
+    """
     doc = read_json(bus_home() / "onda" / "sessions.json")
     if not doc or doc.get("v") != 1 or not _pid_alive(doc.get("ondaPid")):
         return None
     written = parse_iso(doc.get("writtenAt"))
     if written is None or time.time() - written > SESSIONS_FRESH_S:
         return None
-    live = [s for s in doc.get("sessions") or [] if isinstance(s, dict) and s.get("state") != "exited"]
+    every = [s for s in doc.get("sessions") or [] if isinstance(s, dict)]
+    live = [s for s in every if s.get("state") != "exited"]
+    retired = [s for s in every if s.get("state") == "exited"]
     tgt = rec.get("target") or {}
-    if tgt.get("claude_session_id"):
-        for s in live:
-            if s.get("sessionId") == tgt["claude_session_id"]:
+    newest = lambda ss: max(ss, key=lambda s: s.get("stateSince") or "") if ss else None
+    for pool in (live, retired):
+        if tgt.get("claude_session_id"):
+            for s in pool:
+                if s.get("sessionId") == tgt["claude_session_id"]:
+                    return s
+        if tgt.get("onda_terminal_id"):
+            if (s := newest([s for s in pool if s.get("terminalId") == tgt["onda_terminal_id"]])) is not None:
                 return s
-    if tgt.get("onda_terminal_id"):
-        same = [s for s in live if s.get("terminalId") == tgt["onda_terminal_id"]]
-        if same:
-            return max(same, key=lambda s: s.get("stateSince") or "")
-    same = [s for s in live if s.get("agent") == rec["agent"] and s.get("slug") == rec["slug"]]
-    if same:
-        return max(same, key=lambda s: s.get("stateSince") or "")
+        if (s := newest([s for s in pool if s.get("agent") == rec["agent"] and s.get("slug") == rec["slug"]])) is not None:
+            return s
     return None
 
 
 def wake_via_onda(sess: dict, text: str) -> str:
+    if sess.get("state") == "exited":
+        # Voce ritirata per silenzio: lo stato vero lo sa solo Onda, che con onlyIfIdle
+        # rifiuta se lavora, chiede, ha testo o la sessione e' finita (no_session).
+        return _onda_prompt(sess, text)
     if "hasText" not in sess:
         # Onda senza guardia: non sa dire se Mario sta scrivendo. Meglio aspettare.
         raise Postpone("onda_senza_guardia")
@@ -579,6 +592,10 @@ def wake_via_onda(sess: dict, text: str) -> str:
     since = parse_iso(sess.get("stateSince"))
     if since is not None and time.time() - since < SETTLE_S:
         raise Postpone("onda:settling")
+    return _onda_prompt(sess, text)
+
+
+def _onda_prompt(sess: dict, text: str) -> str:
     try:
         res = onda_call("agent.prompt", {"terminalId": sess["terminalId"], "prompt": text,
                                          "onlyIfIdle": True})
@@ -767,6 +784,44 @@ def try_wake(rec: dict, d: Path, text: str) -> str:
     if pane:
         return wake_via_tmux(pane, text)
     raise Postpone("nessun_canale")
+
+
+# BS21-F3.3b: una sessione da svegliare senza nessun canale (ne' Onda ne' tmux, o
+# una sessione che Onda dice finita) non si rimanda in silenzio: dopo NOCHANNEL_S
+# un avviso, una volta, nella casella dell'agente hub (priorita' alta).
+NOCHANNEL_REASONS = ("nessun_canale", "onda:no_session")
+NOCHANNEL_S = float(os.environ.get("AB_WAKE_NOCHANNEL_S", "300"))
+
+
+def notify_nochannel(agent: str, slug: str, items: list[dict]) -> str | None:
+    amap = read_json(bus_home() / "AGENT_MAP.json") or {}
+    hub = (amap.get("cc_awareness") or {}).get("hub") or agent
+    if hub not in (amap.get("agents") or {}):
+        hub = agent
+    ts = now_iso()
+    rand = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    mid = f"msg-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{rand}"
+    why = items[0]["entry"].get("pending_wake", {}).get("reason", "nessun_canale")
+    since = items[0]["entry"].get("pending_wake", {}).get("since", ts)
+    what = "; ".join(item_text(i) for i in items)
+    msg = {
+        "id": mid, "version": "1.0", "from": hub, "from_session": f"{hub}/sveglia", "to": hub,
+        "thread_id": f"thread-{ts[:10].replace('-', '')}-sveglia", "in_reply_to": None,
+        "type": "event", "intent": "sveglia-senza-canale", "priority": "high",
+        "payload": {
+            "summary": (f"Sveglia senza canale: {agent}/{slug} ha {len(items)} messaggi da svegliare, "
+                        f"ma dal {since} non trovo il suo pane ({why}: ne' Onda ne' tmux). "
+                        f"Va svegliata a mano o riaperta. Messaggi: {what}."),
+            "session": f"{agent}/{slug}", "reason": why,
+            "messages": [i["mid"] for i in items],
+        },
+        "context_refs": [], "requires_response": False, "ts": ts,
+    }
+    if h := host_self():
+        msg["context"] = {"host": h}
+    write_json(bus_home() / "inboxes" / hub / f"{mid}.json", msg)
+    log(f"senza canale {agent}/{slug}: avviso {mid} a {hub} ({len(items)} messaggi, {why})")
+    return mid
 
 
 def note_postponed(holder: dict, reason: str, label: str) -> None:
@@ -1070,6 +1125,13 @@ def wake_sessions(items: list[dict], recs_by_session: dict) -> dict[str, list[st
             for it in ok:
                 note_postponed(it["entry"], str(p), f"{it['task_id'] or it['kind']} {label} ({it['mid']})")
                 out.setdefault("postponed", []).append(it["task_id"] or it["mid"])
+            if str(p) in NOCHANNEL_REASONS:
+                late = [it for it in ok if not it["entry"].get("nochannel_notice")
+                        and time.time() - (parse_iso(it["entry"]["pending_wake"].get("since")) or time.time()) >= NOCHANNEL_S]
+                if late and (mid := notify_nochannel(agent, slug, late)):
+                    for it in late:
+                        it["entry"]["nochannel_notice"] = {"msg_id": mid, "at": now_iso()}
+                    out.setdefault("nochannel", []).append(f"{agent}/{slug}")
             continue
         at = now_iso()
         for it in ok:

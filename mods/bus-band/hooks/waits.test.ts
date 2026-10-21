@@ -110,6 +110,7 @@ describe('returns (bus v2.8)', () => {
     expect(r.text).toBe('kai/f3: spike orbit, ritorno arrivato, sveglia rimandata (tetto di sveglie con questo agente)')
     expect(r.alert).toBe(true)
     expect(reasonText('tetto_task')).toBe('tetto di sveglie per questo task')
+    expect(reasonText('onda:no_session')).toBe('Onda non trova la sessione nel pane')
   })
 
   test('closed waits are not shown', () => {

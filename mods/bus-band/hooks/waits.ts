@@ -104,6 +104,7 @@ export const reasonText = (reason: string) => {
   if (reason === 'tetto_urgenti') return 'un urgente da questo agente negli ultimi 15 min'
   if (reason === 'onda_senza_guardia') return 'Onda da aggiornare'
   if (reason === 'nessun_canale') return 'nessun canale per svegliarti'
+  if (reason === 'onda:no_session') return 'Onda non trova la sessione nel pane'
 
   return reason
 }

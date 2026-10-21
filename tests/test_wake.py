@@ -84,6 +84,7 @@ class WakeTest(unittest.TestCase):
         (self.home / "tmux").mkdir()
         wake.SETTLE_S = 0
         wake.REPORT_HOUR = 99  # niente report del lunedi' nei giri dei test
+        wake.NOCHANNEL_S = 300
         self.sessions([])
 
     def tearDown(self) -> None:
@@ -728,6 +729,65 @@ class WakeTest(unittest.TestCase):
         self.assertEqual((msg["type"], msg["intent"]), ("event", "report-sveglia"))
         self.assertIn("Sveglia del bus", msg["payload"]["summary"])
         self.assertNotIn("task_id", msg)
+
+    # -- canale della sveglia (BS21-F3.3b, il caso di Leo del 21/10)
+
+    def test_session_retired_by_onda_for_silence_is_still_woken(self):
+        # Onda scrive "exited" per una sessione ferma da oltre 30 min senza eventi
+        # (SILENT_EXIT_MS): era Leo, vivo nel suo pane, con due esiti rimasti pending.
+        retired = dict(self.alita(), state="exited", hasText=None)
+        self.sessions([retired])
+        self.expect(target={"onda_terminal_id": "pane-alita", "claude_session_id": "sess-alita"})
+        self.deliver()
+        self.assertEqual(wake.tick(), {"woken": ["t-20261017-abc123"]})
+        [call] = self.onda.calls
+        self.assertEqual(call["params"]["terminalId"], "pane-alita")
+        self.assertTrue(call["params"]["onlyIfIdle"])  # decide la guardia di Onda
+
+    def test_live_entry_wins_over_a_retired_one(self):
+        old = dict(self.alita(term="pane-vecchio"), state="exited", sessionId="sess-vecchia")
+        self.sessions([old, self.alita(term="pane-nuovo")])
+        self.expect(target={})
+        self.deliver()
+        wake.tick()
+        self.assertEqual(self.onda.calls[0]["params"]["terminalId"], "pane-nuovo")
+
+    def test_really_ended_session_is_refused_by_onda_then_notified(self):
+        wake.NOCHANNEL_S = 0
+        (self.home / "AGENT_MAP.json").write_text(json.dumps(
+            {"agents": {"alita": {}, "kai": {}, "leo": {}}, "rules": [], "cc_awareness": {"hub": "alita"}}))
+        self.sessions([dict(self.alita(), state="exited", hasText=None)])
+        self.onda.reply = {"success": False, "errorCode": "not_idle", "reason": "no_session", "completedSteps": []}
+        self.expect()
+        mid = self.deliver()
+        out = wake.tick()
+        self.assertEqual(out["postponed"], ["t-20261017-abc123"])
+        self.assertEqual(out["nochannel"], ["alita/work-hub"])
+        [note] = list((self.home / "inboxes" / "alita").glob("msg-*.json"))
+        n = json.loads(note.read_text())
+        self.assertEqual((n["intent"], n["priority"]), ("sveglia-senza-canale", "high"))
+        self.assertIn(mid, n["payload"]["messages"])
+        self.assertNotIn("task_id", n)
+        self.assertEqual(self.wait_state()["returns"][mid]["nochannel_notice"]["msg_id"], n["id"])
+        wake.tick()  # una volta sola
+        self.assertEqual(len(list((self.home / "inboxes" / "alita").glob("msg-*.json"))), 1)
+
+    def test_no_channel_at_all_waits_then_notifies_once(self):
+        (self.home / "AGENT_MAP.json").write_text(json.dumps(
+            {"agents": {"alita": {}, "kai": {}}, "rules": [], "cc_awareness": {"hub": "alita"}}))
+        self.sessions([])  # nessuna sessione in Onda, nessun tmux
+        self.expect(target={})
+        self.deliver()
+        wake.NOCHANNEL_S = 300
+        self.assertNotIn("nochannel", wake.tick())  # appena arrivato: si aspetta un po'
+        f = self.home / "waits" / "alita" / "@work-hub" / "t-20261017-abc123.json"
+        rec = json.loads(f.read_text())
+        for e in rec["returns"].values():
+            e["pending_wake"]["since"] = iso(datetime.now(timezone.utc) - timedelta(minutes=6))
+        f.write_text(json.dumps(rec))
+        self.assertEqual(wake.tick()["nochannel"], ["alita/work-hub"])
+        self.assertNotIn("nochannel", wake.tick())
+        self.assertEqual(len(list((self.home / "inboxes" / "alita").glob("msg-*.json"))), 1)
 
     # -- aggancio (BS21-F1.3): i ritorni scritti come messaggi nuovi
 
