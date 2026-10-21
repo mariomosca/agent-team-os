@@ -2,60 +2,266 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/mariomosca/agent-team-os/schema/bus-wait.schema.json",
   "title": "bus wait (expected result)",
-  "description": "Bus v2.6, questions v2.7. One file $AB_HOME/waits/<agent>/@<slug>/<task_id>.json per delegated task whose result a session waits for, written atomically (tmp + rename). Created by whoever delegates (agent-bus-mcp bus_send expect_result / bus_expect, lib ab_expect); moved on ONLY by scripts/agent-team-os-wake.py (expected -> woken | seen | blocked | expired). A task_id has a single wait bus-wide. Dot-files in the same folder (.wakes.log, .woken.json) belong to the wake script. Readers ignore unknown fields.",
+  "description": "Bus v2.6, questions v2.7. One file $AB_HOME/waits/<agent>/@<slug>/<task_id>.json per delegated task whose result a session waits for, written atomically (tmp + rename). Created by whoever delegates (agent-bus-mcp bus_send expect_result / bus_expect, lib ab_expect); moved on by scripts/agent-team-os-wake.py and by the outcome of bus_gestisci / ab_gestisci (v2.8: stays expected across wakes; closed | expired; woken | seen | blocked are v2.6 final states). A task_id has a single wait bus-wide. Dot-files in the same folder (.wakes.log, .woken.json) belong to the wake script. Readers ignore unknown fields.",
   "type": "object",
-  "required": ["v", "task_id", "agent", "slug", "created_at", "state"],
+  "required": [
+    "v",
+    "task_id",
+    "agent",
+    "slug",
+    "created_at",
+    "state"
+  ],
   "properties": {
-    "v": { "const": 1 },
-    "task_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$", "description": "Canonical t-<YYYYMMDD>-<rand6>. Also the file name." },
-    "agent": { "type": "string", "description": "The waiting session's agent." },
-    "slug": { "type": "string", "description": "The waiting session's slug." },
-    "host": { "type": ["string", "null"], "description": "Machine of the waiting session; only that machine's wake script touches the file." },
-    "description": { "type": "string", "maxLength": 200, "description": "A few words, shown in the wake prompt and in the bus-band." },
-    "delegated_to": { "type": ["string", "null"], "description": "Address of whoever does the work." },
-    "created_at": { "type": "string", "format": "date-time" },
-    "deadline": { "type": ["string", "null"], "format": "date-time", "description": "Past it with no result: state expired and one notice in the waiter's inbox (no wake)." },
-    "state": { "enum": ["expected", "woken", "seen", "blocked", "expired", "cancelled"], "description": "expected = waiting. woken = result arrived, prompt written once. seen = the session read the result itself before any wake. blocked = the result came from a session just woken (wake_chain): no chain. expired = deadline passed with no result. cancelled = withdrawn by hand. Questions (v2.7) do not change it." },
+    "v": {
+      "const": 1
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$",
+      "description": "Canonical t-<YYYYMMDD>-<rand6>. Also the file name."
+    },
+    "agent": {
+      "type": "string",
+      "description": "The waiting session's agent."
+    },
+    "slug": {
+      "type": "string",
+      "description": "The waiting session's slug."
+    },
+    "host": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Machine of the waiting session; only that machine's wake script touches the file."
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 200,
+      "description": "A few words, shown in the wake prompt and in the bus-band."
+    },
+    "delegated_to": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Address of whoever does the work."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "deadline": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time",
+      "description": "Past it with no result: state expired and one notice in the waiter's inbox (no wake)."
+    },
+    "state": {
+      "enum": [
+        "expected",
+        "closed",
+        "woken",
+        "seen",
+        "blocked",
+        "expired",
+        "cancelled"
+      ],
+      "description": "v2.8: expected = open, also after any number of wakes; closed = the waiter consumed a return with esito chiuso; expired = deadline passed with no return, or no movement for AB_WAIT_IDLE_H (note 'inattiva da N ore'). v2.6 final states, never reopened by the wake: woken (result arrived, prompt written once), seen (read before the wake), blocked (wake_chain). cancelled = withdrawn by hand. A riarma/risposto on a closed wait reopens it (reopened_from)."
+    },
     "target": {
       "type": "object",
       "description": "How to reach the waiting session's prompt, captured from its environment at registration.",
       "properties": {
-        "onda_terminal_id": { "type": "string" },
-        "claude_session_id": { "type": "string" },
-        "tmux_pane": { "type": "string" }
+        "onda_terminal_id": {
+          "type": "string"
+        },
+        "claude_session_id": {
+          "type": "string"
+        },
+        "tmux_pane": {
+          "type": "string"
+        }
       }
     },
     "arrived": {
       "type": "object",
-      "properties": { "msg_id": { "type": "string" }, "from": { "type": "string" }, "at": { "type": "string" } }
+      "properties": {
+        "msg_id": {
+          "type": "string"
+        },
+        "from": {
+          "type": "string"
+        },
+        "at": {
+          "type": "string"
+        }
+      }
     },
     "pending_wake": {
       "type": "object",
-      "description": "The result is in the inbox but the wake is postponed: reason (onda:working, onda:has_text, tmux:busy, tetto_orario, onda_senza_guardia, nessun_canale, ...), since, checked_at.",
-      "properties": { "reason": { "type": "string" }, "since": { "type": "string" }, "checked_at": { "type": "string" } }
+      "description": "Why the latest still-pending return is not woken yet: onda:working, onda:has_text, tmux:busy, tetto_orario (session), tetto_task, tetto_coppia, tetto_urgenti, onda_senza_guardia, nessun_canale, ... (v2.8: copied from returns for the band).",
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "since": {
+          "type": "string"
+        },
+        "checked_at": {
+          "type": "string"
+        }
+      }
     },
-    "woken_at": { "type": "string" },
-    "woken_via": { "type": "string", "description": "onda | tmux, with :non_confermato when the submit was not seen on screen." },
-    "expired_at": { "type": "string" },
-    "closed_at": { "type": "string" },
-    "note": { "type": "string" },
+    "woken_at": {
+      "type": "string"
+    },
+    "woken_via": {
+      "type": "string",
+      "description": "onda | tmux, with :non_confermato when the submit was not seen on screen."
+    },
+    "expired_at": {
+      "type": "string"
+    },
+    "closed_at": {
+      "type": "string"
+    },
+    "note": {
+      "type": "string"
+    },
     "questions": {
       "type": "object",
-      "description": "v2.7. The executor's questions on this task (type question + same task_id), by message id. Each wakes the waiter once without closing the wait. Open = no answered_at.",
+      "description": "v2.7, read-only since v2.8 (questions are returns of type question). Kept so questions handled before v2.8 do not wake again.",
       "additionalProperties": {
         "type": "object",
         "properties": {
-          "from": { "type": "string" },
-          "at": { "type": "string" },
-          "summary": { "type": "string", "maxLength": 160 },
-          "state": { "enum": ["pending", "woken", "seen", "blocked"], "description": "seen = read before any wake, already answered, or overtaken by the result." },
-          "pending_wake": { "type": "object" },
-          "woken_at": { "type": "string" },
-          "woken_via": { "type": "string" },
-          "answered_at": { "type": "string", "description": "The waiter wrote in the question's thread after it." },
-          "host": { "type": "string" }
+          "from": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "state": {
+            "enum": [
+              "pending",
+              "woken",
+              "seen",
+              "blocked"
+            ],
+            "description": "seen = read before any wake, already answered, or overtaken by the result."
+          },
+          "pending_wake": {
+            "type": "object"
+          },
+          "woken_at": {
+            "type": "string"
+          },
+          "woken_via": {
+            "type": "string"
+          },
+          "answered_at": {
+            "type": "string",
+            "description": "The waiter wrote in the question's thread after it."
+          },
+          "host": {
+            "type": "string"
+          }
         }
       }
+    },
+    "delegation": {
+      "type": "object",
+      "description": "v2.8. The delegation message and its thread, for hooking returns written as new messages.",
+      "properties": {
+        "msg_id": {
+          "type": "string"
+        },
+        "thread_id": {
+          "type": "string"
+        }
+      }
+    },
+    "executor_session": {
+      "type": "string",
+      "description": "v2.8. agent/slug of the executor, learned from the first return (hooking by session)."
+    },
+    "returns": {
+      "type": "object",
+      "description": "v2.8. Every message on the task that reached the waiter, by message id.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "state": {
+            "enum": [
+              "pending",
+              "woken",
+              "seen",
+              "handled"
+            ],
+            "description": "pending = not woken yet (pending_wake says why); woken = in a wake; seen = filed by the session before any wake, or a question already answered in its thread; handled = consumed with bus_gestisci (handled = esito)."
+          },
+          "handled": {
+            "enum": [
+              "chiuso",
+              "riarma",
+              "risposto",
+              "letto"
+            ]
+          },
+          "handled_at": {
+            "type": "string"
+          },
+          "pending_wake": {
+            "type": "object"
+          },
+          "woken_at": {
+            "type": "string"
+          },
+          "woken_via": {
+            "type": "string"
+          },
+          "answered_at": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "last_activity": {
+      "type": "string",
+      "description": "v2.8. Last return or outcome; the idle expiry counts from here."
+    },
+    "rearmed_at": {
+      "type": "string"
+    },
+    "closed_by": {
+      "type": "string",
+      "description": "Message whose esito chiuso closed the wait."
+    },
+    "reopened_from": {
+      "type": "string"
     }
   }
 }
