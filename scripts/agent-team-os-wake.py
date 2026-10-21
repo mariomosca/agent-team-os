@@ -1068,7 +1068,7 @@ def wake_sessions(items: list[dict], recs_by_session: dict) -> dict[str, list[st
             how = try_wake(tgt, d, batch_text(ok))
         except Postpone as p:
             for it in ok:
-                note_postponed(it["entry"], str(p), f"{it['task_id']} {label} ({it['mid']})")
+                note_postponed(it["entry"], str(p), f"{it['task_id'] or it['kind']} {label} ({it['mid']})")
                 out.setdefault("postponed", []).append(it["task_id"] or it["mid"])
             continue
         at = now_iso()

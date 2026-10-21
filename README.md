@@ -277,20 +277,23 @@ jq '.status, (.checks[] | select(.status != "ok"))' ~/.agent-team-os/hosts/self/
 
 Exit code `0` ok, `1` warn, `2` fail. `hosts/self/custode.json` is `{at, host, status, checks: [{name, status, detail, fix}], notify: {sent, note}}`, fails first, written atomically. Log in `~/.agent-team-os/logs/custode.log`. On the hub (no `HOST`, or `HOST` = the hub) it says so and exits 0.
 
-## La sveglia: esiti attesi (v2.6) e domande (v2.7)
+## La sveglia: deleghe dichiarate e ogni ritorno sveglia (v2.8)
 
-A message to a session that is alive but idle used to wait in the inbox until somebody woke that session by hand. Now whoever delegates registers a `task_id` as *expected* on its own session; when the result with that `task_id` lands in its inbox and the session is idle, the bus writes one line into its prompt — once:
+A message to a session that is alive but idle used to wait in the inbox until somebody woke that session by hand. Since v2.8 (plan BS21) the bus knows who delegated what to whom — between any two agents, no roles — and wakes whoever waits on every return:
 
 ```
-Esito del task t-20261017-j2mjbt (prova sveglia F4) arrivato da kai/f3: leggilo con bus_read msg-… e prosegui.
+Ritorno sul task t-20261021-8aj5cp (bus deleghe) da kai/agent-team-os (bus_read msg-…): leggilo e gestisci il messaggio con bus_gestisci (chiuso, riarma, risposto o letto).
 ```
 
-- **Delegate**: `bus_send(..., expect_result=true)` (returns the `task_id`), or `bus_expect(description, delegated_to)` when the work goes out another way (e.g. `onda_agent_prompt`: append the returned `prompt_line`). Bash: `ab_expect "<description>" <to> [deadline]`, then `AB_TASK_ID=<id>` on `ab_write_message`.
-- **Answer**: `message_type='response'` with the same `task_id`. Replying with `in_reply_to` carries it automatically; `bus_read` of a delegation shows `_task_hint`.
-- **Questions (v2.7)**: the executor asks the delegator with `message_type='question'` and the same `task_id`. It wakes the delegator once per question (`Domanda sul task … che aspetta te: leggila con bus_read …`) without consuming the wait: the result still wakes it later. The asking session carries `waiting_agent` in its registry entry until it reads the answer (Orbit shows it as "waiting for <agent>"); the delegator sees the open question in `bus_waits.waiting_on_you` and at the top of the band's Aspetto section. A question without `task_id` wakes nobody.
-- **Rules**: only an idle session is written to (never while it works, asks, or has text in the prompt box, even typed seconds ago); one wake per expected message (each question, then the result); a message sent by a session within 30 min of its own wake carries `wake_chain` and wakes nobody (depth 1); a `task_id` has one waiter bus-wide; at most 6 wakes per session per hour. Past `deadline` with no result: one `task-scaduto` notice in the waiter's inbox, no wake.
-- **Channels**: Onda (`agent.prompt` with `onlyIfIdle`; needs an Onda that writes `hasText` in `sessions.json`, otherwise the wake waits) and tmux (`capture-pane` + `send-keys`, for the Mac mini).
-- **Where**: `scripts/agent-team-os-wake.py` (system python3, stdlib), every 10 s via launchd (`./install.sh --sveglia`; on a host with no GUI login, the headless mini, it goes into crontab), plus one round right after a result is sent. Files `waits/<agent>/@<slug>/<task_id>.json` ([schema](schema/bus-wait.schema.json)), log `logs/sveglia.log`. Visible with `bus_waits` and in the bus-band ("Aspetto 2 esiti"). Contract: [CONTRACT.md §18-21](schema/CONTRACT.md).
+- **Declare it**: every `request`, `brief` and `handoff` carries `kind` — `delega` (you want the outcome back) or `comunicazione` (nothing comes back). No default: `bus_send` / `ab_write_message` refuse the send without it (lib exit 5), with an error that explains the choice. `response`, `question`, `event` take none. Through an Onda pane (`onda_agent_prompt`): start the prompt with `[delega]` or `[comunicazione]`; a PreToolUse hook registers the wait and appends the line with the `task_id`, and refuses a long prompt that declares neither.
+- **A delegation is a wait**: `kind=delega` writes `waits/<agent>/@<slug>/<task_id>.json` on the sending session before delivery, puts the `task_id` on the message and answers `attesa registrata t-…`. `/delegate` is the shortcut.
+- **Hooking**: a return written as a new message (no `task_id`, no `in_reply_to`) gets the `task_id` of the open delegation anyway — reply to the delegation, then same executor session, same thread, same agent when the wait is unique. Several candidates and nothing decisive: the message is marked `da agganciare` and the receiver picks. Done by the wake on the receiving side, so it works across the two machines.
+- **Every return wakes**: the wait stays open after each wake. A session that is working is never interrupted: returns queue up and arrive together in the next wake (one wake, N messages, across tasks). The delegator's `response` wakes the executor when it is idle (it holds the delegation or asked a question on the task).
+- **Explicit consumption**: a message leaves the inbox only with an outcome — `bus_gestisci(message_id, esito)` / `ab_gestisci <msg> <esito>`: `chiuso` (done, wait closed), `riarma` (keep waiting, nothing sent), `risposto` (answer with the same `task_id`, wakes the executor, wait stays open), `letto`. The Stop hook counts what has no outcome and asks for one.
+- **Anti-chain**: caps per hour — 6 wakes per session, 4 per task, 6 per pair of agents; past a cap the message waits with `pending_wake = tetto_*` and the band flags it. A wait with no movement for 72 h expires with a notice. Safety net: a `high`/`urgent` message with `requires_response` wakes an idle recipient even outside a delegation, at most once every 15 minutes per pair.
+- **Measure**: `agent-team-os-wake.py report` — returns served (woken or read first, target >95%), delegations open/closed/expired, caps hit, messages unhandled for over an hour. Written every Monday to `reports/`, left in the hub agent's inbox; on the mini the custode adds it to its Monday Telegram.
+- **Channels**: Onda (`agent.prompt` with `onlyIfIdle`; needs an Onda that writes `hasText` in `sessions.json`) and tmux (`capture-pane` + `send-keys`, for the Mac mini).
+- **Where**: `scripts/agent-team-os-wake.py` (system python3, stdlib), every 10 s via launchd (`./install.sh --sveglia`; crontab on a host with no GUI login), plus one round right after every send. Files `waits/<agent>/@<slug>/<task_id>.json` ([schema](schema/bus-wait.schema.json)), log `logs/sveglia.log`. Visible with `bus_waits` and in the bus-band ("Aspetto 2 deleghe"). Messages and waits from v2.6/v2.7 keep working: old closed waits stay closed.
 
 ## Example: define your agents
 
@@ -386,16 +389,18 @@ You can declare blocked pairs in `AGENT_MAP.json` to keep contexts isolated — 
 |---------|--------------|
 | `/bus`     | Show roster, live sessions with pending counts, and routing rules |
 | `/inbox`   | List pending messages for this session (`--all` for every session of the agent) |
-| `/read <id>` | Read a message, resolve context_refs, archive it |
+| `/read <id>` | Read a message, resolve context_refs, consume it with an outcome (v2.8) |
 | `/send <to> <intent>` | Wizard to compose a new message (`<to>` = `agent` or `agent/slug`) |
 | `/reply <id> <type>`  | Reply to a message inside its thread |
 | `/handoff <to>` | Hand off the current task to another agent |
+| `/delegate <to> <intent>` | Delegate and wait for the outcome (`kind=delega`, v2.8) |
 | `/thread <id>`  | Show full thread history |
 
 ## Status
 
 - **v1.0**: file-based protocol, bash helpers, slash commands, `SessionStart` hook — battle-tested across five concurrent agents in production since May 2026.
 - **v1.4**: session identity — `agent/slug` addressing, per-session inbox, registry and drain cursor. Written after two sessions of the same agent were found stealing each other's messages.
+- **v2.8**: declared delegations (`kind`), automatic waits, hooking of returns, a wake on every return, explicit consumption (`bus_gestisci`), caps, safety net for urgent messages, weekly measure.
 - **v2.2**: `bus-band` shows the team — who is stuck (text left in the prompt box, waiting for a permission) and a button to put an out-of-mosaic workspace back in Onda.
 - **v2.1**: `bus-band` mod — the inbox as a live band above the prompt, built on Claude Code mods the day after they shipped.
 - **MCP server**: [`agent-bus-mcp`](https://github.com/mariomosca/agent-bus-mcp) exposes the bus as six typed tools (`bus_status`, `bus_inbox`, `bus_read`, `bus_send`, `bus_archive`, `bus_thread`), session addressing included. Optional: the slash commands keep working on the same files.
