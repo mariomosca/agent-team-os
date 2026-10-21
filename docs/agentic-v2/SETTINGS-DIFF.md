@@ -45,3 +45,19 @@ Rimuovere il blocco `Stop` da `settings.json` e riavviare le sessioni. Nessuno s
 - `~/.claude/` symlinkato tra account `claude` e `claudea` → la modifica vale per entrambi.
 - Un hook `Stop` che blocca in loop senza guard intrappola l'agente. Il loop guard (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`) mitiga, ma testare prima.
 - Applicare a un account alla volta e verificare una sessione di prova prima di propagare.
+
+## PreToolUse su onda_agent_prompt (bus v2.8, BS21-F1.4)
+
+`install.sh --register-hooks` aggiunge (idempotente, backup prima):
+
+```jsonc
+"PreToolUse": [
+  { "matcher": "mcp__onda__onda_agent_prompt",
+    "hooks": [ { "type": "command", "timeout": 10,
+                 "command": "/usr/bin/python3 -I ~/.claude/hooks/agent-team-os-onda-prompt.py" } ] }
+]
+```
+
+Prova isolata: `python3 -I tests/test_onda_prompt.py` (AB_HOME temporaneo). Rollback: togliere la voce
+con quel matcher. Un errore dell'hook lascia passare il prompt: il solo effetto visibile possibile è il
+rifiuto dei prompt lunghi senza `[delega]` / `[comunicazione]`, voluto.

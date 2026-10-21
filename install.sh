@@ -13,9 +13,10 @@
 #   --host-sync         install the launchd collector (every 60 s) for each host this
 #                       machine reaches over SSH (hosts.<h>.ssh in AGENT_MAP.json).
 #                       Run it on the laptop. No such host → nothing installed.
-#   --register-hooks    add the SessionStart + UserPromptSubmit hooks to
-#                       $CLAUDE_HOME/settings.json (backup first, idempotent).
-#                       The Stop hook stays opt-in.
+#   --register-hooks    add the SessionStart + UserPromptSubmit hooks and the
+#                       PreToolUse hook on onda_agent_prompt (v2.8: [delega] |
+#                       [comunicazione]) to $CLAUDE_HOME/settings.json (backup
+#                       first, idempotent). The Stop hook stays opt-in.
 #   --custode           install the custode (README "Il custode"): a launchd job at
 #                       7:00 that checks this host and warns on Telegram. Only on a
 #                       remote host: with --host <name>, or with $AB_HOME/HOST set
@@ -135,7 +136,9 @@ echo "Copying hooks → $CLAUDE_HOME/hooks/"
 cp "$REPO_DIR/hooks/agent-team-os-load.sh"   "$CLAUDE_HOME/hooks/agent-team-os-load.sh"
 cp "$REPO_DIR/hooks/agent-team-os-urgent.sh" "$CLAUDE_HOME/hooks/agent-team-os-urgent.sh"
 cp "$REPO_DIR/hooks/agent-team-os-stop.sh"   "$CLAUDE_HOME/hooks/agent-team-os-stop.sh"
-chmod +x "$CLAUDE_HOME/hooks/agent-team-os-load.sh" "$CLAUDE_HOME/hooks/agent-team-os-urgent.sh" "$CLAUDE_HOME/hooks/agent-team-os-stop.sh"
+cp "$REPO_DIR/hooks/agent-team-os-onda-prompt.py" "$CLAUDE_HOME/hooks/agent-team-os-onda-prompt.py"
+chmod +x "$CLAUDE_HOME/hooks/agent-team-os-load.sh" "$CLAUDE_HOME/hooks/agent-team-os-urgent.sh" "$CLAUDE_HOME/hooks/agent-team-os-stop.sh" \
+         "$CLAUDE_HOME/hooks/agent-team-os-onda-prompt.py"
 # NOTE: the Stop hook is COPIED but NOT auto-registered in settings.json.
 # Activate manually (gated) via skill update-config — see docs/agentic-v2/SETTINGS-DIFF.md
 
@@ -210,19 +213,23 @@ if [[ "$REGISTER_HOOKS" -eq 1 ]]; then
   fi
   cp "$SETTINGS" "$SETTINGS.bak-$(date +%Y%m%d-%H%M%S)"
   jq --arg load "$CLAUDE_HOME/hooks/agent-team-os-load.sh" \
-     --arg urgent "$CLAUDE_HOME/hooks/agent-team-os-urgent.sh" '
-    def ensure($event; $cmd; $name):
+     --arg urgent "$CLAUDE_HOME/hooks/agent-team-os-urgent.sh" \
+     --arg onda "/usr/bin/python3 -I $CLAUDE_HOME/hooks/agent-team-os-onda-prompt.py" '
+    def ensure($event; $cmd; $name; $entry):
       if ([.hooks[$event][]?.hooks[]?.command // empty] | any(endswith($name)))
       then .
-      else .hooks[$event] = ((.hooks[$event] // []) + [{hooks: [{type: "command", command: $cmd}]}])
+      else .hooks[$event] = ((.hooks[$event] // []) + [$entry])
       end;
+    def ensure($event; $cmd; $name): ensure($event; $cmd; $name; {hooks: [{type: "command", command: $cmd}]});
     .hooks = (.hooks // {})
     | ensure("SessionStart"; $load; "agent-team-os-load.sh")
     | ensure("UserPromptSubmit"; $urgent; "agent-team-os-urgent.sh")
+    | ensure("PreToolUse"; $onda; "agent-team-os-onda-prompt.py";
+             {matcher: "mcp__onda__onda_agent_prompt", hooks: [{type: "command", command: $onda, timeout: 10}]})
   ' "$SETTINGS" > "$SETTINGS.tmp"
   if [[ -s "$SETTINGS.tmp" ]] && jq empty "$SETTINGS.tmp" 2>/dev/null; then
     mv "$SETTINGS.tmp" "$SETTINGS"
-    echo "Hooks registered in $SETTINGS (SessionStart, UserPromptSubmit)."
+    echo "Hooks registered in $SETTINGS (SessionStart, UserPromptSubmit, PreToolUse onda_agent_prompt)."
   else
     rm -f "$SETTINGS.tmp"
     echo "ERROR: could not update $SETTINGS; left untouched."

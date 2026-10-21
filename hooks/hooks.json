@@ -29,6 +29,18 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "mcp__onda__onda_agent_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 -I \"${CLAUDE_PLUGIN_ROOT}\"/hooks/agent-team-os-onda-prompt.py",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }
