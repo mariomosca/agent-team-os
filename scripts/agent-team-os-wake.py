@@ -694,6 +694,9 @@ def item_text(it: dict) -> str:
         return f"domanda sul task {tid}{_desc(it.get('rec'))} da {who}, che aspetta te (bus_read {mid})"
     if kind == "answer":
         return f"risposta sul task {tid} da {who} (bus_read {mid})"
+    if kind == "urgent":
+        prio = "URGENTE" if it.get("priority") == "urgent" else "priorita' alta"
+        return f"messaggio {prio} da {who} che chiede risposta (bus_read {mid})"
     if kind == "da_agganciare":
         return (f"messaggio da {who} da agganciare, puo' essere del task "
                 f"{' o '.join(it['candidates'])} (bus_read {mid})")
@@ -702,8 +705,9 @@ def item_text(it: dict) -> str:
 
 def batch_text(items: list[dict]) -> str:
     """Una riga sola: una sveglia, N messaggi."""
-    ups = [i for i in items if i["kind"] != "answer"]
+    ups = [i for i in items if i["kind"] not in ("answer", "urgent")]
     downs = [i for i in items if i["kind"] == "answer"]
+    urg = [i for i in items if i["kind"] == "urgent"]
     parts = []
     if len(ups) == 1:
         parts.append(item_text(ups[0])[0].upper() + item_text(ups[0])[1:] + f": leggilo e {GESTISCI.replace('ognuno', 'il messaggio')}.")
@@ -715,6 +719,9 @@ def batch_text(items: list[dict]) -> str:
     elif downs:
         parts.append(f"{len(downs)} risposte sui task che esegui: " + "; ".join(item_text(i) for i in downs)
                      + ". Leggile e prosegui.")
+    if urg:
+        lead = item_text(urg[0]) if len(urg) == 1 else f"{len(urg)} messaggi urgenti: " + "; ".join(item_text(i) for i in urg)
+        parts.append(lead[0].upper() + lead[1:] + ": leggi e gestisci con bus_gestisci.")
     return " ".join(parts)
 
 
@@ -932,6 +939,94 @@ def collect_answers(open_tasks: set) -> tuple[list[dict], dict]:
     return out, states
 
 
+# Rete di sicurezza (BS21-F3.1): un messaggio high/urgent che chiede risposta sveglia
+# il destinatario fermo anche fuori da una delega, al piu' una volta ogni
+# URGENT_PAIR_S per coppia di agenti. Stato per messaggio in .urgent.json.
+URGENT_PAIR_S = float(os.environ.get("AB_WAKE_URGENT_PAIR_S", "900"))
+URGENT_PRIORITIES = ("urgent", "high")
+
+
+def urgent_path(agent: str, slug: str) -> Path:
+    return wait_dir(agent, slug) / ".urgent.json"
+
+
+def urgent_log(a: str, b: str) -> Path:
+    return waits_root() / ".urgent" / ("~".join(sorted((a, b))) + ".log")
+
+
+def _last_stamp(f: Path) -> float:
+    try:
+        return max(float(x) for x in f.read_text().split())
+    except (OSError, ValueError):
+        return 0.0
+
+
+def live_slugs(agent: str) -> list[str]:
+    """Le sessioni vive di un agente su questa macchina, secondo Onda."""
+    doc = read_json(bus_home() / "onda" / "sessions.json") or {}
+    if not _pid_alive(doc.get("ondaPid")):
+        return []
+    return sorted({s.get("slug") for s in doc.get("sessions") or []
+                   if isinstance(s, dict) and s.get("agent") == agent and s.get("slug")
+                   and s.get("state") != "exited"})
+
+
+def collect_urgent() -> tuple[list[dict], dict]:
+    out, states = [], {}
+    root = bus_home() / "inboxes"
+    if not root.is_dir():
+        return out, states
+    me = host_self()
+    now = time.time()
+    for adir in sorted(root.iterdir()):
+        if not adir.is_dir():
+            continue
+        agent = adir.name
+        dirs = [(d, d.name[1:]) for d in adir.iterdir() if d.is_dir() and d.name.startswith("@")]
+        dirs.append((adir, None))
+        for d, slug in dirs:
+            for p in sorted(d.glob("msg-*.json")):
+                try:
+                    if now - p.stat().st_mtime > ANSWER_WINDOW_S:
+                        continue
+                except OSError:
+                    continue
+                msg = read_json(p)
+                if not msg or msg.get("priority") not in URGENT_PRIORITIES or msg.get("requires_response") is not True:
+                    continue
+                sender = msg.get("from")
+                if not sender or sender == agent or msg.get("type") in UNLINKABLE_TYPES:
+                    continue
+                tid = _msg_task_id(msg)
+                if tid and msg.get("type") == "response":
+                    continue  # risposta su un task: la tratta collect_answers
+                w = find_wait(tid) if tid else None
+                if w is not None and w.parent.parent.name == agent:
+                    continue  # ritorno su una delega del destinatario: lo tratta collect_returns
+                target = slug
+                if target is None:
+                    live = live_slugs(agent)
+                    if len(live) != 1:
+                        continue  # all'agente intero con piu' sessioni: ci pensa l'hook del prompt
+                    target = live[0]
+                st = states.setdefault((agent, target), read_json(urgent_path(agent, target)) or {})
+                mid = msg.get("id")
+                e = st.setdefault(mid, {"from": msg.get("from_session") or sender, "at": msg.get("ts") or now_iso(),
+                                        "priority": msg.get("priority"), "state": "pending"})
+                if e.get("state") != "pending":
+                    continue
+                out.append({"kind": "urgent", "agent": agent, "slug": target, "task_id": tid or "",
+                            "mid": mid, "entry": e, "sender": _sender(msg, me), "peer": sender,
+                            "priority": msg.get("priority")})
+    for (agent, slug), st in states.items():
+        for mid, e in st.items():
+            if e.get("state") == "pending" and not any(
+                    (bus_home() / "inboxes" / agent / sub / f"{mid}.json").exists() for sub in (f"@{slug}", "")):
+                e["state"] = "seen"
+                e.pop("pending_wake", None)
+    return out, states
+
+
 def session_target(agent: str, slug: str, recs: list[dict]) -> dict:
     """Come raggiungere il prompt di una sessione: l'attesa piu' recente con un target,
     oppure la voce di registro (waiting_agent.target, v2.8), oppure solo agente/slug."""
@@ -954,7 +1049,9 @@ def wake_sessions(items: list[dict], recs_by_session: dict) -> dict[str, list[st
         label = f"{agent}/{slug}"
         ok = []
         for it in its:
-            if len(_stamps(task_log(it["task_id"]))) >= TASK_MAX_PER_HOUR:
+            if it["kind"] == "urgent" and time.time() - _last_stamp(urgent_log(agent, it["peer"])) < URGENT_PAIR_S:
+                note_postponed(it["entry"], "tetto_urgenti", f"urgente {label} ({it['mid']})")
+            elif it["task_id"] and len(_stamps(task_log(it["task_id"]))) >= TASK_MAX_PER_HOUR:
                 note_postponed(it["entry"], "tetto_task", f"{it['task_id']} {label} ({it['mid']})")
             elif len(_stamps(pair_log(agent, it["peer"]))) >= PAIR_MAX_PER_HOUR:
                 note_postponed(it["entry"], "tetto_coppia", f"{it['task_id']} {label} ({it['mid']})")
@@ -962,7 +1059,7 @@ def wake_sessions(items: list[dict], recs_by_session: dict) -> dict[str, list[st
                 ok.append(it)
         for it in its:
             if it not in ok:
-                out.setdefault("postponed", []).append(it["task_id"])
+                out.setdefault("postponed", []).append(it["task_id"] or it["mid"])
         if not ok:
             continue
         tgt = session_target(agent, slug, recs_by_session.get((agent, slug), []))
@@ -971,7 +1068,7 @@ def wake_sessions(items: list[dict], recs_by_session: dict) -> dict[str, list[st
         except Postpone as p:
             for it in ok:
                 note_postponed(it["entry"], str(p), f"{it['task_id']} {label} ({it['mid']})")
-                out.setdefault("postponed", []).append(it["task_id"])
+                out.setdefault("postponed", []).append(it["task_id"] or it["mid"])
             continue
         at = now_iso()
         for it in ok:
@@ -980,14 +1077,19 @@ def wake_sessions(items: list[dict], recs_by_session: dict) -> dict[str, list[st
             it["woken"] = True
         # Prima si scrive lo stato, poi il resto: una sveglia per messaggio.
         persist(ok)
-        note_wake(d, ok[0]["task_id"])
-        for tid in {it["task_id"] for it in ok}:
+        note_wake(d, ok[0]["task_id"] or ok[0]["mid"])
+        for tid in {it["task_id"] for it in ok if it["task_id"]}:
             _stamp(task_log(tid))
         for peer in {it["peer"] for it in ok}:
             _stamp(pair_log(agent, peer))
-        log(f"sveglia {label} via {how}: " + ", ".join(f"{it['task_id']}:{it['mid']}" for it in ok))
+        for peer in {it["peer"] for it in ok if it["kind"] == "urgent"}:
+            _stamp(urgent_log(agent, peer))
+        log(f"sveglia {label} via {how}: " + ", ".join(f"{it['task_id'] or it['kind']}:{it['mid']}" for it in ok))
         for it in ok:
-            out.setdefault("woken", []).append(it["task_id"])
+            if it["kind"] == "urgent":
+                out.setdefault("urgent", []).append(it["mid"])
+            else:
+                out.setdefault("woken", []).append(it["task_id"])
     return out
 
 
@@ -1003,10 +1105,11 @@ def persist(items: list[dict]) -> None:
                 it["entry"].pop("woken_via", None)
             it["msg"]["task_link"] = it["entry"]
             _rewrite_message(it["msg_path"], it["msg"])
-        elif it["kind"] == "answer":
-            st = read_json(answers_path(it["agent"], it["slug"])) or {}
+        elif it["kind"] in ("answer", "urgent"):
+            f = (answers_path if it["kind"] == "answer" else urgent_path)(it["agent"], it["slug"])
+            st = read_json(f) or {}
             st[it["mid"]] = it["entry"]
-            write_json(answers_path(it["agent"], it["slug"]), st)
+            write_json(f, st)
 
 
 def wake_round() -> dict[str, list[str]]:
@@ -1044,6 +1147,10 @@ def wake_round() -> dict[str, list[str]]:
     items += answers
     for (agent, slug), st in states.items():
         write_json(answers_path(agent, slug), st)
+    urgent, ustates = collect_urgent()
+    items += urgent
+    for (agent, slug), st in ustates.items():
+        write_json(urgent_path(agent, slug), st)
     for k, v in wake_sessions(items, recs_by_session).items():
         out.setdefault(k, []).extend(v)
     # i rimandi si scrivono anche senza sveglia (pending_wake, per il pannello)

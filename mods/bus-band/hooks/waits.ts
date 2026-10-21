@@ -101,6 +101,7 @@ export const reasonText = (reason: string) => {
   if (reason === 'tetto_orario') return 'tetto di sveglie orarie raggiunto'
   if (reason === 'tetto_task') return 'tetto di sveglie per questo task'
   if (reason === 'tetto_coppia') return 'tetto di sveglie con questo agente'
+  if (reason === 'tetto_urgenti') return 'un urgente da questo agente negli ultimi 15 min'
   if (reason === 'onda_senza_guardia') return 'Onda da aggiornare'
   if (reason === 'nessun_canale') return 'nessun canale per svegliarti'
 

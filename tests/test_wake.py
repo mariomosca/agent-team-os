@@ -635,6 +635,62 @@ class WakeTest(unittest.TestCase):
         self.assertGreater(wakes, 0)
         self.assertEqual(len(wake._stamps(wake.task_log("t-20261017-abc123"))), wakes)
 
+    # -- rete di sicurezza fuori delega (BS21-F3.1)
+
+    def urgent(self, prio="urgent", req=True, sender="nico", where="", **extra) -> str:
+        return self.deliver(task=None, where=where, type="request", kind="comunicazione", priority=prio,
+                            requires_response=req, **dict({"from": sender, "from_session": f"{sender}/hr-bot"}, **extra))
+
+    def test_urgent_with_response_wakes_the_idle_recipient(self):
+        self.sessions([self.alita()])
+        mid = self.urgent()
+        self.assertEqual(wake.tick(), {"urgent": [mid]})
+        prompt = self.onda.calls[0]["params"]["prompt"]
+        self.assertIn("URGENTE", prompt)
+        self.assertIn(f"bus_read {mid}", prompt)
+        self.assertEqual(wake.tick(), {})  # una volta per messaggio
+
+    def test_urgent_needs_priority_and_requires_response(self):
+        self.sessions([self.alita()])
+        self.urgent(prio="normal")
+        self.urgent(req=False)
+        self.assertEqual(wake.tick(), {})
+        self.assertEqual(self.onda.calls, [])
+
+    def test_urgent_once_every_15_minutes_per_pair(self):
+        self.sessions([self.alita()])
+        a = self.urgent()
+        self.assertEqual(wake.tick(), {"urgent": [a]})
+        b = self.urgent(prio="high")
+        self.assertEqual(wake.tick(), {"postponed": [b]})
+        st = json.loads((self.home / "waits" / "alita" / "@work-hub" / ".urgent.json").read_text())
+        self.assertEqual(st[b]["pending_wake"]["reason"], "tetto_urgenti")
+        c = self.urgent(sender="vera")  # un'altra coppia passa
+        out = wake.tick()
+        self.assertEqual(out["urgent"], [c])
+        # passati i 15 minuti, anche b
+        f = wake.urgent_log("alita", "nico")
+        f.write_text(f"{time.time() - wake.URGENT_PAIR_S - 1:.0f}\n")
+        self.assertEqual(wake.tick().get("urgent"), [b])
+
+    def test_urgent_to_the_bare_agent_needs_a_single_live_session(self):
+        self.sessions([self.alita()])
+        mid = self.urgent(where="..")  # inboxes/alita/, la casella condivisa
+        self.assertEqual(wake.tick(), {"urgent": [mid]})
+        self.sessions([self.alita(), dict(self.alita(term="pane-2"), slug="altra", sessionId="s2")])
+        self.urgent(where="..", sender="vera")
+        self.assertEqual(wake.tick(), {})
+
+    def test_urgent_read_before_the_wake_does_not_wake(self):
+        self.sessions([self.alita(state="working")])
+        mid = self.urgent()
+        self.assertEqual(wake.tick(), {"postponed": [mid]})
+        src = next(self.home.rglob(f"{mid}.json"))
+        (src.parent / ".read").mkdir(exist_ok=True)
+        src.rename(src.parent / ".read" / src.name)
+        self.sessions([self.alita()])
+        self.assertEqual(wake.tick(), {})
+
     # -- aggancio (BS21-F1.3): i ritorni scritti come messaggi nuovi
 
     def msg(self, mid: str) -> dict:
