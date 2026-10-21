@@ -25,7 +25,7 @@ on_mini(){ ( AB_HOME="$M"; AB_MAP="$M/AGENT_MAP.json"; "$@" ); }
 # ab_write_message gira in una bash figlia: AB_HOME/AB_MAP arrivano dall'ambiente.
 send(){
   local m="$1" H; [[ "$1" == laptop ]] && H="$L" || H="$M"
-  AB_HOME="$H" AB_MAP="$H/AGENT_MAP.json" AB_FROM="$2" AB_TO="$3" AB_TYPE=request \
+  AB_HOME="$H" AB_MAP="$H/AGENT_MAP.json" AB_FROM="$2" AB_TO="$3" AB_TYPE=request AB_KIND=comunicazione \
     AB_INTENT=test AB_PRIORITY="${5:-normal}" AB_PAYLOAD_JSON="{\"summary\":\"$4\"}" \
     "$BASH" -c 'source scripts/agent-team-os-lib.sh; ab_write_message' 2>"$T/err"
 }

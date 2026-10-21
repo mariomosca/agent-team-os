@@ -32,6 +32,7 @@ Steps:
    Handoff:
      <FROM> → <TO> (workspace: <path>)
      intent: <intent>
+     kind: delega | comunicazione
      state_summary: ...
      next_steps: ...
      blockers: ...
@@ -45,6 +46,7 @@ Steps:
    AB_TO="$1" \
    AB_TYPE="handoff" \
    AB_INTENT="${2:-handoff}" \
+   AB_KIND="<delega|comunicazione>" \
    AB_PRIORITY="high" \
    AB_PAYLOAD_JSON='{...}' \
    AB_CONTEXT_REFS_JSON='[...]' \
@@ -55,5 +57,8 @@ Steps:
 7. Confirm with msg-id + thread-id. Tell the user: "Open a session in `<TO_WORKSPACE>` to continue."
 
 Notes:
+- **Kind is mandatory** (BS21): `delega` if you want the outcome of the handed-off work back
+  (the bus registers the wait and wakes this session on every return), `comunicazione` if you
+  are passing it on for good. Ask the user when it is not clear; there is no default.
 - Routing rules apply: if denied, suggest routing via a hub agent.
 - Handoff is a **special case of `send`** with a richer payload — the message type is `handoff` so the recipient knows to consume the state directly instead of asking.

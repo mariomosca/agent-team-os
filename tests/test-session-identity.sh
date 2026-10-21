@@ -20,7 +20,7 @@ ab_update_session_registry kai true /Users/mariomosca/Projects/02-Experiments/no
 ck "due sessioni vive" "$(ab_list_sessions kai | sort | tr '\n' ',')" "microsoft-mcp,noi-calendar,"
 
 echo "── consegna mirata"
-export AB_FROM=alita AB_TYPE=brief AB_INTENT=new-app AB_PAYLOAD_JSON='{"summary":"per noi-calendar"}'
+export AB_FROM=alita AB_TYPE=brief AB_KIND=comunicazione AB_INTENT=new-app AB_PAYLOAD_JSON='{"summary":"per noi-calendar"}'
 AB_TO=kai/noi-calendar ab_write_message >/dev/null 2>&1
 AB_PAYLOAD_JSON='{"summary":"per microsoft-mcp"}' AB_TO=kai/microsoft-mcp ab_write_message >/dev/null 2>&1
 AB_PAYLOAD_JSON='{"summary":"broadcast"}' AB_TO=kai ab_write_message >/dev/null 2>&1

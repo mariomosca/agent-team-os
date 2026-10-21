@@ -74,6 +74,15 @@ Messages should stay small. For heavy context use refs instead of embedding:
 | `gh://<owner>/<repo>/issues/<n>` | GitHub issue/PR |
 | `todoist://task/<id>` | Todoist task |
 
+### Step 4b — Kind: delega or comunicazione (mandatory, BS21)
+
+Every `request`, `brief` and `handoff` declares what it is, and the bus refuses the send without it:
+
+- **delega** — the sender wants the outcome back. The bus registers the wait on the sending session at send time (`attesa registrata t-...`), the message carries that `task_id`, and every return on it wakes the sender when idle. Any two agents, no roles: Nico→Kai, Kai→Vera, Leo→Alita all work the same way.
+- **comunicazione** — nothing has to come back; nobody gets woken.
+
+No default, no guessing from `requires_response` or the intent: if the user's words do not make it clear, ask. `response`, `question` and `event` take no kind. Show it in the preview.
+
 ### Step 5 — Priority
 
 - `urgent` → blocker, "can't proceed without", deadline passed. The UserPromptSubmit hook interrupts the recipient on their next turn.
@@ -90,7 +99,7 @@ ALWAYS show a compact preview to the user BEFORE writing:
 ```
 Draft message:
   ops → dev
-  type: request | intent: bug-fix | priority: normal
+  type: request | kind: delega | intent: bug-fix | priority: normal
   summary: scroll home stutters on Macbook M1
   deadline: 2026-05-20T18:00
   context_refs: 1 (file <project>/CLAUDE.md)
@@ -105,6 +114,7 @@ Do NOT send without explicit confirmation.
 AB_FROM="$FROM" \
 AB_TO="<to>" \
 AB_TYPE="request" \
+AB_KIND="delega" \
 AB_INTENT="<intent>" \
 AB_PRIORITY="normal" \
 AB_PAYLOAD_JSON='{...valid JSON...}' \
@@ -120,15 +130,12 @@ Exit codes:
 - 2 = routing denied
 - 3 = lock failed (retry in a few seconds)
 - 4 = malformed JSON
+- 5 = missing or wrong `AB_KIND` (the message explains the choice)
+- 6 = the wait of a delegation could not be registered (e.g. the task_id already has a waiter)
 
-Delegating a task whose result you will wait for (v2.6): prefer the MCP `bus_send(..., expect_result=true)`. With the helper, register first and pass the id:
+Delegating (v2.8): `AB_KIND=delega` (MCP: `bus_send(..., kind="delega")`) is all it takes — the wait is registered on its own and stderr (MCP: `note`) says `attesa registrata t-...`. `AB_TASK_ID` reuses a given id. Delegating outside the bus (a prompt via `onda_agent_prompt`): `bus_expect` / `ab_expect "<what>" "<to>"` and append the returned prompt line.
 
-```bash
-TASK=$(ab_expect "<what you wait for>" "<to>" "<deadline ISO, optional>")
-AB_TASK_ID="$TASK" ... MSG_ID=$(ab_write_message)
-```
-
-When the result arrives and this session is idle, the bus wakes it once with a line in the prompt. Executing a delegated task that carries a `task_id`: answer with `type: response` and the same `task_id` (`AB_IN_REPLY_TO=<msg-id>` carries it).
+Executing a delegated task that carries a `task_id`: answer with `type: response` and the same `task_id` (`AB_IN_REPLY_TO=<msg-id>` carries it). A return written as a new message is hooked to the open delegation anyway (same session, then same thread, then same agent when only one delegation is open); with several open delegations from the same agent it is marked "da agganciare" and the delegator decides.
 
 Questions during a delegated task (v2.7): send them with `type: question` and **the same `task_id`** (`AB_IN_REPLY_TO=<delegation msg-id>` carries it; MCP: `bus_send(message_type='question', in_reply_to=...)` or `task_id=...`). Each such question wakes the delegator once, if idle, and the result still wakes it later; your session shows as "waiting for <agent>" until you read the answer. A question without the `task_id` wakes nobody. Delegator, woken by a question: read it, answer in the thread (`in_reply_to` the question) or straight in the executor's pane.
 

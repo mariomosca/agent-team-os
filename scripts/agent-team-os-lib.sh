@@ -430,7 +430,12 @@ ab_write_message() {
   #   AB_RESPONSE_BY (iso, optional)
   #   AB_TASK_ID (optional, v2.6: id of a delegated task; inherited from
   #     AB_IN_REPLY_TO when that message carries one)
-  # Echoes the new msg-id on success.
+  #   AB_KIND (BS21: mandatory for request, brief and handoff, no default):
+  #     delega        = the sender wants the outcome back; the wait is registered
+  #                     here on its own and its task_id goes on the message
+  #     comunicazione = nothing comes back
+  #     response, question and event take none.
+  # Echoes the new msg-id on success; on a delegation stderr says "attesa registrata t-...".
   local from="${AB_FROM:?AB_FROM required}"
   local to="${AB_TO:?AB_TO required}"
   local type="${AB_TYPE:?AB_TYPE required}"
@@ -444,10 +449,32 @@ ab_write_message() {
   local refs="${AB_CONTEXT_REFS_JSON:-[]}"
   local req_resp="${AB_REQUIRES_RESPONSE:-false}"
   local resp_by="${AB_RESPONSE_BY:-}"
+  local kind="${AB_KIND:-}"
+
+  # BS21: a request, brief or handoff says what it is. The choice is the sender's.
+  if [[ -n "$kind" && "$kind" != "delega" && "$kind" != "comunicazione" ]]; then
+    echo "ERROR: AB_KIND must be 'delega' or 'comunicazione', not '$kind'" >&2
+    return 5
+  fi
+  case "$type" in
+    request|brief|handoff)
+      if [[ -z "$kind" ]]; then
+        echo "ERROR: say what this $type is with AB_KIND: 'delega' if you want the outcome back" >&2
+        echo "       (the bus registers the wait and wakes you on every return), 'comunicazione'" >&2
+        echo "       if nothing has to come back. There is no default." >&2
+        return 5
+      fi ;;
+    *)
+      if [[ "$kind" == "delega" ]]; then
+        echo "ERROR: a $type cannot be a delegation: send a request, brief or handoff with AB_KIND=delega" >&2
+        return 5
+      fi
+      kind="" ;;
+  esac
 
   # v2.6: a reply to a delegated task carries its id, so the waiter gets woken.
   local task_id="${AB_TASK_ID:-}" orig
-  if [[ -z "$task_id" && -n "$in_reply_to" ]]; then
+  if [[ -z "$task_id" && -n "$in_reply_to" && "$kind" != "delega" ]]; then
     orig=$(ab_resolve_msg_path "$from" "$in_reply_to" 2>/dev/null) \
       && task_id=$(jq -r '.task_id // .payload.task_id // empty' "$orig" 2>/dev/null)
   fi
@@ -521,6 +548,20 @@ ab_write_message() {
   local ts
   ts=$(ab_iso_now)
 
+  # BS21: a delegation is a wait, registered before the message exists so a fast
+  # executor never answers a task nobody waits for. Undone if delivery fails.
+  local wait_file=""
+  if [[ "$kind" == "delega" ]]; then
+    local w_args=(expect --agent "$from" --slug "$from_slug" --to "$to_addr"
+                  --description "$intent: $(jq -r '.summary // ""' <<<"$payload" 2>/dev/null)"
+                  --msg-id "$msg_id" --thread-id "$thread_id")
+    [[ -n "$resp_by" ]] && w_args+=(--deadline "$resp_by")
+    [[ -n "$task_id" ]] && w_args+=(--task-id "$task_id")
+    task_id=$(AB_HOME="$AB_HOME" /usr/bin/python3 -I "$(ab_wake_script)" "${w_args[@]}") || return 6
+    wait_file="$AB_HOME/waits/$from/@$from_slug/$task_id.json"
+    req_resp=true
+  fi
+
   local target tmp
   if [[ -n "$to_host" ]]; then
     # Remote: build the file aside, then hand it to ab_deliver_remote below.
@@ -558,6 +599,7 @@ ab_write_message() {
     --arg ts "$ts" \
     --arg host "$self_host" \
     --arg task "$task_id" \
+    --arg kind "$kind" \
     --argjson chain "$chain" \
     '{
       id: $id,
@@ -576,12 +618,14 @@ ab_write_message() {
       ts: $ts
     } + (if $host == "" then {} else {context: {host: $host}} end)
       + (if $task == "" then {} else {task_id: $task} end)
+      + (if $kind == "" then {} else {kind: $kind} end)
       + (if $chain == null then {} else {wake_chain: $chain} end)' > "$tmp"
 
   # -s too: jq exits 0 on an empty file, which is what a failed build leaves.
   if ! [[ -s "$tmp" ]] || ! jq empty "$tmp" 2>/dev/null; then
     rm -f "$tmp"
     [[ -z "$to_host" ]] && ab_unlock "$to"
+    [[ -n "$wait_file" ]] && rm -f "$wait_file"
     echo "ERROR: built invalid JSON" >&2
     return 4
   fi
@@ -622,8 +666,10 @@ ab_write_message() {
   # notify in the hub inbox so the hub keeps visibility without gatekeeping.
   ab_maybe_cc_hub "$from" "$to" "$msg_id" "$thread_id" "$type" "$intent" "$priority"
 
-  # A result for a waiting session: one wake round now, not at the next tick.
-  [[ -n "$task_id" && -z "$to_host" ]] && ab_wake_kick
+  # A return, maybe for an open wait (hooked by the wake even without task_id):
+  # one wake round now, not at the next tick. A delegation wakes nobody.
+  [[ "$kind" != "delega" && -z "$to_host" ]] && ab_wake_kick
+  [[ -n "$wait_file" ]] && echo "attesa registrata $task_id: ogni ritorno di $to_addr su questo task ti sveglia se sei fermo" >&2
 
   echo "$msg_id"
 }

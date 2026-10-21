@@ -50,7 +50,14 @@ Steps:
    - `question`:
      - `question`, `context` (optional)
 
-5. **Priority**: default `normal`. If the user says "urgent" / "blocker" / "asap" → `urgent` or `high`.
+5. **Kind (mandatory for request, brief, handoff — BS21)**: ask the user, or decide from what
+   they said, whether this is a **delega** (they want the outcome back: the bus registers the
+   wait on this session and wakes it on every return) or a **comunicazione** (nothing comes
+   back, nobody is woken). There is no default and no guessing from other fields: if it is
+   not clear, ask. `response`, `question` and `event` take no kind. For a delegation the
+   shortcut is `/delegate`.
+
+   **Priority**: default `normal`. If the user says "urgent" / "blocker" / "asap" → `urgent` or `high`.
 
 6. **Show a preview** before sending:
 
@@ -58,6 +65,7 @@ Steps:
    Sending:
      from: <FROM> → to: <TO>
      intent: <INTENT> (priority: <PRIO>)
+     kind: delega | comunicazione
      summary: ...
      deadline: ...
    Confirm? (y/n)
@@ -70,6 +78,7 @@ Steps:
    AB_TO="<to>" \
    AB_TYPE="<type>" \
    AB_INTENT="<intent>" \
+   AB_KIND="<delega|comunicazione>" \
    AB_PRIORITY="<priority>" \
    AB_PAYLOAD_JSON='{...}' \
    AB_CONTEXT_REFS_JSON='[...]' \
@@ -80,6 +89,9 @@ Steps:
    ```
 
    Notes:
+   - Without `AB_KIND` a request, brief or handoff is refused (exit 5, the message
+     explains the choice). With `AB_KIND=delega` stderr says `attesa registrata t-...`
+     and the message carries that `task_id`; `requires_response` is forced true.
    - Another host: on the laptop the message is written straight into the mini's inbox
      over SSH; if the mini is unreachable it waits in `outbox/mini/` (stderr says
      `queued`) and goes at the next collection. On the mini, messages for the laptop
@@ -88,4 +100,4 @@ Steps:
    - `requires_response` = true if you need a reply; false for events.
    - If routing is denied (exit code 2), explain and suggest an alternative.
 
-8. Confirm with msg-id and thread-id. The user can run `/thread <id>` to see the full history.
+8. Confirm with msg-id and thread-id, and for a delegation the task_id of the wait. The user can run `/thread <id>` to see the full history.

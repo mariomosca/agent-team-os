@@ -140,7 +140,7 @@ chmod +x "$CLAUDE_HOME/hooks/agent-team-os-load.sh" "$CLAUDE_HOME/hooks/agent-te
 # Activate manually (gated) via skill update-config — see docs/agentic-v2/SETTINGS-DIFF.md
 
 echo "Copying slash commands → $CLAUDE_HOME/commands/"
-for cmd in bus inbox read send reply handoff thread god; do
+for cmd in bus inbox read send reply handoff delegate thread god; do
   cp "$REPO_DIR/commands/${cmd}.md" "$CLAUDE_HOME/commands/${cmd}.md"
 done
 

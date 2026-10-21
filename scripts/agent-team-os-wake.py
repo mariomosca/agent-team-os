@@ -155,7 +155,7 @@ def find_wait(task_id: str) -> Path | None:
 
 def expect(agent: str, slug: str, description: str, to: str | None = None,
            deadline: str | None = None, task_id: str | None = None,
-           target: dict | None = None) -> dict:
+           target: dict | None = None, delegation: dict | None = None) -> dict:
     """Registra un atteso. Un task_id ha un solo atteso su tutto il bus."""
     task_id = task_id or new_task_id()
     if not TASK_ID_RE.match(task_id):
@@ -179,6 +179,9 @@ def expect(agent: str, slug: str, description: str, to: str | None = None,
         "state": "expected",
         "target": {k: v for k, v in (target or {}).items() if v},
     }
+    if delegation and any(delegation.values()):
+        # BS21: messaggio e thread della delega, per agganciare i ritorni scritti come messaggi nuovi.
+        rec["delegation"] = {k: v for k, v in delegation.items() if v}
     write_json(wait_dir(agent, slug) / f"{task_id}.json", rec)
     return rec
 
@@ -782,6 +785,8 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--to")
     e.add_argument("--deadline")
     e.add_argument("--task-id")
+    e.add_argument("--msg-id")
+    e.add_argument("--thread-id")
     l = sub.add_parser("list")
     l.add_argument("--agent")
     l.add_argument("--slug")
@@ -793,7 +798,8 @@ def main(argv: list[str] | None = None) -> int:
                   "claude_session_id": os.environ.get("CLAUDE_CODE_SESSION_ID"),
                   "tmux_pane": os.environ.get("TMUX_PANE")}
         try:
-            rec = expect(a.agent, a.slug, a.description, a.to, a.deadline, a.task_id, target)
+            rec = expect(a.agent, a.slug, a.description, a.to, a.deadline, a.task_id, target,
+                         {"msg_id": a.msg_id, "thread_id": a.thread_id})
         except ValueError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1

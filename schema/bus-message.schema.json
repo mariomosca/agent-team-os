@@ -105,6 +105,10 @@
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$",
       "description": "Optional (v2.6). Id of a delegated task. On the delegation: the id the sender waits for (waits/, see bus-wait.schema.json). On the result (type response): the same id, which wakes the waiting session once if it is idle. A reply written with in_reply_to inherits it."
     },
+    "kind": {
+      "enum": ["delega", "comunicazione"],
+      "description": "BS21 (v2.8). What a request, brief or handoff is, declared by the sender: mandatory for those three types when written by the lib or agent-bus-mcp (they refuse a send without it), absent on response, question and event. delega = the sender wants the outcome back: the wait is registered at send time and the message carries its task_id. comunicazione = nothing comes back, nobody is woken. Messages written before v2.8 have no kind: readers treat them as before."
+    },
     "wake_chain": {
       "type": "object",
       "description": "Optional (v2.6). Stamped by the sender when its session was woken by the bus in the last AB_WAKE_CHAIN_MIN minutes (default 30). A message carrying it never wakes anyone: depth 1 per chain.",
