@@ -277,6 +277,160 @@ def answered(rec: dict, msg: dict) -> bool:
                and e.get("id") != msg.get("id") for e in entries)
 
 
+# ---------------------------------------------------------------- aggancio (BS21-F1.3)
+#
+# Un ritorno dell'esecutore scritto come messaggio nuovo (senza task_id ne'
+# in_reply_to) si aggancia all'attesa aperta su di lui, qui, dalla parte di chi
+# riceve: funziona anche fra due macchine, dove chi spedisce non vede le attese.
+# Ordine: risposta al messaggio della delega, stessa sessione esecutrice, stesso
+# thread, stesso agente se l'attesa e' unica. Piu' attese possibili e nessun
+# criterio che ne scelga una: il messaggio resta "da agganciare" con i candidati
+# e lo decide chi riceve. L'esito va nel messaggio (task_id + task_link), cosi'
+# lo vedono tutti i lettori, bash compreso.
+
+OPEN_STATES = ("expected",)
+# Chi riceve un messaggio di questi tipi non lo aggancia mai: e' un task nuovo
+# (kind delega) o un avviso del bus.
+UNLINKABLE_TYPES = ("cc-notify",)
+LINK_SLACK_S = 120
+
+
+def parse_target(addr: str | None) -> tuple[str, str | None, str | None]:
+    """'kai' | 'kai/slug' | 'kai@mini/slug' -> (agente, slug, host)."""
+    addr = (addr or "").strip()
+    head, sep, tail = addr.partition("/")
+    host = None
+    if "@" in head:
+        head, _, host = head.partition("@")
+    elif "@" in tail:
+        tail, _, host = tail.rpartition("@")
+    return head.strip(), (tail.strip() if sep else "") or None, (host or "").strip() or None
+
+
+def executor_session(rec: dict) -> str | None:
+    """agente/slug di chi esegue: imparato dai ritorni, altrimenti dall'indirizzo della delega."""
+    if rec.get("executor_session"):
+        return rec["executor_session"]
+    agent, slug, _ = parse_target(rec.get("delegated_to"))
+    return f"{agent}/{slug}" if agent and slug else None
+
+
+def linkable(msg: dict, agent: str) -> bool:
+    if _msg_task_id(msg) or msg.get("task_link"):
+        return False
+    if msg.get("kind") == "delega" or msg.get("type") in UNLINKABLE_TYPES:
+        return False
+    return bool(msg.get("from")) and msg.get("from") != agent
+
+
+def link_candidates(msg: dict, waits: list[dict]) -> list[dict]:
+    """Le attese aperte su chi ha scritto il messaggio, nate prima del messaggio."""
+    sender = msg.get("from")
+    host = (msg.get("context") or {}).get("host")
+    ts = parse_iso(msg.get("ts")) or time.time()
+    out = []
+    for w in waits:
+        agent, _, w_host = parse_target(w.get("delegated_to"))
+        if agent != sender:
+            continue
+        if w_host and host and w_host != host:
+            continue
+        if (parse_iso(w.get("created_at")) or 0) > ts + LINK_SLACK_S:
+            continue
+        out.append(w)
+    return out
+
+
+def choose_link(msg: dict, cands: list[dict]) -> tuple[dict | None, str, list[dict]]:
+    """(attesa, criterio, candidati). attesa None e candidati non vuoti = da agganciare."""
+    if not cands:
+        return None, "", []
+    irt = msg.get("in_reply_to")
+    if irt:
+        for w in cands:
+            if (w.get("delegation") or {}).get("msg_id") == irt:
+                return w, "reply", cands
+    pool = cands
+    fs = msg.get("from_session")
+    same = [w for w in cands if fs and executor_session(w) == fs]
+    if len(same) == 1:
+        return same[0], "session", cands
+    if same:
+        pool = same
+    th = msg.get("thread_id")
+    by_thread = [w for w in pool if th and (w.get("delegation") or {}).get("thread_id") == th]
+    if len(by_thread) == 1:
+        return by_thread[0], "thread", cands
+    if len(cands) == 1:
+        return cands[0], "agent", cands
+    return None, "", pool
+
+
+def _rewrite_message(p: Path, msg: dict) -> bool:
+    """Riscrive un messaggio ancora in casella. False se intanto e' stato archiviato."""
+    tmp = p.with_name(p.name + ".tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as fh:
+            json.dump(msg, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+        if not p.exists():
+            tmp.unlink()
+            return False
+        tmp.replace(p)
+        return True
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        return False
+
+
+def link_returns() -> dict[str, list[str]]:
+    """Un giro di aggancio sulle caselle delle sessioni che aspettano, su questa macchina."""
+    out: dict[str, list[str]] = {}
+    me = host_self()
+    by_agent: dict[str, list[dict]] = {}
+    for w in list_waits():
+        if w.get("state") not in OPEN_STATES:
+            continue
+        if w.get("host") and me and w["host"] != me:
+            continue
+        by_agent.setdefault(w["agent"], []).append(w)
+    for agent, waits in by_agent.items():
+        since = min(parse_iso(w.get("created_at")) or 0 for w in waits) - LINK_SLACK_S
+        base = bus_home() / "inboxes" / agent
+        dirs = [base] + ([d for d in base.iterdir() if d.is_dir() and d.name.startswith("@")]
+                         if base.is_dir() else [])
+        for d in dirs:
+            # Un messaggio a una sessione si aggancia solo alle sue attese; uno
+            # all'agente intero a quelle di tutte le sue sessioni.
+            scope = [w for w in waits if d == base or d.name == f"@{w['slug']}"]
+            if not scope:
+                continue
+            for p in sorted(d.glob("msg-*.json")):
+                try:
+                    if p.stat().st_mtime < since:
+                        continue
+                except OSError:
+                    continue
+                msg = read_json(p)
+                if not msg or not linkable(msg, agent):
+                    continue
+                cands = link_candidates(msg, scope)
+                w, by, pool = choose_link(msg, cands)
+                if w is not None:
+                    msg["task_id"] = w["task_id"]
+                    msg["task_link"] = {"by": by, "at": now_iso()}
+                    if _rewrite_message(p, msg):
+                        out.setdefault("linked", []).append(f"{msg.get('id')}>{w['task_id']}")
+                        log(f"agganciato {msg.get('id')} a {w['task_id']} ({by})")
+                elif pool:
+                    msg["task_link"] = {"by": "da_agganciare", "at": now_iso(),
+                                        "candidates": [c["task_id"] for c in pool]}
+                    if _rewrite_message(p, msg):
+                        out.setdefault("da_agganciare", []).append(msg.get("id"))
+                        log(f"da agganciare {msg.get('id')}: {', '.join(c['task_id'] for c in pool)}")
+    return out
+
+
 # ---------------------------------------------------------------- schermo
 
 BUSY_RE = re.compile(
@@ -648,6 +802,8 @@ def process(path: Path) -> str | None:
         return q_out
 
     mpath, msg, where = results[0]
+    if msg.get("from_session") and not rec.get("executor_session"):
+        rec["executor_session"] = msg["from_session"]
     rec["arrived"] = {"msg_id": msg.get("id"), "from": msg.get("from_session") or msg.get("from"),
                       "at": rec.get("arrived", {}).get("at") or now_iso()}
     if where == "archived":
@@ -761,6 +917,11 @@ def tick() -> dict:
                 out["registro"] = pruned
         if not root.is_dir():
             return out
+        try:
+            for k, v in link_returns().items():
+                out.setdefault(k, []).extend(v)
+        except Exception as exc:  # l'aggancio non ferma la sveglia
+            log(f"errore aggancio: {exc!r}")
         for p in sorted(root.glob("*/@*/*.json")):
             if p.name.startswith("."):
                 continue

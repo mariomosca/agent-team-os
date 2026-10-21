@@ -167,10 +167,10 @@ class WakeTest(unittest.TestCase):
         self.assertEqual(wake.tick(), {})
         self.assertEqual(len(self.onda.calls), 1)
 
-    def test_message_without_task_id_does_not_wake(self):
+    def test_message_from_someone_else_does_not_wake(self):
         self.sessions([self.alita()])
         self.expect()
-        self.deliver(task=None)
+        self.deliver(task=None, **{"from": "vera", "from_session": "vera/growth"})
         self.deliver(task="t-altro-task")
         self.assertEqual(wake.tick(), {})
         self.assertEqual(self.onda.calls, [])
@@ -258,12 +258,13 @@ class WakeTest(unittest.TestCase):
         self.assertIn("answered_at", q)
         self.assertEqual(self.onda.calls, [])
 
-    def test_question_without_task_id_does_not_wake(self):
+    def test_question_without_task_id_is_hooked_and_wakes(self):
         self.sessions([self.alita()])
         self.expect()
-        self.deliver(task=None, type="question")
-        self.assertEqual(wake.tick(), {})
-        self.assertEqual(self.onda.calls, [])
+        qid = self.deliver(task=None, type="question")
+        out = wake.tick()
+        self.assertEqual(out["woken_question"], ["t-20261017-abc123"])
+        self.assertEqual(out["linked"], [f"{qid}>t-20261017-abc123"])
 
     def test_question_from_chain_blocked(self):
         self.sessions([self.alita()])
@@ -470,6 +471,113 @@ class WakeTest(unittest.TestCase):
         self.assertIsNone(wake.read_prompt_box("$ ls\nfoo\n"))
         self.assertEqual(wake.screen_refusal(self.BUSY_SCREEN), "busy")
         self.assertEqual(wake.screen_refusal("─" * 20 + "\n❯ 1. Yes\n  2. No\n Do you want to proceed?\n"), "asking")
+
+    # -- aggancio (BS21-F1.3): i ritorni scritti come messaggi nuovi
+
+    def msg(self, mid: str) -> dict:
+        return json.loads(next(self.home.rglob(f"{mid}.json")).read_text())
+
+    def test_new_message_from_executor_session_is_hooked(self):
+        self.sessions([self.alita()])
+        self.expect()
+        mid = self.deliver(task=None, type="brief", kind="comunicazione")
+        out = wake.tick()
+        self.assertEqual(out["linked"], [f"{mid}>t-20261017-abc123"])
+        self.assertEqual(out["woken"], ["t-20261017-abc123"])
+        m = self.msg(mid)
+        self.assertEqual(m["task_id"], "t-20261017-abc123")
+        self.assertEqual(m["task_link"]["by"], "session")
+
+    def test_hook_by_reply_to_the_delegation(self):
+        self.expect(delegation={"msg_id": "msg-deleg-1", "thread_id": "thread-d1"})
+        self.expect(task="t-20261017-def456", delegation={"msg_id": "msg-deleg-2", "thread_id": "thread-d2"})
+        mid = self.deliver(task=None, in_reply_to="msg-deleg-2")
+        wake.tick()
+        self.assertEqual(self.msg(mid)["task_id"], "t-20261017-def456")
+        self.assertEqual(self.msg(mid)["task_link"]["by"], "reply")
+
+    def test_hook_by_thread_when_the_session_has_two_tasks(self):
+        self.expect(delegation={"msg_id": "msg-deleg-1", "thread_id": "thread-d1"})
+        self.expect(task="t-20261017-def456", delegation={"msg_id": "msg-deleg-2", "thread_id": "thread-d2"})
+        mid = self.deliver(task=None, thread_id="thread-d2")
+        wake.tick()
+        self.assertEqual(self.msg(mid)["task_id"], "t-20261017-def456")
+        self.assertEqual(self.msg(mid)["task_link"]["by"], "thread")
+
+    def test_hook_by_agent_when_the_wait_is_unique(self):
+        self.expect(to="kai")  # delegata a kai senza sessione
+        mid = self.deliver(task=None, **{"from_session": "kai/altra"})
+        wake.tick()
+        self.assertEqual(self.msg(mid)["task_link"]["by"], "agent")
+
+    def test_ambiguous_message_is_left_to_the_receiver(self):
+        self.sessions([self.alita()])
+        self.expect(to="kai")
+        self.expect(task="t-20261017-def456", to="kai")
+        mid = self.deliver(task=None, **{"from_session": "kai/terza"})
+        out = wake.tick()
+        self.assertEqual(out, {"da_agganciare": [mid]})
+        m = self.msg(mid)
+        self.assertNotIn("task_id", m)
+        self.assertEqual(m["task_link"]["by"], "da_agganciare")
+        self.assertEqual(sorted(m["task_link"]["candidates"]), ["t-20261017-abc123", "t-20261017-def456"])
+        self.assertEqual(wake.tick(), {})  # deciso una volta, non a ogni giro
+
+    def test_learned_executor_session_hooks_later_messages(self):
+        self.sessions([self.alita("working")])
+        self.expect(to="kai")
+        self.expect(task="t-20261017-def456", to="kai/altra")
+        self.deliver()  # primo ritorno con task_id da kai/f3: impara l'esecutore
+        wake.tick()
+        self.assertEqual(self.wait_state()["executor_session"], "kai/f3")
+        mid = self.deliver(task=None)
+        wake.tick()
+        self.assertEqual(self.msg(mid)["task_link"]["by"], "session")
+        self.assertEqual(self.msg(mid)["task_id"], "t-20261017-abc123")
+
+    def test_never_hooks_a_delegation_or_a_cc(self):
+        self.expect()
+        d = self.deliver(task=None, type="request", kind="delega")
+        c = self.deliver(task=None, type="cc-notify")
+        self.assertEqual(wake.tick(), {})
+        self.assertNotIn("task_link", self.msg(d))
+        self.assertNotIn("task_link", self.msg(c))
+
+    def test_message_older_than_the_wait_is_not_hooked(self):
+        self.expect()
+        old = iso(datetime.now(timezone.utc) - timedelta(hours=1))
+        mid = self.deliver(task=None, ts=old)
+        wake.tick()
+        self.assertNotIn("task_link", self.msg(mid))
+
+    def test_session_scoped_message_only_hooks_its_session_waits(self):
+        wake.expect("alita", "altra-sessione", "x", "kai/f3", task_id="t-20261017-zzz999")
+        mid = self.deliver(task=None)  # in @work-hub, che non aspetta nulla
+        self.assertEqual(wake.tick(), {})
+        self.assertNotIn("task_link", self.msg(mid))
+
+    def test_wait_of_another_machine_is_not_used(self):
+        os.environ["AB_HOST"] = "laptop"
+        try:
+            self.expect()
+            f = self.home / "waits" / "alita" / "@work-hub" / "t-20261017-abc123.json"
+            rec = json.loads(f.read_text()); rec["host"] = "mini"; f.write_text(json.dumps(rec))
+            mid = self.deliver(task=None)
+            wake.tick()
+            self.assertNotIn("task_link", self.msg(mid))
+        finally:
+            os.environ.pop("AB_HOST", None)
+
+    def test_archived_message_is_not_resurrected(self):
+        self.expect()
+        mid = self.deliver(task=None)
+        p = next(self.home.rglob(f"{mid}.json"))
+        msg = json.loads(p.read_text())
+        arch = p.parent / ".read" / p.name
+        arch.parent.mkdir(exist_ok=True)
+        p.rename(arch)
+        self.assertFalse(wake._rewrite_message(p, msg))
+        self.assertFalse(p.exists())
 
 
 if __name__ == "__main__":
