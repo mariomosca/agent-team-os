@@ -17,6 +17,10 @@
 AB_HOME="${AB_HOME:-$HOME/.agent-team-os}"
 AB_MAP="$AB_HOME/AGENT_MAP.json"
 
+# Where this lib lives, computed once at source time. bash: BASH_SOURCE; zsh (the
+# Bash tool of Claude Code sources it from zsh): $0 is the sourced file there.
+_ATO_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+
 # ---------- Time & IDs ----------
 
 ab_iso_now() {
@@ -436,6 +440,8 @@ ab_write_message() {
   #     comunicazione = nothing comes back
   #     response, question and event take none.
   # Echoes the new msg-id on success; on a delegation stderr says "attesa registrata t-...".
+  # The message carries from_session (<agent>/<AB_SESSION_SLUG or cwd slug>), as from
+  # agent-bus-mcp: replies find the session, the wake hooks returns by session.
   local from="${AB_FROM:?AB_FROM required}"
   local to="${AB_TO:?AB_TO required}"
   local type="${AB_TYPE:?AB_TYPE required}"
@@ -600,6 +606,7 @@ ab_write_message() {
     --arg host "$self_host" \
     --arg task "$task_id" \
     --arg kind "$kind" \
+    --arg fsess "$from/$from_slug" \
     --argjson chain "$chain" \
     '{
       id: $id,
@@ -615,7 +622,8 @@ ab_write_message() {
       context_refs: $refs,
       requires_response: $req,
       response_by: (if $resp_by == "" then null else $resp_by end),
-      ts: $ts
+      ts: $ts,
+      from_session: $fsess
     } + (if $host == "" then {} else {context: {host: $host}} end)
       + (if $task == "" then {} else {task_id: $task} end)
       + (if $kind == "" then {} else {kind: $kind} end)
@@ -677,9 +685,7 @@ ab_write_message() {
 # ---------- v2.6: expected results and the wake ----------
 
 ab_wake_script() {
-  local d
-  d="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  printf '%s/agent-team-os-wake.py' "$d"
+  printf '%s/agent-team-os-wake.py' "$_ATO_LIB_DIR"
 }
 
 ab_wake_kick() {
@@ -710,14 +716,15 @@ ab_gestisci() {
   # On a return of a delegation of this agent it also moves the wait (closed,
   # expected again). Nothing is sent: with "risposto" send the answer first (/reply).
   # Args: msg-id or path, esito, [task_id for a message "da agganciare"]
-  local agent slug path
+  # Not "path": in zsh (the Bash tool of Claude Code) it is tied to PATH.
+  local agent slug msg_file
   agent="${AB_AGENT:-$(ab_detect_agent "$PWD")}"
   [[ -n "$agent" ]] || { echo "ERROR: workspace not mapped to any agent" >&2; return 1; }
   slug="${AB_SESSION_SLUG:-$(ab_slug_for_cwd "$PWD")}"
-  if [[ -f "$1" ]]; then path="$1"; else path=$(ab_resolve_msg_path "$agent" "$1") || {
+  if [[ -f "$1" ]]; then msg_file="$1"; else msg_file=$(ab_resolve_msg_path "$agent" "$1") || {
     echo "ERROR: no message '$1' in $agent's inbox" >&2; return 1; }; fi
-  ab_clear_waiting_agent "$agent" "$slug" "" "$path"
-  local args=(gestisci --agent "$agent" --slug "$slug" --msg-path "$path" --esito "$2")
+  ab_clear_waiting_agent "$agent" "$slug" "" "$msg_file"
+  local args=(gestisci --agent "$agent" --slug "$slug" --msg-path "$msg_file" --esito "$2")
   [[ -n "${3:-}" ]] && args+=(--task-id "$3")
   AB_HOME="$AB_HOME" /usr/bin/python3 -I "$(ab_wake_script)" "${args[@]}"
 }
@@ -1557,7 +1564,6 @@ ab_reply_address() {
 }
 
 # --- v2.0: load TaskProvider module if present (same dir as this lib) ---
-_ATO_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "$_ATO_LIB_DIR/agent-team-os-taskprovider.sh" ]]; then
   # shellcheck source=/dev/null
   source "$_ATO_LIB_DIR/agent-team-os-taskprovider.sh"

@@ -127,7 +127,10 @@ ck "subito dopo, nessuna raccolta" "$(on_laptop ab_collect_outbox)" ""
 ck "il mini non raccoglie (non raggiunge nessuno)" "$(on_mini ab_remote_hosts)" ""
 
 echo "── risposta che torna indietro"
-f="$L/inboxes/alita/.done/$aid.json"
+f0="$L/inboxes/alita/.done/$aid.json"
+# BS21-F3.3b: la lib timbra from_session (qui lo slug della cartella dei test).
+ck "il messaggio della lib porta from_session" "$(jq -r .from_session "$f0")" "kai/$(ab_slug_for_cwd "$PWD")"
+f="$T/nofs.json"; jq 'del(.from_session)' "$f0" > "$f"   # i messaggi di prima, senza
 ck "indirizzo di risposta" "$(on_laptop ab_reply_address "$f")" "kai@mini"
 rid=$(AB_THREAD_ID=$(jq -r .thread_id "$f") send laptop alita "$(on_laptop ab_reply_address "$f")" "risposta")
 ck "la risposta arriva sul mini" "$(ls "$M/inboxes/kai/$rid.json" 2>/dev/null | wc -l | tr -d ' ')" "1"
