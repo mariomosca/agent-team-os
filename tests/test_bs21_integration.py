@@ -82,20 +82,22 @@ class Bs21Integration(unittest.TestCase):
                           payload={"summary": "fai lo spike"}, sender_session="work-hub", kind="delega",
                           target={"onda_terminal_id": "pane-alita"})
         tid = d["task_id"]
-        self.assertEqual(wake.tick(), {})  # la delega non sveglia nessuno
+        self.assertEqual(wake.tick(), {"delegation": [tid]})  # la delega sveglia kai, fermo
+        self.assertEqual(self.woke(), ["pane-kai"])
+        self.bus.handle("kai", "f3", d["id"], "letto")
 
         # kai risponde con un messaggio nuovo, senza task_id ne' in_reply_to: si aggancia
         q = self.bus.send(sender="kai", to="alita/work-hub", msg_type="question", intent="domanda",
                           payload={"summary": "branch nuovo?"}, sender_session="f3")
         out = wake.tick()
         self.assertEqual(out["linked"], [f"{q['id']}>{tid}"])
-        self.assertEqual(self.woke(), ["pane-alita"])
+        self.assertEqual(self.woke(), ["pane-kai", "pane-alita"])
 
         # alita risponde con bus_gestisci risposto: sveglia kai, l'attesa resta aperta
         h = self.bus.handle("alita", "work-hub", q["id"], "risposto", reply="sì, feat/x")
         self.assertEqual(h["wait"]["state"], "expected")
         self.assertEqual(wake.tick(), {"woken": [tid]})
-        self.assertEqual(self.woke(), ["pane-alita", "pane-kai"])
+        self.assertEqual(self.woke(), ["pane-kai", "pane-alita", "pane-kai"])
         kai_msg = self.bus.read_message("kai", h["sent"]["id"])
         self.bus.handle("kai", "f3", kai_msg["id"], "letto")
 

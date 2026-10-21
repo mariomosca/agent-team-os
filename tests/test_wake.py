@@ -789,6 +789,61 @@ class WakeTest(unittest.TestCase):
         self.assertNotIn("nochannel", wake.tick())
         self.assertEqual(len(list((self.home / "inboxes" / "alita").glob("msg-*.json"))), 1)
 
+    # -- una delega nuova sveglia chi la riceve se e' fermo (BS21-F3.3c)
+
+    def delega_a_kai(self, where="", prio="normal", **extra) -> str:
+        return self.to_kai("request", where=where, kind="delega", priority=prio,
+                           payload={"summary": "rifai il parser"}, **extra)
+
+    def test_new_delegation_wakes_the_idle_recipient(self):
+        self.sessions([self.kai()])
+        mid = self.delega_a_kai()
+        self.assertEqual(wake.tick(), {"delegation": ["t-20261017-abc123"]})
+        [call] = self.onda.calls
+        self.assertEqual(call["params"]["terminalId"], "pane-kai")
+        p = call["params"]["prompt"]
+        self.assertIn("Nuova delega t-20261017-abc123 da alita/work-hub: rifai il parser", p)
+        self.assertIn(f"bus_read {mid}", p)
+        self.assertIn("message_type='response'", p)
+        self.assertNotIn("\n", p)
+        self.assertEqual(wake.tick(), {})  # una volta per delega
+
+    def test_delegation_to_a_working_session_waits(self):
+        self.sessions([self.kai(state="working")])
+        self.delega_a_kai()
+        self.assertEqual(wake.tick(), {"postponed": ["t-20261017-abc123"]})
+        self.sessions([self.kai()])
+        self.assertEqual(wake.tick(), {"delegation": ["t-20261017-abc123"]})
+
+    def test_delegation_rules_low_priority_no_wake_and_bare_agent(self):
+        self.sessions([self.kai()])
+        self.delega_a_kai(prio="low")
+        self.assertEqual(wake.tick(), {})
+        d = self.home / "waits" / "kai" / "@f3"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / ".no-wake").write_text("")
+        self.delega_a_kai(task="t-20261017-def456")
+        self.assertEqual(wake.tick(), {})
+        (d / ".no-wake").unlink()
+        # tolto .no-wake, la delega ancora in casella sveglia
+        self.assertEqual(wake.tick(), {"delegation": ["t-20261017-def456"]})
+        # all'agente intero: si sveglia solo se ha una sola sessione viva
+        two = [self.kai(), dict(self.kai(term="pane-k2"), slug="altra", sessionId="s-k2")]
+        self.sessions(two)
+        self.delega_a_kai(where="..", task="t-20261017-zzz111")
+        self.assertNotIn("delegation", wake.tick())
+        self.sessions([self.kai()])
+        self.delega_a_kai(where="..", task="t-20261017-zzz999")
+        out = wake.tick()
+        self.assertIn("t-20261017-zzz999", out.get("delegation", []))
+
+    def test_urgent_delegation_wakes_once_not_twice(self):
+        self.sessions([self.kai()])
+        self.delega_a_kai(prio="urgent", requires_response=True)
+        out = wake.tick()
+        self.assertEqual(out, {"delegation": ["t-20261017-abc123"]})
+        self.assertEqual(len(self.onda.calls), 1)
+
     # -- aggancio (BS21-F1.3): i ritorni scritti come messaggi nuovi
 
     def msg(self, mid: str) -> dict:
@@ -861,7 +916,9 @@ class WakeTest(unittest.TestCase):
         self.expect()
         d = self.deliver(task=None, type="request", kind="delega")
         c = self.deliver(task=None, type="cc-notify")
-        self.assertEqual(wake.tick(), {})
+        out = wake.tick()
+        self.assertNotIn("linked", out)
+        self.assertNotIn("da_agganciare", out)
         self.assertNotIn("task_link", self.msg(d))
         self.assertNotIn("task_link", self.msg(c))
 

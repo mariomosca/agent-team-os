@@ -712,6 +712,9 @@ def item_text(it: dict) -> str:
         return f"domanda sul task {tid}{_desc(it.get('rec'))} da {who}, che aspetta te (bus_read {mid})"
     if kind == "answer":
         return f"risposta sul task {tid} da {who} (bus_read {mid})"
+    if kind == "delegation":
+        what = f": {it['summary']}" if it.get("summary") else ""
+        return f"nuova delega {tid} da {who}{what} (bus_read {mid})"
     if kind == "urgent":
         prio = "URGENTE" if it.get("priority") == "urgent" else "priorita' alta"
         return f"messaggio {prio} da {who} che chiede risposta (bus_read {mid})"
@@ -723,9 +726,10 @@ def item_text(it: dict) -> str:
 
 def batch_text(items: list[dict]) -> str:
     """Una riga sola: una sveglia, N messaggi."""
-    ups = [i for i in items if i["kind"] not in ("answer", "urgent")]
+    ups = [i for i in items if i["kind"] not in ("answer", "urgent", "delegation")]
     downs = [i for i in items if i["kind"] == "answer"]
     urg = [i for i in items if i["kind"] == "urgent"]
+    dels = [i for i in items if i["kind"] == "delegation"]
     parts = []
     if len(ups) == 1:
         parts.append(item_text(ups[0])[0].upper() + item_text(ups[0])[1:] + f": leggilo e {GESTISCI.replace('ognuno', 'il messaggio')}.")
@@ -737,6 +741,10 @@ def batch_text(items: list[dict]) -> str:
     elif downs:
         parts.append(f"{len(downs)} risposte sui task che esegui: " + "; ".join(item_text(i) for i in downs)
                      + ". Leggile e prosegui.")
+    if dels:
+        lead = item_text(dels[0]) if len(dels) == 1 else f"{len(dels)} deleghe nuove: " + "; ".join(item_text(i) for i in dels)
+        parts.append(lead[0].upper() + lead[1:] + ": leggila, fai il lavoro e manda l'esito con "
+                     "message_type='response' e lo stesso task_id.")
     if urg:
         lead = item_text(urg[0]) if len(urg) == 1 else f"{len(urg)} messaggi urgenti: " + "; ".join(item_text(i) for i in urg)
         parts.append(lead[0].upper() + lead[1:] + ": leggi e gestisci con bus_gestisci.")
@@ -1053,6 +1061,8 @@ def collect_urgent() -> tuple[list[dict], dict]:
                 sender = msg.get("from")
                 if not sender or sender == agent or msg.get("type") in UNLINKABLE_TYPES:
                     continue
+                if msg.get("kind") == "delega":
+                    continue  # le deleghe le sveglia collect_delegations
                 tid = _msg_task_id(msg)
                 if tid and msg.get("type") == "response":
                     continue  # risposta su un task: la tratta collect_answers
@@ -1074,6 +1084,74 @@ def collect_urgent() -> tuple[list[dict], dict]:
                 out.append({"kind": "urgent", "agent": agent, "slug": target, "task_id": tid or "",
                             "mid": mid, "entry": e, "sender": _sender(msg, me), "peer": sender,
                             "priority": msg.get("priority")})
+    for (agent, slug), st in states.items():
+        for mid, e in st.items():
+            if e.get("state") == "pending" and not any(
+                    (bus_home() / "inboxes" / agent / sub / f"{mid}.json").exists() for sub in (f"@{slug}", "")):
+                e["state"] = "seen"
+                e.pop("pending_wake", None)
+    return out, states
+
+
+# Delega nuova (BS21-F3.3c, regola approvata da Mario il 21/10): una delega sveglia
+# chi la riceve se e' fermo, cosi' nessuno fa da postino neanche all'andata.
+#   - indirizzata a una sessione (agente/slug), o all'agente intero con una sola
+#     sessione viva su questa macchina (altrimenti resta l'avviso dell'hook del prompt);
+#   - priorita' non low;
+#   - la sessione non ha chiesto di non essere svegliata (file .no-wake nella sua
+#     cartella delle attese: waits/<agente>/@<slug>/.no-wake);
+#   - "ferma" lo decide la guardia del canale (Onda onlyIfIdle, schermo tmux);
+#   - una sveglia per delega, dentro i tetti di sessione, task e coppia.
+# Le deleghe via onda_agent_prompt non passano da qui: arrivano gia' nel prompt.
+
+def delegations_path(agent: str, slug: str) -> Path:
+    return wait_dir(agent, slug) / ".delegations.json"
+
+
+def collect_delegations() -> tuple[list[dict], dict]:
+    out, states = [], {}
+    root = bus_home() / "inboxes"
+    if not root.is_dir():
+        return out, states
+    me = host_self()
+    now = time.time()
+    for adir in sorted(root.iterdir()):
+        if not adir.is_dir():
+            continue
+        agent = adir.name
+        dirs = [(d, d.name[1:]) for d in adir.iterdir() if d.is_dir() and d.name.startswith("@")]
+        dirs.append((adir, None))
+        for d, slug in dirs:
+            for p in sorted(d.glob("msg-*.json")):
+                try:
+                    if now - p.stat().st_mtime > ANSWER_WINDOW_S:
+                        continue
+                except OSError:
+                    continue
+                msg = read_json(p)
+                if not msg or msg.get("kind") != "delega" or msg.get("priority") == "low":
+                    continue
+                sender = msg.get("from")
+                if not sender or sender == agent:
+                    continue
+                target = slug
+                if target is None:
+                    live = live_slugs(agent)
+                    if len(live) != 1:
+                        continue
+                    target = live[0]
+                if (wait_dir(agent, target) / ".no-wake").exists():
+                    continue
+                st = states.setdefault((agent, target), read_json(delegations_path(agent, target)) or {})
+                mid = msg.get("id")
+                e = st.setdefault(mid, {"task_id": _msg_task_id(msg), "from": msg.get("from_session") or sender,
+                                        "at": msg.get("ts") or now_iso(), "state": "pending"})
+                if e.get("state") != "pending":
+                    continue
+                out.append({"kind": "delegation", "agent": agent, "slug": target,
+                            "task_id": _msg_task_id(msg) or "", "mid": mid, "entry": e,
+                            "sender": _sender(msg, me), "peer": sender,
+                            "summary": re.sub(r"\s+", " ", str((msg.get("payload") or {}).get("summary") or ""))[:80]})
     for (agent, slug), st in states.items():
         for mid, e in st.items():
             if e.get("state") == "pending" and not any(
@@ -1151,6 +1229,8 @@ def wake_sessions(items: list[dict], recs_by_session: dict) -> dict[str, list[st
         for it in ok:
             if it["kind"] == "urgent":
                 out.setdefault("urgent", []).append(it["mid"])
+            elif it["kind"] == "delegation":
+                out.setdefault("delegation", []).append(it["task_id"] or it["mid"])
             else:
                 out.setdefault("woken", []).append(it["task_id"])
     return out
@@ -1168,8 +1248,9 @@ def persist(items: list[dict]) -> None:
                 it["entry"].pop("woken_via", None)
             it["msg"]["task_link"] = it["entry"]
             _rewrite_message(it["msg_path"], it["msg"])
-        elif it["kind"] in ("answer", "urgent"):
-            f = (answers_path if it["kind"] == "answer" else urgent_path)(it["agent"], it["slug"])
+        elif it["kind"] in ("answer", "urgent", "delegation"):
+            f = {"answer": answers_path, "urgent": urgent_path,
+                 "delegation": delegations_path}[it["kind"]](it["agent"], it["slug"])
             st = read_json(f) or {}
             st[it["mid"]] = it["entry"]
             write_json(f, st)
@@ -1214,6 +1295,10 @@ def wake_round() -> dict[str, list[str]]:
     items += urgent
     for (agent, slug), st in ustates.items():
         write_json(urgent_path(agent, slug), st)
+    dels, dstates = collect_delegations()
+    items += dels
+    for (agent, slug), st in dstates.items():
+        write_json(delegations_path(agent, slug), st)
     for k, v in wake_sessions(items, recs_by_session).items():
         out.setdefault(k, []).extend(v)
     # i rimandi si scrivono anche senza sveglia (pending_wake, per il pannello)
@@ -1327,6 +1412,7 @@ def report(days: float = 7.0) -> dict:
          "ritorni": {"totale": 0, "con_sveglia": 0, "letti_prima": 0, "in_attesa": 0, "in_attesa_oltre_1h": 0},
          "risposte_esecutore": {"totale": 0, "con_sveglia": 0},
          "urgenti": {"totale": 0, "con_sveglia": 0},
+         "deleghe_ricevute": {"totale": 0, "con_sveglia": 0},
          "tetti": {"episodi": 0, "per_motivo": {}},
          "non_gestiti_oltre_1h": {}, "obiettivo": REPORT_TARGET}
     for p in sorted(waits_root().glob("*/@*/*.json")) if waits_root().is_dir() else []:
@@ -1365,7 +1451,8 @@ def report(days: float = 7.0) -> dict:
                 r["ritorni"]["in_attesa"] += 1
                 if now - (parse_iso(e.get("at")) or now) > 3600:
                     r["ritorni"]["in_attesa_oltre_1h"] += 1
-    for name, key in ((".answers.json", "risposte_esecutore"), (".urgent.json", "urgenti")):
+    for name, key in ((".answers.json", "risposte_esecutore"), (".urgent.json", "urgenti"),
+                      (".delegations.json", "deleghe_ricevute")):
         for f in waits_root().glob(f"*/@*/{name}") if waits_root().is_dir() else []:
             for e in (read_json(f) or {}).values():
                 if not isinstance(e, dict) or e.get("state") == "ignored" or not _in_window(e.get("at"), since):
@@ -1410,7 +1497,8 @@ def report_text(r: dict) -> str:
         f"Ritorni: {rt['totale']}, {rt['con_sveglia']} con sveglia, {rt['letti_prima']} letti prima, "
         f"{rt['in_attesa']} in attesa ({rt['in_attesa_oltre_1h']} da oltre un'ora).",
         f"Risposte all'esecutore: {r['risposte_esecutore']['totale']} ({r['risposte_esecutore']['con_sveglia']} con sveglia); "
-        f"urgenti fuori delega: {r['urgenti']['totale']} ({r['urgenti']['con_sveglia']} con sveglia).",
+        f"urgenti fuori delega: {r['urgenti']['totale']} ({r['urgenti']['con_sveglia']} con sveglia); "
+        f"deleghe nuove a chi era fermo: {r['deleghe_ricevute']['totale']} ({r['deleghe_ricevute']['con_sveglia']} con sveglia).",
         f"Sveglie fermate da un tetto: {r['tetti']['episodi']}"
         + (" (" + ", ".join(f"{k} {v}" for k, v in sorted(r["tetti"]["per_motivo"].items())) + ")"
            if r["tetti"]["per_motivo"] else "") + ".",
