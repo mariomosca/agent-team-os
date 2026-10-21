@@ -86,6 +86,26 @@ ck "attesa registrata da sola" "$(jq -r '.state + " " + .delegated_to + " " + .d
 ck "attesa sa messaggio e thread" "$(jq -r '(.delegation.msg_id == "'"$did"'") and (.delegation.thread_id == "'"$(jq -r .thread_id "$m")"'")' "$W")" "true"
 ck "stderr conferma l'attesa" "$(grep -c "attesa registrata $dt" "$T/err")" "1"
 
+echo "── BS21: ab_gestisci e hook di Stop"
+G(){ AB_AGENT=kai AB_SESSION_SLUG=f3 "$BASH" -c "source scripts/agent-team-os-lib.sh; ab_gestisci $*" 2>&1; }
+# ritorni di alita sulla delega kai->alita di sopra (attesa $W, di kai)
+rid=$(send alita work-hub kai/f3 response AB_TASK_ID="$dt")
+r2=$(send alita work-hub kai/f3 event AB_TASK_ID="$dt")
+out=$(G "$r2" riarma)
+ck "riarma: attesa expected" "$(jq -r '.wait.state' <<<"$out") $(jq -r '.rearmed_at != null' "$W")" "expected true"
+ck "riarma: messaggio in .done con l'esito" "$(jq -r '.handled.esito' "$(msg "$r2")") $(basename "$(dirname "$(msg "$r2")")")" "riarma .done"
+out=$(G "$rid" chiuso)
+ck "chiuso: attesa chiusa" "$(jq -r '.state' "$W")" "closed"
+lid=$(send alita work-hub kai/f3 event)
+G "$lid" letto >/dev/null
+ck "letto: in .read" "$(basename "$(dirname "$(msg "$lid")")")" ".read"
+e=$(send alita work-hub kai/f3 event); out=$(G "$e" riarma); rc=$?
+ck "riarma senza delega rifiutato" "$rc $([[ "$out" == *"delega"* ]] && echo spiega)" "1 spiega"
+sid=$(send alita work-hub kai/f3 event)
+stop=$(cd "$T" && AB_SESSION_SLUG=f3 "$BASH" -c "source '$R/scripts/agent-team-os-lib.sh'; ab_drain_for_stop kai 3")
+ck "Stop chiede un esito" "$([[ "$stop" == *"bus_gestisci"* && "$stop" == *"riarma"* ]] && echo si)" "si"
+ck "Stop: JSON valido" "$(jq -r .decision <<<"$stop")" "block"
+
 rm -rf "$T"
 echo "── $P PASS, $F FAIL"
 [[ $F -eq 0 ]]

@@ -35,6 +35,7 @@ Gira con il python3 di sistema (3.9), solo stdlib. launchd lo lancia ogni 10 s
     agent-team-os-wake.py expect --agent A --slug S --description D [--to ADDR]
                           [--deadline ISO] [--task-id ID]       stampa il task_id
     agent-team-os-wake.py list [--agent A [--slug S]] [--all]   JSON
+    agent-team-os-wake.py gestisci --agent A --slug S --msg-path P --esito E [--task-id T]
 """
 
 from __future__ import annotations
@@ -1059,6 +1060,76 @@ def wake_round() -> dict[str, list[str]]:
     return {k: sorted(set(v)) for k, v in out.items()}
 
 
+# ---------------------------------------------------------------- consumo esplicito (BS21-F2.2)
+#
+# Stesso contratto di bus_gestisci (agent-bus-mcp): il messaggio esce dalla casella
+# solo con un esito, e su un ritorno di una delega propria l'esito muove l'attesa.
+# Qui non si spedisce nulla: con "risposto" la risposta la manda chi chiama (/reply).
+
+ESITI = ("chiuso", "riarma", "risposto", "letto")
+
+
+def own_wait(agent: str, task_id: str | None) -> tuple[Path, dict] | None:
+    if not task_id:
+        return None
+    p = find_wait(task_id)
+    if p is None or p.parent.parent.name != agent:
+        return None
+    rec = read_json(p)
+    return (p, rec) if rec else None
+
+
+def gestisci(agent: str, slug: str, msg_path: Path, esito: str, task_id: str | None = None) -> dict:
+    if esito not in ESITI:
+        raise ValueError(f"esito non valido: {esito!r} (chiuso, riarma, risposto, letto)")
+    if msg_path.parent.name in (".read", ".done"):
+        raise ValueError(f"{msg_path.stem} e' gia' archiviato: niente da gestire")
+    msg = read_json(msg_path)
+    if msg is None:
+        raise ValueError(f"{msg_path} non e' JSON leggibile")
+    mid = msg.get("id") or msg_path.stem
+    link = msg.get("task_link") or {}
+    if task_id:
+        if msg.get("task_id") and msg["task_id"] != task_id:
+            raise ValueError(f"{mid} e' gia' del task {msg['task_id']}")
+        if own_wait(agent, task_id) is None:
+            raise ValueError(f"il task {task_id} non e' una delega di {agent}")
+        if not msg.get("task_id"):
+            msg["task_id"] = task_id
+            msg["task_link"] = dict(link, by="scelto", at=now_iso())
+    elif link.get("by") == "da_agganciare" and esito in ("chiuso", "riarma"):
+        raise ValueError(f"{mid} e' da agganciare ({', '.join(link.get('candidates') or [])}): "
+                         "di' a quale task con --task-id")
+    own = own_wait(agent, _msg_task_id(msg))
+    if esito == "riarma" and own is None:
+        raise ValueError("riarma vale solo per un ritorno su una tua delega")
+    now = now_iso()
+    msg["handled"] = {"esito": esito, "at": now, "by": f"{agent}/{slug}"}
+    dest = msg_path.parent / (".read" if esito == "letto" else ".done") / msg_path.name
+    write_json(dest, msg)
+    msg_path.unlink()
+    out = {"message": mid, "esito": esito, "archived_to": str(dest)}
+    if own is not None:
+        wp, rec = own
+        e = rec.setdefault("returns", {}).setdefault(mid, {
+            "from": msg.get("from_session") or msg.get("from"), "at": msg.get("ts") or now,
+            "type": msg.get("type"), "state": "pending"})
+        e.update(state="handled", handled=esito, handled_at=now)
+        e.pop("pending_wake", None)
+        if esito == "chiuso":
+            rec.update(state="closed", closed_at=now, closed_by=mid)
+        elif esito in ("riarma", "risposto"):
+            if rec.get("state") not in OPEN_STATES:
+                rec["reopened_from"] = rec.get("state")
+            rec["state"] = "expected"
+            rec["last_activity"] = now
+            if esito == "riarma":
+                rec["rearmed_at"] = now
+        write_json(wp, rec)
+        out["wait"] = {"task_id": rec["task_id"], "state": rec["state"]}
+    return out
+
+
 class Lock:
     def __init__(self) -> None:
         self.path = bus_home() / "locks" / "wake.lock"
@@ -1161,6 +1232,12 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--task-id")
     e.add_argument("--msg-id")
     e.add_argument("--thread-id")
+    g = sub.add_parser("gestisci")
+    g.add_argument("--agent", required=True)
+    g.add_argument("--slug", required=True)
+    g.add_argument("--msg-path", required=True)
+    g.add_argument("--esito", required=True, choices=ESITI)
+    g.add_argument("--task-id")
     l = sub.add_parser("list")
     l.add_argument("--agent")
     l.add_argument("--slug")
@@ -1178,6 +1255,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
         print(rec["task_id"])
+        return 0
+    if a.cmd == "gestisci":
+        try:
+            res = gestisci(a.agent, a.slug, Path(a.msg_path), a.esito, a.task_id)
+        except (ValueError, OSError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(res, ensure_ascii=False))
         return 0
     if a.cmd == "list":
         print(json.dumps(list_waits(a.agent, a.slug, a.all), ensure_ascii=False, indent=2))

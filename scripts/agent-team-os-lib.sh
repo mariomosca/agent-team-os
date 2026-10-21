@@ -705,6 +705,23 @@ ab_expect() {
   AB_HOME="$AB_HOME" /usr/bin/python3 -I "$(ab_wake_script)" "${args[@]}"
 }
 
+ab_gestisci() {
+  # BS21-F2.2: consume a message with an outcome (chiuso | riarma | risposto | letto).
+  # On a return of a delegation of this agent it also moves the wait (closed,
+  # expected again). Nothing is sent: with "risposto" send the answer first (/reply).
+  # Args: msg-id or path, esito, [task_id for a message "da agganciare"]
+  local agent slug path
+  agent="${AB_AGENT:-$(ab_detect_agent "$PWD")}"
+  [[ -n "$agent" ]] || { echo "ERROR: workspace not mapped to any agent" >&2; return 1; }
+  slug="${AB_SESSION_SLUG:-$(ab_slug_for_cwd "$PWD")}"
+  if [[ -f "$1" ]]; then path="$1"; else path=$(ab_resolve_msg_path "$agent" "$1") || {
+    echo "ERROR: no message '$1' in $agent's inbox" >&2; return 1; }; fi
+  ab_clear_waiting_agent "$agent" "$slug" "" "$path"
+  local args=(gestisci --agent "$agent" --slug "$slug" --msg-path "$path" --esito "$2")
+  [[ -n "${3:-}" ]] && args+=(--task-id "$3")
+  AB_HOME="$AB_HOME" /usr/bin/python3 -I "$(ab_wake_script)" "${args[@]}"
+}
+
 # ---------- Cross-domain cc-awareness ----------
 
 ab_agent_domain() {
@@ -1101,8 +1118,9 @@ ab_drain_for_stop() {
   # Exits 0 (allow stop) or prints block JSON to stdout and exits 1 (block stop).
   # Args: agent, blockCap (default 3)
   #
-  # "Unhandled" = messages physically present in inbox/ (NOT yet moved to .done/
-  # by the agent). We block until the inbox is actually drained, so the cursor
+  # "Unhandled" = messages physically present in inbox/: since v2.8 (BS21-F2.2) a
+  # message leaves it only with an outcome (bus_gestisci / ab_gestisci), so this is
+  # the same state the bus keeps. We block until the inbox is actually drained, so the cursor
   # does NOT advance on a mere block — the agent must move handled messages to
   # .done/. drainBlockCount is the loop guard: if the agent keeps stopping
   # without handling the inbox, after `cap` consecutive blocks we relent and
@@ -1149,7 +1167,7 @@ ab_drain_for_stop() {
   local msg_lines
   msg_lines=$(AB_SESSION_SLUG="$slug" ab_drain_fresh_list "$agent" "")
   local reason
-  reason="${pending} unread message(s) in inbox (block ${block_count}/${cap}). Open the files in inbox/, act on each, then move handled ones to inbox/.done/ before stopping:
+  reason="${pending} message(s) not handled yet (block ${block_count}/${cap}). Read each one and consume it with an outcome before stopping: bus_gestisci (MCP) or ab_gestisci <msg-id> <esito> (lib), esito chiuso | riarma | risposto | letto. On a return of your delegation: chiuso if the task is done, riarma if you keep waiting, risposto if the executor asked something.
 ${msg_lines}"
 
   # Output Claude Code Stop hook decision JSON

@@ -28,6 +28,7 @@ Aspetto 2 esiti, 1 scaduto
 
 - Source: `$AB_HOME/waits/<agent>/@<slug>/*.json`, the results this session waits for (bus v2.6, README "La sveglia"). Expected ones, plus expired ones for a day.
 - A postponed wake says why, in words. `SCADUTO` is spelled out. A toast once when a wait expires.
+- v2.6.0 (bus v2.8, BS21): a wait stays open after every wake, so the row says how many returns still have no outcome (`2 ritorni da gestire (bus_gestisci)`); questions among the returns are `DOMANDA` rows; a wake held back by a cap (`tetto_task`, `tetto_coppia`, `tetto_orario`) is an alert. The headline counts open delegations (`Aspetto 2 deleghe`).
 
 ## Squadra (v2.2)
 

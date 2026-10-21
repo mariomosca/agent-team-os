@@ -23,6 +23,9 @@ export type Wait = {
   expiredAt: string | null
   pendingReason: string | null
   asks: Ask[]
+  // v2.8 (BS21): returns that woke this session (or are queued) and still have no
+  // outcome from bus_gestisci. Questions are counted in asks, not here.
+  unhandled: number
 }
 
 const str = (v: unknown) => (typeof v === 'string' && v !== '' ? v : null)
@@ -31,19 +34,31 @@ const str = (v: unknown) => (typeof v === 'string' && v !== '' ? v : null)
 const SHOWN_STATES = new Set(['expected', 'expired'])
 const EXPIRED_SHOWN_MS = 24 * 60 * 60_000
 
-const parseAsks = (questions: unknown): Ask[] => {
-  if (typeof questions !== 'object' || questions === null) return []
+type Entry = Record<string, unknown>
 
-  return Object.entries(questions as Record<string, Record<string, unknown>>)
-    .filter(([, q]) => typeof q === 'object' && q !== null && str(q.answered_at) === null)
-    .map(([msgId, q]) => ({
-      msgId,
-      from: str(q.from) ?? '?',
-      at: str(q.at) ?? '',
-      summary: str(q.summary) ?? '',
-    }))
-    .sort((a, b) => a.at.localeCompare(b.at))
+const entries = (v: unknown): [string, Entry][] =>
+  typeof v === 'object' && v !== null
+    ? Object.entries(v as Record<string, Entry>).filter(([, e]) => typeof e === 'object' && e !== null)
+    : []
+
+// A message on the task that no outcome has consumed yet.
+const OPEN_ENTRY = (e: Entry) => !['handled', 'seen', 'ignored'].includes(str(e.state) ?? '')
+
+// Open questions: v2.7 `questions`, and since v2.8 the `returns` of type question.
+const parseAsks = (questions: unknown, returns: unknown): Ask[] => {
+  const seen = new Map<string, Ask>()
+  const add = ([msgId, q]: [string, Entry]) => {
+    if (str(q.answered_at) !== null || !OPEN_ENTRY(q)) return
+    seen.set(msgId, { msgId, from: str(q.from) ?? '?', at: str(q.at) ?? '', summary: str(q.summary) ?? '' })
+  }
+  entries(questions).forEach(add)
+  entries(returns).filter(([, e]) => e.type === 'question').forEach(add)
+
+  return [...seen.values()].sort((a, b) => a.at.localeCompare(b.at))
 }
+
+const countUnhandled = (returns: unknown) =>
+  entries(returns).filter(([, e]) => e.type !== 'question' && OPEN_ENTRY(e)).length
 
 export const parseWait = (text: string): Wait | null => {
   try {
@@ -61,7 +76,8 @@ export const parseWait = (text: string): Wait | null => {
       state,
       expiredAt: str(raw.expired_at),
       pendingReason: str(raw.pending_wake?.reason),
-      asks: parseAsks(raw.questions),
+      asks: parseAsks(raw.questions, raw.returns),
+      unhandled: countUnhandled(raw.returns),
     }
   } catch {
     return null
@@ -83,6 +99,8 @@ export const reasonText = (reason: string) => {
   if (/has_text|pending_input/.test(reason)) return 'hai testo nella casella'
   if (/asking|waiting_/.test(reason)) return 'aspetti un permesso o una risposta'
   if (reason === 'tetto_orario') return 'tetto di sveglie orarie raggiunto'
+  if (reason === 'tetto_task') return 'tetto di sveglie per questo task'
+  if (reason === 'tetto_coppia') return 'tetto di sveglie con questo agente'
   if (reason === 'onda_senza_guardia') return 'Onda da aggiornare'
   if (reason === 'nessun_canale') return 'nessun canale per svegliarti'
 
@@ -102,9 +120,14 @@ export const toWaitRow = (w: Wait, now: number): WaitRow => {
   if (w.pendingReason !== null) {
     return {
       key: w.taskId,
-      text: `${who}: ${what}, esito arrivato, sveglia rimandata (${reasonText(w.pendingReason)})`,
-      alert: false,
+      text: `${who}: ${what}, ritorno arrivato, sveglia rimandata (${reasonText(w.pendingReason)})`,
+      alert: w.pendingReason.startsWith('tetto_'),
     }
+  }
+  if (w.unhandled > 0) {
+    const n = w.unhandled === 1 ? '1 ritorno' : `${w.unhandled} ritorni`
+
+    return { key: w.taskId, text: `${who}: ${what}, ${n} da gestire (bus_gestisci)`, alert: false }
   }
 
   return { key: w.taskId, text: `${who}: ${what}, da ${since}`, alert: false }
@@ -136,7 +159,7 @@ export const waitsHeadline = (waits: readonly Wait[]) => {
   const expired = waits.length - open
   const asks = waits.filter(w => w.state === 'expected').reduce((n, w) => n + w.asks.length, 0)
   const parts = []
-  if (open > 0) parts.push(open === 1 ? '1 esito' : `${open} esiti`)
+  if (open > 0) parts.push(open === 1 ? '1 delega' : `${open} deleghe`)
   if (expired > 0) parts.push(expired === 1 ? '1 scaduto' : `${expired} scaduti`)
 
   const ask = asks === 0 ? '' : asks === 1 ? ' (1 domanda aspetta te)' : ` (${asks} domande aspettano te)`

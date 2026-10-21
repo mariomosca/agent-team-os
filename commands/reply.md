@@ -50,12 +50,14 @@ Steps:
    MSG_ID=$(ab_write_message)
    ```
 
-6. **Archive the original** if it was still in the inbox:
+6. **Consume the original** if it was still in the inbox (bus v2.8): `risposto`. On a return
+   of your own delegation this keeps the wait open; the answer carries the task_id and wakes
+   the executor if it is idle.
 
    ```bash
    case "$ORIG_PATH" in
-     */inboxes/*/.read/*) ;;  # already archived
-     *) ab_mark_read "$AGENT" "$ORIG_PATH" ;;
+     */inboxes/*/.read/*|*/inboxes/*/.done/*) ;;  # already consumed
+     *) ab_gestisci "$ORIG_PATH" risposto ;;
    esac
    ```
 

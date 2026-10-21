@@ -41,7 +41,7 @@ describe('rows', () => {
 
   test('postponed wake says why, in words', () => {
     const w = parseWait(wait({ pending_wake: { reason: 'onda:working' } }))!
-    expect(toWaitRow(w, NOW).text).toBe('kai/f3: spike orbit, esito arrivato, sveglia rimandata (lavori)')
+    expect(toWaitRow(w, NOW).text).toBe('kai/f3: spike orbit, ritorno arrivato, sveglia rimandata (lavori)')
     expect(reasonText('onda:has_text')).toBe('hai testo nella casella')
   })
 
@@ -58,7 +58,7 @@ describe('rows', () => {
     const old = parseWait(wait({ task_id: 't-c', state: 'expired', expired_at: '2026-10-15T10:00:00Z' }))!
     const ordered = orderWaits([open, late, old], NOW)
     expect(ordered.map(w => w.taskId)).toEqual(['t-b', 't-a'])
-    expect(waitsHeadline(ordered)).toBe('Aspetto 1 esito, 1 scaduto')
+    expect(waitsHeadline(ordered)).toBe('Aspetto 1 delega, 1 scaduto')
   })
 })
 
@@ -79,12 +79,40 @@ describe('questions (bus v2.7)', () => {
 
   test('headline counts them', () => {
     const w = parseWait(wait({ questions }))!
-    expect(waitsHeadline([w])).toBe('Aspetto 1 esito (1 domanda aspetta te)')
+    expect(waitsHeadline([w])).toBe('Aspetto 1 delega (1 domanda aspetta te)')
   })
 
   test('no questions field, no rows', () => {
     const w = parseWait(wait({}))!
     expect(w.asks).toEqual([])
     expect(askRows([w], NOW)).toEqual([])
+  })
+})
+
+describe('returns (bus v2.8)', () => {
+  const returns = {
+    'msg-r1': { from: 'kai/f3', at: '2026-10-17T10:50:00Z', type: 'response', state: 'woken' },
+    'msg-r2': { from: 'kai/f3', at: '2026-10-17T10:52:00Z', type: 'event', state: 'handled', handled: 'riarma' },
+    'msg-r3': { from: 'kai/f3', at: '2026-10-17T10:53:00Z', type: 'brief', state: 'pending' },
+    'msg-q2': { from: 'kai/f3', at: '2026-10-17T10:56:00Z', type: 'question', summary: 'quale branch?', state: 'woken' },
+  }
+
+  test('returns without an outcome are counted, questions become asks', () => {
+    const w = parseWait(wait({ returns }))!
+    expect(w.unhandled).toBe(2)
+    expect(w.asks.map(a => a.msgId)).toEqual(['msg-q2'])
+    expect(toWaitRow(w, NOW).text).toBe('kai/f3: spike orbit, 2 ritorni da gestire (bus_gestisci)')
+  })
+
+  test('a cap is an alert, in words', () => {
+    const w = parseWait(wait({ returns, pending_wake: { reason: 'tetto_coppia' } }))!
+    const r = toWaitRow(w, NOW)
+    expect(r.text).toBe('kai/f3: spike orbit, ritorno arrivato, sveglia rimandata (tetto di sveglie con questo agente)')
+    expect(r.alert).toBe(true)
+    expect(reasonText('tetto_task')).toBe('tetto di sveglie per questo task')
+  })
+
+  test('closed waits are not shown', () => {
+    expect(parseWait(wait({ state: 'closed' }))).toBe(null)
   })
 })
