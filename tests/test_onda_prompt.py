@@ -25,7 +25,7 @@ class OndaPromptTest(unittest.TestCase):
         (self.home / "AGENT_MAP.json").write_text(json.dumps({
             "agents": {"alita": {}, "kai": {}, "nico": {}},
             "rules": [{"pattern": "/w/work-hub", "agent": "alita"},
-                      {"pattern": "/w/Brandart/", "agent": "nico"}],
+                      {"pattern": "/w/Work/", "agent": "nico"}],
             "hosts": {"laptop": {"hub": True}}}))
         (self.home / "onda").mkdir()
         (self.home / "onda" / "sessions.json").write_text(json.dumps({"v": 1, "sessions": [
@@ -61,10 +61,10 @@ class OndaPromptTest(unittest.TestCase):
         self.assertIn(w["task_id"], out["permissionDecisionReason"])
 
     def test_delega_works_between_any_two_agents(self):
-        out = self.run_hook("[DELEGA]  guarda il diff", cwd="/w/Brandart/hr-bot")
+        out = self.run_hook("[DELEGA]  guarda il diff", cwd="/w/Work/app-x")
         [w] = self.waits()
-        self.assertEqual((w["agent"], w["slug"]), ("nico", "hr-bot"))
-        self.assertIn("nico@laptop/hr-bot", out["updatedInput"]["prompt"])
+        self.assertEqual((w["agent"], w["slug"]), ("nico", "app-x"))
+        self.assertIn("nico@laptop/app-x", out["updatedInput"]["prompt"])
 
     def test_comunicazione_strips_the_mark_and_registers_nothing(self):
         out = self.run_hook("[comunicazione] " + LONG)

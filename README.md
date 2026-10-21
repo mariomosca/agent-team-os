@@ -282,7 +282,7 @@ Exit code `0` ok, `1` warn, `2` fail. `hosts/self/custode.json` is `{at, host, s
 A message to a session that is alive but idle used to wait in the inbox until somebody woke that session by hand. Since v2.8 (plan BS21) the bus knows who delegated what to whom — between any two agents, no roles — and wakes whoever waits on every return:
 
 ```
-Ritorno sul task t-20261021-8aj5cp (bus deleghe) da kai/agent-team-os (bus_read msg-…): leggilo e gestisci il messaggio con bus_gestisci (chiuso, riarma, risposto o letto).
+Ritorno sul task t-20261021-ab12cd (spike parser) da kai/f3 (bus_read msg-…): leggilo e gestisci il messaggio con bus_gestisci (chiuso, riarma, risposto o letto).
 ```
 
 - **Declare it**: every `request`, `brief` and `handoff` carries `kind` — `delega` (you want the outcome back) or `comunicazione` (nothing comes back). No default: `bus_send` / `ab_write_message` refuse the send without it (lib exit 5), with an error that explains the choice. `response`, `question`, `event` take none. Through an Onda pane (`onda_agent_prompt`): start the prompt with `[delega]` or `[comunicazione]`; a PreToolUse hook registers the wait and appends the line with the `task_id`, and refuses a long prompt that declares neither.

@@ -65,7 +65,7 @@ class Bs21Integration(unittest.TestCase):
                                     "slug": slug, "state": "idle", "hasText": False, "stateSince": "2026-01-01T00:00:00Z"}
         (self.home / "onda" / "sessions.json").write_text(json.dumps(
             {"v": 1, "writtenAt": iso(), "ondaPid": os.getpid(),
-             "sessions": [sess("alita", "work-hub"), sess("kai", "f3"), sess("nico", "hr-bot")]}))
+             "sessions": [sess("alita", "work-hub"), sess("kai", "f3"), sess("nico", "app-x")]}))
         self.bus = Bus(home=self.home)
 
     def tearDown(self) -> None:
@@ -122,7 +122,7 @@ class Bs21Integration(unittest.TestCase):
 
     def test_comunicazione_wakes_nobody(self):
         self.bus.send(sender="nico", to="alita/work-hub", msg_type="brief", intent="nota",
-                      payload={"summary": "per conoscenza"}, sender_session="hr-bot", kind="comunicazione")
+                      payload={"summary": "per conoscenza"}, sender_session="app-x", kind="comunicazione")
         self.assertEqual(wake.tick(), {})
         self.assertEqual(self.onda.calls, [])
 

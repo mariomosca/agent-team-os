@@ -69,14 +69,14 @@ mid=$(basename $(ls $AB_HOME/inboxes/kai/@microsoft-mcp/msg-*.json|head -1) .jso
 ck "resolve trova nelle dir sessione" "$(basename $(ab_resolve_msg_path kai "$mid") .json)" "$mid"
 
 echo "── due sessioni nella stessa cartella, ognuna col suo slug (BS21-F1.5)"
-# Caso vivo: nico/audit-plan e nico/storico (AB_SESSION_SLUG=storico) in 06-Brandart/audit-plan
-# scrivevano tutte e due registry/nico.d/audit-plan.json.
-W=/w/Projects/06-Brandart/audit-plan
+# Due copie di un agente nella stessa cartella (la seconda con AB_SESSION_SLUG=copia)
+# scrivevano tutte e due registry/nico.d/progetto.json.
+W=/w/Projects/06-Work/progetto
 ( unset AB_SESSION_SLUG; ab_update_registry nico true "$W" )
-AB_SESSION_SLUG=storico ab_update_registry nico true "$W"
-ck "due voci di registro" "$(ls $AB_HOME/registry/nico.d/ | sort | tr '\n' ' ')" "audit-plan.json storico.json "
-ck "lo slug giusto in ciascuna" "$(jq -r .slug $AB_HOME/registry/nico.d/storico.json) $(jq -r .slug $AB_HOME/registry/nico.d/audit-plan.json)" "storico audit-plan"
-AB_SESSION_SLUG=storico ab_update_registry nico false "$W"
-ck "la fine di una non toglie l'altra" "$(ls $AB_HOME/registry/nico.d/)" "audit-plan.json"
+AB_SESSION_SLUG=copia ab_update_registry nico true "$W"
+ck "due voci di registro" "$(ls $AB_HOME/registry/nico.d/ | sort | tr '\n' ' ')" "copia.json progetto.json "
+ck "lo slug giusto in ciascuna" "$(jq -r .slug $AB_HOME/registry/nico.d/copia.json) $(jq -r .slug $AB_HOME/registry/nico.d/progetto.json)" "copia progetto"
+AB_SESSION_SLUG=copia ab_update_registry nico false "$W"
+ck "la fine di una non toglie l'altra" "$(ls $AB_HOME/registry/nico.d/)" "progetto.json"
 
 echo; echo "PASS=$P FAIL=$F"; rm -rf "$AB_HOME"; [[ $F -eq 0 ]]

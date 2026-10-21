@@ -475,9 +475,9 @@ class WakeTest(unittest.TestCase):
     def test_working_session_gets_all_queued_returns_in_one_wake(self):
         self.sessions([self.alita(state="working")])
         self.expect()
-        self.expect(task="t-20261017-def456", to="nico/hr-bot")
+        self.expect(task="t-20261017-def456", to="nico/app-x")
         a = self.deliver()
-        b = self.deliver(task="t-20261017-def456", **{"from": "nico", "from_session": "nico/hr-bot"})
+        b = self.deliver(task="t-20261017-def456", **{"from": "nico", "from_session": "nico/app-x"})
         c = self.deliver()
         self.assertEqual(wake.tick(), {"postponed": ["t-20261017-abc123", "t-20261017-def456"]})
         self.assertEqual(self.onda.calls, [])
@@ -488,7 +488,7 @@ class WakeTest(unittest.TestCase):
         self.assertIn("3 messaggi", prompt)
         for mid in (a, b, c):
             self.assertIn(mid, prompt)
-        self.assertIn("nico/hr-bot", prompt)
+        self.assertIn("nico/app-x", prompt)
         self.assertNotIn("\n", prompt)
 
     def test_closed_wait_does_not_wake(self):
@@ -604,11 +604,11 @@ class WakeTest(unittest.TestCase):
     def test_pair_cap_does_not_stop_other_agents(self):
         self.sessions([self.alita()])
         self.expect()
-        self.expect(task="t-20261017-def456", to="nico/hr-bot")
+        self.expect(task="t-20261017-def456", to="nico/app-x")
         wake.pair_log("alita", "kai").parent.mkdir(parents=True, exist_ok=True)
         wake.pair_log("alita", "kai").write_text(f"{time.time():.0f}\n" * wake.PAIR_MAX_PER_HOUR)
         k = self.deliver()
-        n = self.deliver(task="t-20261017-def456", **{"from": "nico", "from_session": "nico/hr-bot"})
+        n = self.deliver(task="t-20261017-def456", **{"from": "nico", "from_session": "nico/app-x"})
         self.assertEqual(wake.tick(), {"postponed": ["t-20261017-abc123"], "woken": ["t-20261017-def456"]})
         self.assertEqual(self.wait_state()["returns"][k]["pending_wake"]["reason"], "tetto_coppia")
         self.assertIn(n, self.onda.calls[0]["params"]["prompt"])
@@ -640,7 +640,7 @@ class WakeTest(unittest.TestCase):
 
     def urgent(self, prio="urgent", req=True, sender="nico", where="", **extra) -> str:
         return self.deliver(task=None, where=where, type="request", kind="comunicazione", priority=prio,
-                            requires_response=req, **dict({"from": sender, "from_session": f"{sender}/hr-bot"}, **extra))
+                            requires_response=req, **dict({"from": sender, "from_session": f"{sender}/app-x"}, **extra))
 
     def test_urgent_with_response_wakes_the_idle_recipient(self):
         self.sessions([self.alita()])
