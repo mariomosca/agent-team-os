@@ -60,7 +60,10 @@ SETTLE_S = float(os.environ.get("AB_WAKE_SETTLE_S", "5"))
 # sessions.json si riscrive almeno ogni 15 s: oltre questo Onda non lo sta aggiornando.
 SESSIONS_FRESH_S = float(os.environ.get("AB_WAKE_SESSIONS_FRESH_S", "60"))
 SOCKET_TIMEOUT_S = 20.0
-TERMINAL_STATES = ("woken", "seen", "blocked", "expired", "cancelled")
+# v2.8: un'attesa resta "expected" dopo ogni sveglia, finche' chi aspetta non la
+# chiude (bus_gestisci chiuso -> closed). woken/seen/blocked sono gli stati finali
+# della v2.6, che chiudeva l'attesa alla prima sveglia: restano chiusi.
+TERMINAL_STATES = ("closed", "woken", "seen", "blocked", "expired", "cancelled")
 
 
 def bus_home() -> Path:
@@ -249,11 +252,6 @@ def find_arrivals(rec: dict) -> list[tuple[Path, dict, str]]:
                 hits.append((msg.get("ts") or "", p, msg, state))
     hits.sort(key=lambda h: (h[0], str(h[1])))
     return [(p, msg, state) for _, p, msg, state in hits]
-
-
-def find_arrival(rec: dict) -> tuple[Path, dict, str] | None:
-    """Il primo esito (non una question) con il task_id dell'atteso."""
-    return next((h for h in find_arrivals(rec) if not _is_question(h[1])), None)
 
 
 def answered(rec: dict, msg: dict) -> bool:
@@ -623,78 +621,120 @@ def wake_via_tmux(pane: str, text: str) -> str:
 
 
 # ---------------------------------------------------------------- regole
+#
+# Anti-catena (BS21-F2.4). Una sessione al lavoro non si sveglia: i ritorni si
+# accodano e arrivano tutti nella sveglia dopo. Sopra a questo, tre tetti all'ora:
+# per sessione (MAX_PER_HOUR), per task e per coppia di agenti. Oltre il tetto il
+# messaggio resta in casella con pending_wake = tetto_*, e il pannello lo mostra.
+# wake_chain (v2.6) resta timbrato sui messaggi ma non blocca piu': le risposte
+# sulla delega devono svegliare, ed e' il tetto a fermare un botta e risposta a vuoto.
 
-def wakes_last_hour(d: Path) -> int:
-    f = d / ".wakes.log"
+TASK_MAX_PER_HOUR = int(os.environ.get("AB_WAKE_TASK_MAX_PER_HOUR", "4"))
+PAIR_MAX_PER_HOUR = int(os.environ.get("AB_WAKE_PAIR_MAX_PER_HOUR", "6"))
+# Un'attesa senza movimento per tanto si chiude da sola (scaduta, con avviso):
+# altrimenti un'attesa dimenticata aggancerebbe per sempre i messaggi dell'esecutore.
+WAIT_IDLE_H = float(os.environ.get("AB_WAIT_IDLE_H", "72"))
+# Una response vecchia di piu' non sveglia l'esecutore (niente sveglie arretrate al rilascio).
+ANSWER_WINDOW_S = float(os.environ.get("AB_WAKE_ANSWER_WINDOW_S", str(6 * 3600)))
+
+
+def _stamps(f: Path) -> list[float]:
     cutoff = time.time() - 3600
     try:
-        return sum(1 for line in f.read_text().split() if float(line) >= cutoff)
+        return [float(x) for x in f.read_text().split() if float(x) >= cutoff]
     except (OSError, ValueError):
-        return 0
+        return []
+
+
+def _stamp(f: Path) -> None:
+    keep = _stamps(f) + [time.time()]
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text("\n".join(f"{x:.0f}" for x in keep) + "\n")
+
+
+def wakes_last_hour(d: Path) -> int:
+    return len(_stamps(d / ".wakes.log"))
+
+
+def task_log(task_id: str) -> Path:
+    return waits_root() / ".tasks" / f"{task_id}.log"
+
+
+def pair_log(a: str, b: str) -> Path:
+    return waits_root() / ".pairs" / ("~".join(sorted((a, b))) + ".log")
 
 
 def note_wake(d: Path, task_id: str) -> None:
-    d.mkdir(parents=True, exist_ok=True)
-    keep = []
-    f = d / ".wakes.log"
-    cutoff = time.time() - 3600
-    try:
-        keep = [x for x in f.read_text().split() if float(x) >= cutoff]
-    except (OSError, ValueError):
-        pass
-    keep.append(f"{time.time():.0f}")
-    f.write_text("\n".join(keep) + "\n")
+    _stamp(d / ".wakes.log")
     # Chi spedisce da questa sessione nei prossimi CHAIN_MIN minuti timbra wake_chain.
     write_json(d / ".woken.json", {"task_id": task_id, "at": now_iso()})
 
 
-def chain_blocked(msg: dict) -> bool:
-    """Un messaggio scritto da una sessione appena svegliata non sveglia nessuno."""
-    wc = msg.get("wake_chain")
-    if not isinstance(wc, dict):
-        return False
-    at = parse_iso(wc.get("at"))
-    return at is None or (parse_iso(msg.get("ts")) or time.time()) - at <= CHAIN_MIN * 60 + 60
-
-
-def wake_text(rec: dict, msg: dict) -> str:
+def _sender(msg: dict, my_host: str | None) -> str:
     sender = msg.get("from_session") or msg.get("from") or "?"
     host = (msg.get("context") or {}).get("host")
-    if host and host != rec.get("host"):
+    if host and host != my_host:
         sender = f"{sender}@{host}"
-    desc = re.sub(r"\s+", " ", rec.get("description") or "").strip()
-    what = f" ({desc})" if desc else ""
-    return (f"Esito del task {rec['task_id']}{what} arrivato da {sender}: "
-            f"leggilo con bus_read {msg.get('id')} e prosegui.")
+    return sender
 
 
-def question_text(rec: dict, msg: dict) -> str:
-    sender = msg.get("from_session") or msg.get("from") or "?"
-    host = (msg.get("context") or {}).get("host")
-    if host and host != rec.get("host"):
-        sender = f"{sender}@{host}"
-    desc = re.sub(r"\s+", " ", rec.get("description") or "").strip()
-    what = f" ({desc})" if desc else ""
-    return (f"Domanda sul task {rec['task_id']}{what} da {sender}, che aspetta te: "
-            f"leggila con bus_read {msg.get('id')} e rispondi nel thread. L'esito ti sveglia dopo.")
+def _desc(rec: dict | None) -> str:
+    desc = re.sub(r"\s+", " ", (rec or {}).get("description") or "").strip()
+    return f" ({desc[:80]})" if desc else ""
 
 
-def notify_expired(rec: dict) -> None:
+GESTISCI = "gestisci ognuno con bus_gestisci (chiuso, riarma, risposto o letto)"
+
+
+def item_text(it: dict) -> str:
+    mid, tid, who = it["mid"], it["task_id"], it["sender"]
+    kind = it["kind"]
+    if kind == "question":
+        return f"domanda sul task {tid}{_desc(it.get('rec'))} da {who}, che aspetta te (bus_read {mid})"
+    if kind == "answer":
+        return f"risposta sul task {tid} da {who} (bus_read {mid})"
+    if kind == "da_agganciare":
+        return (f"messaggio da {who} da agganciare, puo' essere del task "
+                f"{' o '.join(it['candidates'])} (bus_read {mid})")
+    return f"ritorno sul task {tid}{_desc(it.get('rec'))} da {who} (bus_read {mid})"
+
+
+def batch_text(items: list[dict]) -> str:
+    """Una riga sola: una sveglia, N messaggi."""
+    ups = [i for i in items if i["kind"] != "answer"]
+    downs = [i for i in items if i["kind"] == "answer"]
+    parts = []
+    if len(ups) == 1:
+        parts.append(item_text(ups[0])[0].upper() + item_text(ups[0])[1:] + f": leggilo e {GESTISCI.replace('ognuno', 'il messaggio')}.")
+    elif ups:
+        parts.append(f"{len(ups)} messaggi sulle tue deleghe: " + "; ".join(item_text(i) for i in ups)
+                     + f". Leggili e {GESTISCI}.")
+    if len(downs) == 1:
+        parts.append(item_text(downs[0])[0].upper() + item_text(downs[0])[1:] + ": leggila e prosegui.")
+    elif downs:
+        parts.append(f"{len(downs)} risposte sui task che esegui: " + "; ".join(item_text(i) for i in downs)
+                     + ". Leggile e prosegui.")
+    return " ".join(parts)
+
+
+def notify_expired(rec: dict, idle: bool = False) -> None:
     """Avviso di scadenza nella casella di chi aspetta. Non sveglia: niente task_id."""
     agent, slug = rec["agent"], rec["slug"]
     ts = now_iso()
     rand = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
     mid = f"msg-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{rand}"
     who = rec.get("delegated_to") or "chi hai delegato"
+    if idle:
+        summary = (f"Attesa del task {rec['task_id']} ({rec.get('description') or ''}) su {who} chiusa: "
+                   f"nessun movimento da {WAIT_IDLE_H:.0f} ore. Se il lavoro e' ancora aperto, delega di nuovo.")
+    else:
+        summary = (f"Nessun esito per il task {rec['task_id']} ({rec.get('description') or ''}) "
+                   f"da {who} entro {rec.get('deadline')}. Controlla la sessione delegata.")
     msg = {
         "id": mid, "version": "1.0", "from": agent, "from_session": f"{agent}/{slug}",
         "to": agent, "thread_id": f"thread-{ts[:10].replace('-', '')}-sveglia",
         "in_reply_to": None, "type": "event", "intent": "task-scaduto", "priority": "normal",
-        "payload": {
-            "summary": (f"Nessun esito per il task {rec['task_id']} ({rec.get('description') or ''}) "
-                        f"da {who} entro {rec.get('deadline')}. Controlla la sessione delegata."),
-            "expired_task_id": rec["task_id"],
-        },
+        "payload": {"summary": summary, "expired_task_id": rec["task_id"]},
         "context_refs": [], "requires_response": False, "ts": ts,
     }
     if h := host_self():
@@ -708,7 +748,7 @@ def notify_expired(rec: dict) -> None:
 # ---------------------------------------------------------------- giro
 
 def try_wake(rec: dict, d: Path, text: str) -> str:
-    """Scrive text nel prompt della sessione che aspetta. Postpone se non ora."""
+    """Scrive text nel prompt della sessione. Postpone se non ora."""
     if wakes_last_hour(d) >= MAX_PER_HOUR:
         raise Postpone("tetto_orario")
     sess = onda_session(rec)
@@ -728,112 +768,295 @@ def note_postponed(holder: dict, reason: str, label: str) -> None:
                               "checked_at": now_iso()}
 
 
-def process_questions(path: Path, rec: dict, questions: list, has_result: bool) -> str | None:
-    """Una sveglia per ogni question del task, senza chiudere l'atteso. Al piu' una per giro."""
-    qs = rec.setdefault("questions", {})
-    label = f"{rec['task_id']} {rec['agent']}/{rec['slug']}"
-    out = None
-    for _, msg, where in questions:
-        qid = msg.get("id")
-        if not isinstance(qid, str):
-            continue
-        q = qs.get(qid) or {
-            "from": msg.get("from_session") or msg.get("from"),
-            "at": msg.get("ts") or now_iso(),
-            "summary": re.sub(r"\s+", " ", str((msg.get("payload") or {}).get("summary") or ""))[:160],
-            "state": "pending",
-        }
-        if (msg.get("context") or {}).get("host") and msg["context"]["host"] != rec.get("host"):
-            q["host"] = msg["context"]["host"]
-        qs[qid] = q
-        if not q.get("answered_at") and answered(rec, msg):
-            q["answered_at"] = now_iso()
-        if q["state"] != "pending":
-            continue
-        if where == "archived" or q.get("answered_at") or has_result:
-            q["state"] = "seen"
-            q.pop("pending_wake", None)
-            log(f"domanda vista {label} ({qid}): niente sveglia")
-            continue
-        if chain_blocked(msg):
-            q["state"] = "blocked"
-            q.pop("pending_wake", None)
-            log(f"catena bloccata domanda {label} ({qid})")
-            continue
-        if out == "woken_question":
-            continue  # una sveglia per giro: la prossima domanda al giro dopo
-        try:
-            how = try_wake(rec, path.parent, question_text(rec, msg))
-        except Postpone as p:
-            note_postponed(q, str(p), f"domanda {label} ({qid})")
-            out = out or "postponed"
-            continue
-        q.update(state="woken", woken_at=now_iso(), woken_via=how)
-        q.pop("pending_wake", None)
-        # Prima si scrive lo stato, poi il resto: una sveglia per messaggio.
+def expire_if_due(path: Path, rec: dict) -> str | None:
+    """Scadenza senza ritorni, o attesa ferma da WAIT_IDLE_H ore: chiusa con un avviso."""
+    now = time.time()
+    dl = parse_iso(rec.get("deadline"))
+    if dl is not None and now > dl and not rec.get("returns"):
+        rec.update(state="expired", expired_at=now_iso())
         write_json(path, rec)
-        note_wake(path.parent, rec["task_id"])
-        log(f"sveglia domanda {label} via {how} (msg {qid})")
-        out = "woken_question"
-    write_json(path, rec)
+        notify_expired(rec)
+        log(f"scaduto {rec['task_id']} {rec['agent']}/{rec['slug']}")
+        return "expired"
+    last = max(parse_iso(rec.get(k)) or 0 for k in ("created_at", "last_activity", "rearmed_at"))
+    pending = any(e.get("state") == "pending" for e in (rec.get("returns") or {}).values())
+    if WAIT_IDLE_H > 0 and last and now - last > WAIT_IDLE_H * 3600 and not pending:
+        rec.update(state="expired", expired_at=now_iso(), note=f"inattiva da {WAIT_IDLE_H:.0f} ore")
+        write_json(path, rec)
+        notify_expired(rec, idle=True)
+        log(f"scaduto per inattivita' {rec['task_id']} {rec['agent']}/{rec['slug']}")
+        return "expired"
+    return None
+
+
+def collect_returns(path: Path, rec: dict, seen: list | None = None) -> list[dict]:
+    """Aggiorna rec['returns'] con i messaggi del task arrivati a chi aspetta; ritorna
+    quelli ancora da svegliare. Uno gia' letto (archiviato) prima della sveglia e'
+    'seen'; una domanda a cui chi aspetta ha gia' risposto nel thread, anche."""
+    returns = rec.setdefault("returns", {})
+    legacy = rec.get("questions") or {}  # v2.7: domande gia' trattate prima della v2.8
+    me = host_self()
+    out = []
+    for _p, msg, where in find_arrivals(rec):
+        mid = msg.get("id")
+        if not isinstance(mid, str):
+            continue
+        e = returns.get(mid)
+        if e is None:
+            e = {"from": msg.get("from_session") or msg.get("from"), "at": msg.get("ts") or now_iso(),
+                 "type": msg.get("type"),
+                 "summary": re.sub(r"\s+", " ", str((msg.get("payload") or {}).get("summary") or ""))[:160],
+                 "state": "pending"}
+            if (msg.get("context") or {}).get("host") and msg["context"]["host"] != rec.get("host"):
+                e["host"] = msg["context"]["host"]
+            if mid in legacy:
+                e["state"] = legacy[mid].get("state") if legacy[mid].get("state") != "pending" else "pending"
+            returns[mid] = e
+            rec["last_activity"] = now_iso()
+            if msg.get("from_session") and not rec.get("executor_session"):
+                rec["executor_session"] = msg["from_session"]
+        if e.get("state") != "pending":
+            continue
+        if where == "archived":
+            e["state"] = "seen"
+            e.pop("pending_wake", None)
+            log(f"visto {rec['task_id']} {rec['agent']}/{rec['slug']} ({mid}): letto dalla sessione")
+            if seen is not None:
+                seen.append(rec["task_id"])
+            continue
+        if _is_question(msg) and answered(rec, msg):
+            e.update(state="seen", answered_at=now_iso())
+            e.pop("pending_wake", None)
+            continue
+        out.append({"kind": "question" if _is_question(msg) else "return", "agent": rec["agent"],
+                    "slug": rec["slug"], "task_id": rec["task_id"], "mid": mid, "entry": e, "rec": rec,
+                    "path": path, "sender": _sender(msg, me), "peer": msg.get("from") or "?"})
     return out
 
 
-def process(path: Path) -> str | None:
-    rec = read_json(path)
-    if not rec or rec.get("state") != "expected":
-        return None
+def collect_unlinked(waits_by_session: dict) -> list[dict]:
+    """Messaggi 'da agganciare' (F1.3) ancora da segnalare: una sveglia ciascuno."""
+    out = []
     me = host_self()
-    if rec.get("host") and me and rec["host"] != me:
-        return None  # l'atteso di un'altra macchina lo sveglia la sua sveglia
-    hits = find_arrivals(rec)
-    questions = [h for h in hits if _is_question(h[1])]
-    results = [h for h in hits if not _is_question(h[1])]
-    q_out = process_questions(path, rec, questions, bool(results)) if questions else None
+    for (agent, slug), recs in waits_by_session.items():
+        base = bus_home() / "inboxes" / agent
+        for d in (base / f"@{slug}", base):
+            for p in sorted(d.glob("msg-*.json")) if d.is_dir() else []:
+                msg = read_json(p)
+                link = (msg or {}).get("task_link") or {}
+                if link.get("by") != "da_agganciare" or link.get("woken_at"):
+                    continue
+                cands = link.get("candidates") or []
+                if d == base and not any(r["task_id"] in cands for r in recs):
+                    continue  # all'agente intero: lo segnala la sessione che ha i candidati
+                out.append({"kind": "da_agganciare", "agent": agent, "slug": slug,
+                            "task_id": (cands or ["?"])[0], "candidates": cands, "mid": msg.get("id"),
+                            "entry": link, "msg_path": p, "msg": msg, "sender": _sender(msg, me),
+                            "peer": msg.get("from") or "?"})
+    return out
+
+
+def executes(agent: str, slug: str, task_id: str) -> bool:
+    """La sessione esegue il task: ci ha fatto una domanda (waiting_agent) o ne ha
+    ricevuto la delega (un request/brief/handoff con quel task_id nella sua casella)."""
+    reg = read_json(bus_home() / "registry" / f"{agent}.d" / f"{slug}.json") or {}
+    if (reg.get("waiting_agent") or {}).get("task_id") == task_id:
+        return True
+    base = bus_home() / "inboxes" / agent
+    for d in (base / f"@{slug}", base):
+        for sub in ("", ".read", ".done"):
+            for p in (d / sub).glob("msg-*.json") if (d / sub).is_dir() else []:
+                m = read_json(p) or {}
+                if _msg_task_id(m) == task_id and (m.get("kind") == "delega"
+                                                   or m.get("type") in ("request", "brief", "handoff")):
+                    return True
+    return False
+
+
+def answers_path(agent: str, slug: str) -> Path:
+    return wait_dir(agent, slug) / ".answers.json"
+
+
+def collect_answers(open_tasks: set) -> tuple[list[dict], dict]:
+    """F2.3: la response di chi ha delegato sveglia l'esecutore fermo. E' una response
+    con task_id nella casella di una sessione che quel task NON lo aspetta: quindi lo
+    esegue. Funziona anche fra due macchine, perche' basta la casella dell'esecutore.
+    Stato per messaggio in waits/<agente>/@<slug>/.answers.json."""
+    out, states = [], {}
+    root = bus_home() / "inboxes"
+    if not root.is_dir():
+        return out, states
+    me = host_self()
     now = time.time()
-    if not results:
-        dl = parse_iso(rec.get("deadline"))
-        if dl is not None and now > dl:
-            rec.update(state="expired", expired_at=now_iso())
-            write_json(path, rec)
-            notify_expired(rec)
-            log(f"scaduto {rec['task_id']} {rec['agent']}/{rec['slug']}")
-            return "expired"
-        return q_out
+    for adir in root.iterdir():
+        if not adir.is_dir():
+            continue
+        for sdir in adir.iterdir():
+            if not (sdir.is_dir() and sdir.name.startswith("@")):
+                continue
+            agent, slug = adir.name, sdir.name[1:]
+            st = None
+            for p in sorted(sdir.glob("msg-*.json")):
+                try:
+                    if now - p.stat().st_mtime > ANSWER_WINDOW_S:
+                        continue
+                except OSError:
+                    continue
+                msg = read_json(p)
+                tid = _msg_task_id(msg or {})
+                if not msg or not tid or msg.get("type") != "response" or msg.get("from") == agent:
+                    continue
+                w = find_wait(tid)
+                if w is not None and w.parent == wait_dir(agent, slug):
+                    continue  # e' un ritorno su una delega di questa sessione: lo fa collect_returns
+                if st is None:
+                    st = states.setdefault((agent, slug), read_json(answers_path(agent, slug)) or {})
+                mid = msg.get("id")
+                if mid not in st:
+                    # Valutato una volta: chi non esegue il task non si sveglia per lui.
+                    st[mid] = {"task_id": tid, "from": msg.get("from_session") or msg.get("from"),
+                               "at": msg.get("ts") or now_iso(),
+                               "state": "pending" if executes(agent, slug, tid) else "ignored"}
+                e = st[mid]
+                if e.get("state") != "pending":
+                    continue
+                out.append({"kind": "answer", "agent": agent, "slug": slug, "task_id": tid, "mid": mid,
+                            "entry": e, "sender": _sender(msg, me), "peer": msg.get("from") or "?"})
+    # una risposta archiviata prima della sveglia non sveglia piu'
+    for (agent, slug), st in states.items():
+        for mid, e in st.items():
+            if e.get("state") == "pending" and not (bus_home() / "inboxes" / agent / f"@{slug}" / f"{mid}.json").exists():
+                e["state"] = "seen"
+                e.pop("pending_wake", None)
+    return out, states
 
-    mpath, msg, where = results[0]
-    if msg.get("from_session") and not rec.get("executor_session"):
-        rec["executor_session"] = msg["from_session"]
-    rec["arrived"] = {"msg_id": msg.get("id"), "from": msg.get("from_session") or msg.get("from"),
-                      "at": rec.get("arrived", {}).get("at") or now_iso()}
-    if where == "archived":
-        rec.update(state="seen", closed_at=now_iso())
-        rec.pop("pending_wake", None)
-        write_json(path, rec)
-        log(f"visto {rec['task_id']} {rec['agent']}/{rec['slug']}: letto dalla sessione, niente sveglia")
-        return "seen"
-    if chain_blocked(msg):
-        rec.update(state="blocked", closed_at=now_iso(),
-                   note=f"esito da una sessione svegliata per {msg['wake_chain'].get('task_id')}: niente catena")
-        rec.pop("pending_wake", None)
-        write_json(path, rec)
-        log(f"catena bloccata {rec['task_id']} {rec['agent']}/{rec['slug']}")
-        return "blocked"
 
-    try:
-        how = try_wake(rec, path.parent, wake_text(rec, msg))
-    except Postpone as p:
-        note_postponed(rec, str(p), f"{rec['task_id']} {rec['agent']}/{rec['slug']}")
-        write_json(path, rec)
-        return "postponed"
+def session_target(agent: str, slug: str, recs: list[dict]) -> dict:
+    """Come raggiungere il prompt di una sessione: l'attesa piu' recente con un target,
+    oppure la voce di registro (waiting_agent.target, v2.8), oppure solo agente/slug."""
+    for r in sorted(recs, key=lambda r: r.get("created_at") or "", reverse=True):
+        if r.get("target"):
+            return {"agent": agent, "slug": slug, "target": r["target"]}
+    reg = read_json(bus_home() / "registry" / f"{agent}.d" / f"{slug}.json") or {}
+    tgt = ((reg.get("waiting_agent") or {}).get("target")) or reg.get("target") or {}
+    return {"agent": agent, "slug": slug, "target": tgt if isinstance(tgt, dict) else {}}
 
-    # Prima si chiude l'atteso, poi il resto: una sveglia per task anche se qui sotto fallisse.
-    rec.update(state="woken", woken_at=now_iso(), woken_via=how)
-    rec.pop("pending_wake", None)
-    write_json(path, rec)
-    note_wake(path.parent, rec["task_id"])
-    log(f"sveglia {rec['task_id']} {rec['agent']}/{rec['slug']} via {how} (msg {msg.get('id')})")
-    return "woken"
+
+def wake_sessions(items: list[dict], recs_by_session: dict) -> dict[str, list[str]]:
+    """Una sveglia per sessione con tutti i suoi messaggi, dentro i tetti."""
+    out: dict[str, list[str]] = {}
+    groups: dict[tuple, list[dict]] = {}
+    for it in items:
+        groups.setdefault((it["agent"], it["slug"]), []).append(it)
+    for (agent, slug), its in groups.items():
+        d = wait_dir(agent, slug)
+        label = f"{agent}/{slug}"
+        ok = []
+        for it in its:
+            if len(_stamps(task_log(it["task_id"]))) >= TASK_MAX_PER_HOUR:
+                note_postponed(it["entry"], "tetto_task", f"{it['task_id']} {label} ({it['mid']})")
+            elif len(_stamps(pair_log(agent, it["peer"]))) >= PAIR_MAX_PER_HOUR:
+                note_postponed(it["entry"], "tetto_coppia", f"{it['task_id']} {label} ({it['mid']})")
+            else:
+                ok.append(it)
+        for it in its:
+            if it not in ok:
+                out.setdefault("postponed", []).append(it["task_id"])
+        if not ok:
+            continue
+        tgt = session_target(agent, slug, recs_by_session.get((agent, slug), []))
+        try:
+            how = try_wake(tgt, d, batch_text(ok))
+        except Postpone as p:
+            for it in ok:
+                note_postponed(it["entry"], str(p), f"{it['task_id']} {label} ({it['mid']})")
+                out.setdefault("postponed", []).append(it["task_id"])
+            continue
+        at = now_iso()
+        for it in ok:
+            it["entry"].update(state="woken", woken_at=at, woken_via=how)
+            it["entry"].pop("pending_wake", None)
+            it["woken"] = True
+        # Prima si scrive lo stato, poi il resto: una sveglia per messaggio.
+        persist(ok)
+        note_wake(d, ok[0]["task_id"])
+        for tid in {it["task_id"] for it in ok}:
+            _stamp(task_log(tid))
+        for peer in {it["peer"] for it in ok}:
+            _stamp(pair_log(agent, peer))
+        log(f"sveglia {label} via {how}: " + ", ".join(f"{it['task_id']}:{it['mid']}" for it in ok))
+        for it in ok:
+            out.setdefault("woken", []).append(it["task_id"])
+    return out
+
+
+def persist(items: list[dict]) -> None:
+    """Scrive dove sta lo stato di ogni messaggio: l'attesa, .answers.json o il messaggio."""
+    for it in items:
+        if it["kind"] in ("return", "question"):
+            write_json(it["path"], it["rec"])
+        elif it["kind"] == "da_agganciare":
+            if it.get("woken"):
+                it["entry"]["woken_at"] = it["entry"].get("woken_at") or now_iso()
+                it["entry"].pop("state", None)
+                it["entry"].pop("woken_via", None)
+            it["msg"]["task_link"] = it["entry"]
+            _rewrite_message(it["msg_path"], it["msg"])
+        elif it["kind"] == "answer":
+            st = read_json(answers_path(it["agent"], it["slug"])) or {}
+            st[it["mid"]] = it["entry"]
+            write_json(answers_path(it["agent"], it["slug"]), st)
+
+
+def wake_round() -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    me = host_self()
+    recs_by_session: dict[tuple, list[dict]] = {}
+    paths: dict[str, tuple[Path, dict]] = {}
+    items: list[dict] = []
+    for p in sorted(waits_root().glob("*/@*/*.json")):
+        if p.name.startswith("."):
+            continue
+        rec = read_json(p)
+        if not rec or rec.get("state") not in OPEN_STATES:
+            continue
+        if rec.get("host") and me and rec["host"] != me:
+            continue  # l'atteso di un'altra macchina lo sveglia la sua sveglia
+        try:
+            seen: list = []
+            found = collect_returns(p, rec, seen)
+            if seen:
+                out.setdefault("seen", []).extend(seen)
+            if (r := expire_if_due(p, rec)) is not None:
+                out.setdefault(r, []).append(rec["task_id"])
+                continue
+            write_json(p, rec)
+        except Exception as exc:  # un atteso rotto non ferma gli altri
+            log(f"errore su {p}: {exc!r}")
+            out.setdefault("error", []).append(p.stem)
+            continue
+        items += found
+        recs_by_session.setdefault((rec["agent"], rec["slug"]), []).append(rec)
+        paths[rec["task_id"]] = (p, rec)
+    items += collect_unlinked(recs_by_session)
+    answers, states = collect_answers(set(paths))
+    items += answers
+    for (agent, slug), st in states.items():
+        write_json(answers_path(agent, slug), st)
+    for k, v in wake_sessions(items, recs_by_session).items():
+        out.setdefault(k, []).extend(v)
+    # i rimandi si scrivono anche senza sveglia (pending_wake, per il pannello)
+    persist([it for it in items if not it.get("woken")])
+    # sull'attesa, il perche' dell'ultimo rimando ancora aperto: lo legge il pannello
+    for p, rec in paths.values():
+        why = [e["pending_wake"] for e in (rec.get("returns") or {}).values()
+               if e.get("state") == "pending" and e.get("pending_wake")]
+        if why:
+            rec["pending_wake"] = max(why, key=lambda w: w.get("checked_at") or "")
+        else:
+            rec.pop("pending_wake", None)
+        write_json(p, rec)
+    return {k: sorted(set(v)) for k, v in out.items()}
 
 
 class Lock:
@@ -908,30 +1131,20 @@ def registro_prune() -> list[str]:
 
 def tick() -> dict:
     out: dict[str, list[str]] = {}
-    root = waits_root()
     with Lock() as ok:
         if not ok:
             return {"skipped": ["un altro giro in corso"]}
         if registro_due():
             if pruned := registro_prune():
                 out["registro"] = pruned
-        if not root.is_dir():
-            return out
+        # niente return se waits/ manca: le risposte all'esecutore (F2.3) non hanno attese qui
         try:
             for k, v in link_returns().items():
                 out.setdefault(k, []).extend(v)
         except Exception as exc:  # l'aggancio non ferma la sveglia
             log(f"errore aggancio: {exc!r}")
-        for p in sorted(root.glob("*/@*/*.json")):
-            if p.name.startswith("."):
-                continue
-            try:
-                r = process(p)
-            except Exception as exc:  # un atteso rotto non ferma gli altri
-                log(f"errore su {p}: {exc!r}")
-                r = "error"
-            if r:
-                out.setdefault(r, []).append(p.stem)
+        for k, v in wake_round().items():
+            out.setdefault(k, []).extend(v)
     return out
 
 

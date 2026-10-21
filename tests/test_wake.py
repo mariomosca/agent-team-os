@@ -145,7 +145,7 @@ class WakeTest(unittest.TestCase):
 
     # -- sveglia via Onda
 
-    def test_idle_session_woken_once(self):
+    def test_every_return_wakes_and_the_wait_stays_open(self):
         self.sessions([self.alita()])
         self.expect()
         mid = self.deliver()
@@ -158,14 +158,20 @@ class WakeTest(unittest.TestCase):
         self.assertIn("t-20261017-abc123", p["prompt"])
         self.assertIn(f"bus_read {mid}", p["prompt"])
         self.assertIn("kai/f3", p["prompt"])
+        self.assertIn("bus_gestisci", p["prompt"])
         self.assertNotIn("\n", p["prompt"])
         st = self.wait_state()
-        self.assertEqual(st["state"], "woken")
-        self.assertEqual(st["woken_via"], "onda")
-        # secondo esito dello stesso task: nessuna seconda sveglia
-        self.deliver()
+        self.assertEqual(st["state"], "expected")
+        self.assertEqual(st["returns"][mid]["state"], "woken")
+        self.assertEqual(st["returns"][mid]["woken_via"], "onda")
+        self.assertEqual(st["executor_session"], "kai/f3")
+        # lo stesso messaggio non sveglia due volte
         self.assertEqual(wake.tick(), {})
-        self.assertEqual(len(self.onda.calls), 1)
+        # un secondo ritorno sullo stesso task sveglia di nuovo (IK18: 7 aggiornamenti, 0 sveglie)
+        mid2 = self.deliver()
+        self.assertEqual(wake.tick(), {"woken": ["t-20261017-abc123"]})
+        self.assertEqual(len(self.onda.calls), 2)
+        self.assertIn(f"bus_read {mid2}", self.onda.calls[1]["params"]["prompt"])
 
     def test_message_from_someone_else_does_not_wake(self):
         self.sessions([self.alita()])
@@ -191,42 +197,41 @@ class WakeTest(unittest.TestCase):
         self.sessions([self.alita()])
         self.expect()
         qid = self.question()
-        self.assertEqual(wake.tick(), {"woken_question": ["t-20261017-abc123"]})
+        self.assertEqual(wake.tick(), {"woken": ["t-20261017-abc123"]})
         self.assertEqual(len(self.onda.calls), 1)
         prompt = self.onda.calls[0]["params"]["prompt"]
         self.assertIn(f"bus_read {qid}", prompt)
-        self.assertIn("Domanda", prompt)
+        self.assertIn("omanda", prompt)
         self.assertNotIn("\n", prompt)
         st = self.wait_state()
         self.assertEqual(st["state"], "expected")
-        self.assertEqual(st["questions"][qid]["state"], "woken")
-        self.assertEqual(st["questions"][qid]["summary"], "uso il tema scuro?")
-        # stessa domanda: nessuna seconda sveglia
+        self.assertEqual(st["returns"][qid]["state"], "woken")
+        self.assertEqual(st["returns"][qid]["type"], "question")
+        self.assertEqual(st["returns"][qid]["summary"], "uso il tema scuro?")
         self.assertEqual(wake.tick(), {})
-        self.assertEqual(len(self.onda.calls), 1)
-        # poi l'esito sveglia comunque
         rid = self.deliver()
         self.assertEqual(wake.tick(), {"woken": ["t-20261017-abc123"]})
         self.assertEqual(len(self.onda.calls), 2)
         self.assertIn(f"bus_read {rid}", self.onda.calls[1]["params"]["prompt"])
-        self.assertEqual(self.wait_state()["state"], "woken")
 
-    def test_two_questions_two_wakes(self):
+    def test_two_messages_one_wake(self):
         self.sessions([self.alita()])
         self.expect()
-        self.question()
-        self.question()
-        self.assertEqual(wake.tick(), {"woken_question": ["t-20261017-abc123"]})
-        self.assertEqual(wake.tick(), {"woken_question": ["t-20261017-abc123"]})
+        q1, q2 = self.question(), self.question()
+        self.assertEqual(wake.tick(), {"woken": ["t-20261017-abc123"]})
+        self.assertEqual(len(self.onda.calls), 1)
+        prompt = self.onda.calls[0]["params"]["prompt"]
+        self.assertIn("2 messaggi", prompt)
+        self.assertIn(q1, prompt)
+        self.assertIn(q2, prompt)
         self.assertEqual(wake.tick(), {})
-        self.assertEqual(len(self.onda.calls), 2)
 
     def test_question_busy_postponed_then_seen(self):
         self.sessions([self.alita(state="working")])
         self.expect()
         qid = self.question()
         self.assertEqual(wake.tick(), {"postponed": ["t-20261017-abc123"]})
-        q = self.wait_state()["questions"][qid]
+        q = self.wait_state()["returns"][qid]
         self.assertEqual(q["state"], "pending")
         self.assertEqual(q["pending_wake"]["reason"], "onda:working")
         # la sessione l'ha letta da sola mentre lavorava: vista, niente sveglia
@@ -235,11 +240,12 @@ class WakeTest(unittest.TestCase):
         dst.parent.mkdir(exist_ok=True)
         src.rename(dst)
         self.sessions([self.alita()])
-        wake.tick()
+        self.assertEqual(wake.tick(), {"seen": ["t-20261017-abc123"]})
         self.assertEqual(self.onda.calls, [])
-        q = self.wait_state()["questions"][qid]
+        q = self.wait_state()["returns"][qid]
         self.assertEqual(q["state"], "seen")
         self.assertNotIn("pending_wake", q)
+        self.assertNotIn("pending_wake", self.wait_state())
 
     def test_question_answered_from_thread(self):
         self.sessions([self.alita(state="working")])
@@ -253,7 +259,7 @@ class WakeTest(unittest.TestCase):
             json.dumps({"id": "msg-r", "from": "alita", "to": "kai", "type": "response", "ts": later}) + "\n")
         self.sessions([self.alita()])
         wake.tick()
-        q = self.wait_state()["questions"][qid]
+        q = self.wait_state()["returns"][qid]
         self.assertEqual(q["state"], "seen")
         self.assertIn("answered_at", q)
         self.assertEqual(self.onda.calls, [])
@@ -263,17 +269,16 @@ class WakeTest(unittest.TestCase):
         self.expect()
         qid = self.deliver(task=None, type="question")
         out = wake.tick()
-        self.assertEqual(out["woken_question"], ["t-20261017-abc123"])
+        self.assertEqual(out["woken"], ["t-20261017-abc123"])
         self.assertEqual(out["linked"], [f"{qid}>t-20261017-abc123"])
 
-    def test_question_from_chain_blocked(self):
+    def test_wake_chain_no_longer_blocks_a_return(self):
+        # v2.8: la risposta di una sessione appena svegliata deve svegliare (F2.3);
+        # il botta e risposta a vuoto lo fermano i tetti (F2.4).
         self.sessions([self.alita()])
         self.expect()
-        qid = self.question(wake_chain={"task_id": "t-x", "at": iso(datetime.now(timezone.utc))})
-        wake.tick()
-        self.assertEqual(self.onda.calls, [])
-        self.assertEqual(self.wait_state()["questions"][qid]["state"], "blocked")
-        self.assertEqual(self.wait_state()["state"], "expected")
+        self.question(wake_chain={"task_id": "t-x", "at": iso(datetime.now(timezone.utc))})
+        self.assertEqual(wake.tick(), {"woken": ["t-20261017-abc123"]})
 
     def test_question_respects_hourly_cap(self):
         self.sessions([self.alita()])
@@ -282,7 +287,7 @@ class WakeTest(unittest.TestCase):
         (d / ".wakes.log").write_text("\n".join([f"{time.time():.0f}"] * wake.MAX_PER_HOUR) + "\n")
         qid = self.question()
         self.assertEqual(wake.tick(), {"postponed": ["t-20261017-abc123"]})
-        self.assertEqual(self.wait_state()["questions"][qid]["pending_wake"]["reason"], "tetto_orario")
+        self.assertEqual(self.wait_state()["returns"][qid]["pending_wake"]["reason"], "tetto_orario")
 
     # -- pulizia del registro nel giro (OR18-F3.3)
 
@@ -383,14 +388,6 @@ class WakeTest(unittest.TestCase):
         self.assertEqual(wake.tick(), {"seen": ["t-20261017-abc123"]})
         self.assertEqual(self.onda.calls, [])
 
-    def test_chain_is_blocked(self):
-        # A->B->A: l'esito arriva da una sessione appena svegliata (wake_chain).
-        self.sessions([self.alita()])
-        self.expect()
-        self.deliver(wake_chain={"task_id": "t-x", "at": iso(datetime.now(timezone.utc)), "session": "kai/f3"})
-        self.assertEqual(wake.tick(), {"blocked": ["t-20261017-abc123"]})
-        self.assertEqual(self.onda.calls, [])
-
     def test_own_message_ignored(self):
         self.sessions([self.alita()])
         self.expect()
@@ -453,7 +450,7 @@ class WakeTest(unittest.TestCase):
         self.deliver()
         self.assertEqual(wake.tick(), {"woken": ["t-20261017-abc123"]})
         sent = (self.home / "tmux" / "sent").read_text()
-        self.assertIn("-t %3 -l Esito del task t-20261017-abc123", sent)
+        self.assertIn("-t %3 -l Ritorno sul task t-20261017-abc123", sent)
         self.assertIn("-t %3 Enter", sent)
 
     def test_tmux_text_or_busy_postponed(self):
@@ -471,6 +468,172 @@ class WakeTest(unittest.TestCase):
         self.assertIsNone(wake.read_prompt_box("$ ls\nfoo\n"))
         self.assertEqual(wake.screen_refusal(self.BUSY_SCREEN), "busy")
         self.assertEqual(wake.screen_refusal("─" * 20 + "\n❯ 1. Yes\n  2. No\n Do you want to proceed?\n"), "asking")
+
+    # -- v2.8: sveglia a ogni ritorno, accodata per sessione (BS21-F2.1)
+
+    def test_working_session_gets_all_queued_returns_in_one_wake(self):
+        self.sessions([self.alita(state="working")])
+        self.expect()
+        self.expect(task="t-20261017-def456", to="nico/hr-bot")
+        a = self.deliver()
+        b = self.deliver(task="t-20261017-def456", **{"from": "nico", "from_session": "nico/hr-bot"})
+        c = self.deliver()
+        self.assertEqual(wake.tick(), {"postponed": ["t-20261017-abc123", "t-20261017-def456"]})
+        self.assertEqual(self.onda.calls, [])
+        self.sessions([self.alita()])
+        self.assertEqual(wake.tick(), {"woken": ["t-20261017-abc123", "t-20261017-def456"]})
+        self.assertEqual(len(self.onda.calls), 1)
+        prompt = self.onda.calls[0]["params"]["prompt"]
+        self.assertIn("3 messaggi", prompt)
+        for mid in (a, b, c):
+            self.assertIn(mid, prompt)
+        self.assertIn("nico/hr-bot", prompt)
+        self.assertNotIn("\n", prompt)
+
+    def test_closed_wait_does_not_wake(self):
+        self.sessions([self.alita()])
+        self.expect()
+        f = self.home / "waits" / "alita" / "@work-hub" / "t-20261017-abc123.json"
+        rec = json.loads(f.read_text()); rec["state"] = "closed"; f.write_text(json.dumps(rec))
+        self.deliver()
+        self.assertEqual(wake.tick(), {})
+
+    def test_v26_woken_wait_stays_closed(self):
+        self.sessions([self.alita()])
+        self.expect()
+        f = self.home / "waits" / "alita" / "@work-hub" / "t-20261017-abc123.json"
+        rec = json.loads(f.read_text()); rec["state"] = "woken"; f.write_text(json.dumps(rec))
+        self.deliver()
+        self.assertEqual(wake.tick(), {})
+        self.assertEqual(self.onda.calls, [])
+
+    def test_v27_questions_already_handled_are_not_woken_again(self):
+        self.sessions([self.alita()])
+        self.expect()
+        qid = self.question()
+        f = self.home / "waits" / "alita" / "@work-hub" / "t-20261017-abc123.json"
+        rec = json.loads(f.read_text()); rec["questions"] = {qid: {"state": "woken"}}; f.write_text(json.dumps(rec))
+        self.assertEqual(wake.tick(), {})
+        self.assertEqual(self.wait_state()["returns"][qid]["state"], "woken")
+
+    def test_idle_wait_expires_with_a_notice(self):
+        self.expect()
+        f = self.home / "waits" / "alita" / "@work-hub" / "t-20261017-abc123.json"
+        rec = json.loads(f.read_text())
+        rec["created_at"] = iso(datetime.now(timezone.utc) - timedelta(hours=wake.WAIT_IDLE_H + 1))
+        f.write_text(json.dumps(rec))
+        self.assertEqual(wake.tick(), {"expired": ["t-20261017-abc123"]})
+        st = self.wait_state()
+        self.assertEqual((st["state"], st["note"]), ("expired", f"inattiva da {wake.WAIT_IDLE_H:.0f} ore"))
+        [note] = list((self.home / "inboxes" / "alita" / "@work-hub").glob("msg-*.json"))
+        self.assertIn("nessun movimento", json.loads(note.read_text())["payload"]["summary"])
+
+    # -- v2.8: la risposta del delegante sveglia l'esecutore fermo (BS21-F2.3)
+
+    def kai(self, state="idle", term="pane-kai") -> dict:
+        return dict(self.alita(state=state, term=term), sessionId="sess-kai", agent="kai", slug="f3",
+                    cwd="/w/f3")
+
+    def to_kai(self, mtype="response", task="t-20261017-abc123", where="", **extra) -> str:
+        n = len(list(self.home.rglob("msg-*.json")))
+        mid = f"msg-20261017T104500Z-k{n:07d}"
+        d = self.home / "inboxes" / "kai" / "@f3"
+        if where:
+            d = d / where
+        d.mkdir(parents=True, exist_ok=True)
+        msg = {"id": mid, "from": "alita", "from_session": "alita/work-hub", "to": "kai", "type": mtype,
+               "intent": "x", "ts": iso(datetime.now(timezone.utc)), "payload": {"summary": "sì, tema scuro"},
+               "task_id": task}
+        msg.update(extra)
+        (d / f"{mid}.json").write_text(json.dumps(msg))
+        return mid
+
+    def test_answer_wakes_the_idle_executor(self):
+        self.sessions([self.alita(), self.kai()])
+        self.expect()
+        self.to_kai("request", kind="delega", where=".read")  # la delega che kai ha ricevuto
+        aid = self.to_kai()
+        self.assertEqual(wake.tick(), {"woken": ["t-20261017-abc123"]})
+        [call] = self.onda.calls
+        self.assertEqual(call["params"]["terminalId"], "pane-kai")
+        self.assertIn(f"bus_read {aid}", call["params"]["prompt"])
+        self.assertIn("Risposta sul task", call["params"]["prompt"])
+        st = json.loads((self.home / "waits" / "kai" / "@f3" / ".answers.json").read_text())
+        self.assertEqual(st[aid]["state"], "woken")
+        self.assertEqual(wake.tick(), {})
+
+    def test_answer_after_a_question_wakes_without_the_delegation_in_the_inbox(self):
+        # sul mini l'esecutore ha la delega altrove: basta la sua domanda (waiting_agent)
+        self.sessions([self.kai()])
+        d = self.home / "registry" / "kai.d"
+        d.mkdir(parents=True)
+        (d / "f3.json").write_text(json.dumps({"name": "kai", "slug": "f3", "pid": os.getpid(),
+                                               "waiting_agent": {"agent": "alita", "task_id": "t-20261017-zzz111"}}))
+        self.to_kai(task="t-20261017-zzz111")
+        self.assertEqual(wake.tick(), {"woken": ["t-20261017-zzz111"]})
+
+    def test_response_for_a_task_the_session_does_not_execute_is_ignored(self):
+        self.sessions([self.kai()])
+        aid = self.to_kai(task="t-20261017-nonmio")
+        self.assertEqual(wake.tick(), {})
+        st = json.loads((self.home / "waits" / "kai" / "@f3" / ".answers.json").read_text())
+        self.assertEqual(st[aid]["state"], "ignored")
+
+    def test_busy_executor_gets_the_answer_later(self):
+        self.sessions([self.kai(state="working")])
+        self.to_kai("brief", kind="delega", where=".done")
+        self.to_kai()
+        self.assertEqual(wake.tick(), {"postponed": ["t-20261017-abc123"]})
+        self.sessions([self.kai()])
+        self.assertEqual(wake.tick(), {"woken": ["t-20261017-abc123"]})
+
+    # -- anti-catena (BS21-F2.4)
+
+    def test_task_cap(self):
+        self.sessions([self.alita()])
+        self.expect()
+        wake.task_log("t-20261017-abc123").parent.mkdir(parents=True, exist_ok=True)
+        wake.task_log("t-20261017-abc123").write_text(f"{time.time():.0f}\n" * wake.TASK_MAX_PER_HOUR)
+        mid = self.deliver()
+        self.assertEqual(wake.tick(), {"postponed": ["t-20261017-abc123"]})
+        self.assertEqual(self.wait_state()["returns"][mid]["pending_wake"]["reason"], "tetto_task")
+        self.assertEqual(self.wait_state()["pending_wake"]["reason"], "tetto_task")
+        self.assertEqual(self.onda.calls, [])
+
+    def test_pair_cap_does_not_stop_other_agents(self):
+        self.sessions([self.alita()])
+        self.expect()
+        self.expect(task="t-20261017-def456", to="nico/hr-bot")
+        wake.pair_log("alita", "kai").parent.mkdir(parents=True, exist_ok=True)
+        wake.pair_log("alita", "kai").write_text(f"{time.time():.0f}\n" * wake.PAIR_MAX_PER_HOUR)
+        k = self.deliver()
+        n = self.deliver(task="t-20261017-def456", **{"from": "nico", "from_session": "nico/hr-bot"})
+        self.assertEqual(wake.tick(), {"postponed": ["t-20261017-abc123"], "woken": ["t-20261017-def456"]})
+        self.assertEqual(self.wait_state()["returns"][k]["pending_wake"]["reason"], "tetto_coppia")
+        self.assertIn(n, self.onda.calls[0]["params"]["prompt"])
+        self.assertNotIn(k, self.onda.calls[0]["params"]["prompt"])
+
+    def test_two_sessions_answering_each_other_stop_at_the_cap(self):
+        # Due sessioni finte che si rispondono a vuoto: alita aspetta kai, kai esegue.
+        # Ogni giro: kai manda un ritorno, alita "risponde"; entrambe sempre ferme.
+        self.sessions([self.alita(), self.kai()])
+        self.expect()
+        self.to_kai("request", kind="delega", where=".read")
+        wakes = 0
+        for _ in range(20):
+            self.deliver()
+            self.to_kai()
+            out = wake.tick()
+            wakes = len(self.onda.calls)
+            # chi e' svegliato "legge": archivia tutto quello che ha in casella
+            for box in ("alita", "kai"):
+                for f in (self.home / "inboxes" / box).rglob("msg-*.json"):
+                    if f.parent.name.startswith("@"):
+                        (f.parent / ".done").mkdir(exist_ok=True)
+                        f.rename(f.parent / ".done" / f.name)
+        self.assertLessEqual(wakes, wake.TASK_MAX_PER_HOUR)
+        self.assertGreater(wakes, 0)
+        self.assertEqual(len(wake._stamps(wake.task_log("t-20261017-abc123"))), wakes)
 
     # -- aggancio (BS21-F1.3): i ritorni scritti come messaggi nuovi
 
@@ -516,12 +679,17 @@ class WakeTest(unittest.TestCase):
         self.expect(task="t-20261017-def456", to="kai")
         mid = self.deliver(task=None, **{"from_session": "kai/terza"})
         out = wake.tick()
-        self.assertEqual(out, {"da_agganciare": [mid]})
+        self.assertEqual(out["da_agganciare"], [mid])
         m = self.msg(mid)
         self.assertNotIn("task_id", m)
         self.assertEqual(m["task_link"]["by"], "da_agganciare")
         self.assertEqual(sorted(m["task_link"]["candidates"]), ["t-20261017-abc123", "t-20261017-def456"])
+        # chi riceve viene svegliato una volta per decidere
+        self.assertEqual(len(self.onda.calls), 1)
+        self.assertIn("da agganciare", self.onda.calls[0]["params"]["prompt"])
+        self.assertIn("woken_at", self.msg(mid)["task_link"])
         self.assertEqual(wake.tick(), {})  # deciso una volta, non a ogni giro
+        self.assertEqual(len(self.onda.calls), 1)
 
     def test_learned_executor_session_hooks_later_messages(self):
         self.sessions([self.alita("working")])
