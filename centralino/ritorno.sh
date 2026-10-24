@@ -43,6 +43,27 @@ LABEL_CENTRALINO="com.agent-team-os.centralino"
 passo() { echo; echo "== $*"; }
 ok() { echo "   ok  $*"; }
 centralino() { (cd "$QUI" && AB_HOME="$HOME_BUS" uv run --frozen --quiet centralino --home "$HOME_BUS" "$@"); }
+ferma_centralino() {
+  # SIGTERM; se dopo 6 s il processo c'e' ancora (24/10: un daemon bloccato), kill -9 a lui e al
+  # suo uv; poi via socket e pid rimasti. Esce 0 quando il socket non c'e' piu'.
+  local pid="" padre=""
+  [[ -f "$HOME_BUS/centralino.pid" ]] && pid="$(cat "$HOME_BUS/centralino.pid")"
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    padre="$(ps -o ppid= -p "$pid" | tr -d ' ')"
+    kill "$pid" 2>/dev/null || true
+    for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "   il centralino ($pid) non si chiude con SIGTERM: kill -9"
+      kill -9 "$pid" 2>/dev/null || true
+      # il padre si uccide solo se e' davvero il suo "uv run ... centralino ... serve"
+      if [[ -n "$padre" ]] && ps -o command= -p "$padre" 2>/dev/null | grep -Eq '(^|/)uv .*centralino.* serve'; then
+        kill -9 "$padre" 2>/dev/null || true
+      fi
+      sleep 0.5
+    fi
+  fi
+  rm -f "$HOME_BUS/centralino.sock" "$HOME_BUS/centralino.pid"
+}
 
 echo "Ritorno al bus a file dal backup $B (passaggio del $TS, bus $HOME_BUS)."
 if (( ! SI )); then
@@ -56,11 +77,7 @@ if (( LAUNCHD )); then
   launchctl bootout "gui/$(id -u)/$LABEL_CENTRALINO" 2>/dev/null && ok "launchd $LABEL_CENTRALINO" || true
   rm -f "$LA_DIR/$LABEL_CENTRALINO.plist"
 fi
-if [[ -f "$HOME_BUS/centralino.pid" ]]; then
-  kill "$(cat "$HOME_BUS/centralino.pid")" 2>/dev/null || true
-fi
-for _ in $(seq 1 30); do [[ -S "$HOME_BUS/centralino.sock" ]] || break; sleep 0.2; done
-[[ -S "$HOME_BUS/centralino.sock" ]] && { echo "   il centralino risponde ancora" >&2; exit 1; }
+ferma_centralino
 ok "fermo"
 
 # ---------- 2. stato nei file ----------

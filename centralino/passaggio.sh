@@ -61,6 +61,27 @@ passo() { echo; echo "== $*"; }
 ok() { echo "   ok  $*"; }
 muori() { echo "   ERRORE: $*" >&2; exit 1; }
 centralino() { (cd "$QUI" && AB_HOME="$HOME_BUS" uv run --frozen --quiet centralino --home "$HOME_BUS" "$@"); }
+ferma_centralino() {
+  # SIGTERM; se dopo 6 s il processo c'e' ancora (24/10: un daemon bloccato), kill -9 a lui e al
+  # suo uv; poi via socket e pid rimasti. Esce 0 quando il socket non c'e' piu'.
+  local pid="" padre=""
+  [[ -f "$HOME_BUS/centralino.pid" ]] && pid="$(cat "$HOME_BUS/centralino.pid")"
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    padre="$(ps -o ppid= -p "$pid" | tr -d ' ')"
+    kill "$pid" 2>/dev/null || true
+    for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "   il centralino ($pid) non si chiude con SIGTERM: kill -9"
+      kill -9 "$pid" 2>/dev/null || true
+      # il padre si uccide solo se e' davvero il suo "uv run ... centralino ... serve"
+      if [[ -n "$padre" ]] && ps -o command= -p "$padre" 2>/dev/null | grep -Eq '(^|/)uv .*centralino.* serve'; then
+        kill -9 "$padre" 2>/dev/null || true
+      fi
+      sleep 0.5
+    fi
+  fi
+  rm -f "$HOME_BUS/centralino.sock" "$HOME_BUS/centralino.pid"
+}
 
 # ---------- 1. controlli ----------
 passo "1/9 controlli"
@@ -157,12 +178,8 @@ if (( LAUNCHD )); then
     launchctl bootout "gui/$(id -u)/$L" 2>/dev/null && ok "fermato $L" || true
   done
 fi
-if [[ -f "$HOME_BUS/centralino.pid" ]]; then
-  kill "$(cat "$HOME_BUS/centralino.pid")" 2>/dev/null || true
-  for _ in $(seq 1 30); do [[ -S "$HOME_BUS/centralino.sock" ]] || break; sleep 0.2; done
-  ok "centralino in ombra fermato"
-fi
-[[ -S "$HOME_BUS/centralino.sock" ]] && muori "il centralino risponde ancora su $HOME_BUS/centralino.sock"
+ferma_centralino
+ok "centralino in ombra fermato"
 
 # ---------- 4. installa ----------
 passo "4/9 installo bus v3 (hook, comandi, skill, bus-band)"
@@ -212,7 +229,8 @@ else
   ok "nohup (senza launchd)"
 fi
 for _ in $(seq 1 50); do [[ -S "$HOME_BUS/centralino.sock" ]] && break; sleep 0.2; done
-STATO="$(centralino status 2>/dev/null)" || muori "il centralino non risponde dopo l'avvio"
+STATO="$(centralino status --timeout 10 2>/dev/null)" \
+  || muori "il centralino non risponde entro 10 s dopo l'avvio: lancia ritorno.sh (il backup e' in $B)"
 echo "$STATO" | jq -c '.stats.result' | sed 's/^/   /'
 
 # ---------- 8. Orbit ----------

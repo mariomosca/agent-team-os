@@ -22,7 +22,8 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("serve", help="avvia il daemon (in primo piano)")
     s.add_argument("--socket")
     s.add_argument("--senza-giri", action="store_true", help="niente import/sveglia/confronto periodici")
-    sub.add_parser("status", help="ping e contatori del daemon in esecuzione")
+    st = sub.add_parser("status", help="ping e contatori del daemon in esecuzione")
+    st.add_argument("--timeout", type=float, default=10, help="secondi di attesa del socket (default 10)")
     o = sub.add_parser("ombra", help="modalità ombra")
     o.add_argument("azione", choices=["report", "confronta", "importa"])
     o.add_argument("--ore", type=float, default=48)
@@ -64,7 +65,8 @@ def main(argv: list[str] | None = None) -> int:
         return sim_main(verbose=a.verbose)
     try:
         if a.cmd == "status":
-            out = {"ping": call("admin.ping", sock=sock), "stats": call("admin.stats", sock=sock)}
+            out = {"ping": call("admin.ping", sock=sock, timeout=a.timeout),
+                   "stats": call("admin.stats", sock=sock, timeout=a.timeout)}
         else:
             op = {"report": "ombra.report", "confronta": "ombra.confronta", "importa": "ombra.ingest_now"}[a.azione]
             out = call(op, {"ore": a.ore}, sock=sock)
