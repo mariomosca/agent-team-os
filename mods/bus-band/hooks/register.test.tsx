@@ -22,14 +22,38 @@ const FILES: Record<string, string> = {
   [`${ROOT}/inboxes/kai/@portineria/msg-1.json`]: MESSAGE,
 }
 
-const world = (on: On, env: Record<string, string>) => {
+const VISTA = JSON.stringify({
+  v: 1,
+  id: 'r',
+  ok: true,
+  result: {
+    onda: {
+      valido: true,
+      sessioni: [
+        { sessionId: 'b', workspaceId: 'ws-2', agent: 'nico', slug: 'brandart', cwd: '/w/brandart', state: 'idle', stateSince: '2026-10-18T08:50:00Z', mounted: true },
+      ],
+    },
+    messaggi: [
+      { agent: 'kai', slug: 'portineria', letto: false, raw: { id: 'msg-v', from: 'vera', intent: 'dal-centralino', priority: 'normal' } },
+      { agent: 'kai', slug: 'altra', letto: false, raw: { id: 'msg-o', from: 'leo', intent: 'altra-sessione', priority: 'normal' } },
+    ],
+    attese: [],
+  },
+})
+
+const world = (on: On, env: Record<string, string>, centralino = false) => {
   mock.env(on, { AB_HOME: ROOT, HOME: '/Users/m', ...env })
   mock.clock(on, { now: NOW })
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: CWD }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('ui.toast', () => ({ value: undefined }))
-  on('fs.exists', (_$, e) => ({ value: e.path in FILES || Object.keys(FILES).some(f => f.startsWith(`${e.path}/`)) }))
+  on('fs.exists', (_$, e) => ({
+    value:
+      (centralino && e.path === `${ROOT}/centralino.sock`) ||
+      e.path in FILES ||
+      Object.keys(FILES).some(f => f.startsWith(`${e.path}/`)),
+  }))
   on('fs.read', (_$, e) => {
     const text = FILES[e.path]
     if (text === undefined) throw new Error(`ENOENT ${e.path}`)
@@ -41,7 +65,15 @@ const world = (on: On, env: Record<string, string>) => {
       .filter(f => f.startsWith(`${e.path}/`) && !f.slice(e.path.length + 1).includes('/'))
       .map(f => ({ name: f.slice(e.path.length + 1), kind: 'file', size: 0, mtimeMs: 0, isLink: false })),
   }))
-  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('process.run', (_$, e) => ({
+    value: {
+      exitCode: 0,
+      stdout: centralino && e.argv[0] === 'nc' ? VISTA : '',
+      stderr: '',
+      isStdoutTruncated: false,
+      isStderrTruncated: false,
+    },
+  }))
 }
 
 const START = { cwd: CWD, surface: 'terminal', isInteractive: true } as const
@@ -62,5 +94,26 @@ describe('delegated session', () => {
     const ui = await $.ui.mount({ plugin: 'bus-band', surface: 'terminal', component: 'AbovePrompt', requestId: 'band', props: PROPS })
     expect(await ui.find({ text: 'da alita' })).toBeDefined()
     expect(await ui.find({ text: 'Squadra' })).toBeUndefined()
+  })
+})
+
+describe('centralino (BR24-F4.3)', () => {
+  test('with the centralino: messages and Squadra from its vista, no warning', async ($, on) => {
+    world(on, {}, true)
+    await $.session.start(START)
+    const ui = await $.ui.mount({ plugin: 'bus-band', surface: 'terminal', component: 'AbovePrompt', requestId: 'band', props: PROPS })
+    expect(await ui.find({ text: 'dal-centralino' })).toBeDefined()
+    expect(await ui.find({ text: 'da alita' })).toBeUndefined()
+    expect(await ui.find({ text: 'altra-sessione' })).toBeUndefined()
+    expect(await ui.find({ text: 'nico/brandart' })).toBeDefined()
+    expect(await ui.find({ text: 'Bus letto dai file' })).toBeUndefined()
+  })
+
+  test("without it: today's files, and the band says so", async ($, on) => {
+    world(on, {})
+    await $.session.start(START)
+    const ui = await $.ui.mount({ plugin: 'bus-band', surface: 'terminal', component: 'AbovePrompt', requestId: 'band', props: PROPS })
+    expect(await ui.find({ text: 'da alita' })).toBeDefined()
+    expect(await ui.find({ text: 'Bus letto dai file: il centralino del bus non è attivo.' })).toBeDefined()
   })
 })

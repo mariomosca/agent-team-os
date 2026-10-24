@@ -75,6 +75,7 @@ declare module 'claude-code' {
       team: TeamSnapshot | null
       isTeamHidden: boolean
       waits: WaitsSnapshot | null
+      fallback: string | null
     }
   }
 }

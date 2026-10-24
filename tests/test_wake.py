@@ -1253,6 +1253,21 @@ class WakeTest(unittest.TestCase):
         wake.tick()
         self.assertTrue((reg / "f3.json").exists())
 
+    def test_br24_delegation_between_two_sessions_of_one_agent_wakes(self):
+        # prova sui dati veri del 24/10: kai/br24-prova-a delega a kai/f3, nessuna sveglia
+        self.sessions([self.kai()])
+        mid = self.to_kai("request", task="t-20261024-v8mbtk", kind="delega",
+                          **{"from": "kai", "from_session": "kai/br24-prova-a"})
+        self.assertEqual(wake.tick(), {"delegation": ["t-20261024-v8mbtk"]})
+        self.assertIn(mid, self.onda.calls[0]["params"]["prompt"])
+        # la risposta di chi ha delegato (stesso agente) sveglia l'esecutore
+        wake.expect("kai", "br24-prova-a", "prova", "kai/f3", task_id="t-20261024-v8mbtk")
+        self.to_kai("response", task="t-20261024-v8mbtk", **{"from": "kai", "from_session": "kai/br24-prova-a"})
+        self.assertEqual(wake.tick(), {"woken": ["t-20261024-v8mbtk"]})
+        # un messaggio della sessione a se stessa no
+        self.to_kai("request", task="t-20261024-sself1", kind="delega", **{"from": "kai", "from_session": "kai/f3"})
+        self.assertEqual(wake.tick(), {})
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
