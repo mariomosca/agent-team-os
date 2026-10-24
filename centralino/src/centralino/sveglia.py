@@ -27,6 +27,7 @@ from .tempo import age_s, iso, iso_now, now, parse_iso
 
 WAIT_IDLE_H = 72
 NOCHANNEL_S = 300
+VECCHIO_GG = 30          # un messaggio pending più vecchio non genera l'avviso senza canale
 GESTISCI = "gestisci con bus_close (chiuso, riarma o letto) o rispondi con bus_reply"
 
 TIPO = {"esito": "return", "domanda": "question", "da_agganciare": "return", "risposta": "answer",
@@ -305,15 +306,16 @@ class Sveglia:
         inviati = []
         righe = r.execute(
             "SELECT w.agent, w.slug, w.msg_id, MIN(w.at) AS dal FROM wake_decisions w "
-            "JOIN messages m ON m.id=w.msg_id AND m.state='pending' "
+            "JOIN messages m ON m.id=w.msg_id AND m.state='pending' AND m.ts >= ? "
             "WHERE w.motivo='nessun_canale' GROUP BY w.agent, w.slug, w.msg_id "
-            "HAVING MIN(w.at) <= ?", (limite,)).fetchall()
+            "HAVING MIN(w.at) <= ?", (iso(now() - timedelta(days=VECCHIO_GG)), limite)).fetchall()
         for x in righe:
             key = f"nochannel:{x['agent']}/{x['slug']}:{x['msg_id']}"
             if r.execute("SELECT 1 FROM meta WHERE key=?", (key,)).fetchone():
                 continue
-            # ancora senza canale adesso?
-            if self.c.vivo.stato(x["agent"], x["slug"]).canale != "nessuno":
+            # ancora viva e senza canale adesso? (BR24-F5.5e: una sessione chiusa non si avvisa)
+            st = self.c.vivo.stato(x["agent"], x["slug"])
+            if not st.viva or st.canale != "nessuno":
                 continue
             dest = hub if hub and self.c.amap.agent_exists(hub) else x["agent"]
             ev = self._evento(dest, f"{dest}/sveglia", "sveglia-senza-canale", "high",

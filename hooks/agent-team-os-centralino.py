@@ -20,6 +20,28 @@ import sys
 from pathlib import Path
 
 TIMEOUT_S = {"start": 2.5, "prompt": 3.0, "stop": 4.0, "end": 2.5}  # sotto i timeout di settings.json
+SOTTOCOMANDI = {"mcp", "config", "doctor", "update", "install", "migrate-installer", "setup-token", "plugin"}
+
+
+def non_interattiva(argv: list[str]) -> bool:
+    """``claude -p``, ``claude mcp list`` e simili non sono sessioni: nessuno le sveglia e il loro
+    pannello (ereditato) è di un'altra sessione (BR24-F5.5e: mcp_sync --verify)."""
+    i = next((k for k, a in enumerate(argv) if Path(a).name in ("claude", "cli.js")), None)
+    if i is None:
+        return False
+    resto = argv[i + 1:]
+    if "-p" in resto or "--print" in resto:
+        return True
+    return bool(resto) and resto[0] in SOTTOCOMANDI
+
+
+def argv_di(pid: int) -> list[str]:
+    try:
+        import subprocess
+        return subprocess.run(["/bin/ps", "-o", "args=", "-p", str(pid)], capture_output=True, text=True,
+                              timeout=1).stdout.split()
+    except Exception:  # noqa: BLE001 - nel dubbio è una sessione
+        return []
 
 
 def home() -> Path:
@@ -56,6 +78,8 @@ def main(argv: list[str]) -> int:
         data = data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         data = {}
+    if non_interattiva(argv_di(os.getppid())):
+        return 0
     cwd = os.environ.get("CLAUDE_PROJECT_DIR") or data.get("cwd") or os.getcwd()
     caller = {
         "cwd": cwd,
