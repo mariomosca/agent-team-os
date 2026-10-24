@@ -690,6 +690,8 @@ ab_wake_script() {
 
 ab_wake_kick() {
   # Fire and forget: a missing script only costs the latency of the launchd tick.
+  # AB_NO_WAKE_KICK=1: no background round (tests that need a still bus).
+  [[ "${AB_NO_WAKE_KICK:-}" == 1 ]] && return 0
   local s; s=$(ab_wake_script)
   [[ -f "$s" ]] || return 0
   ( /usr/bin/python3 -I "$s" tick >/dev/null 2>&1 & ) 2>/dev/null
@@ -708,6 +710,19 @@ ab_expect() {
   [[ -n "${2:-}" ]] && args+=(--to "$2")
   [[ -n "${3:-}" ]] && args+=(--deadline "$3")
   [[ -n "${4:-}" ]] && args+=(--task-id "$4")
+  AB_HOME="$AB_HOME" /usr/bin/python3 -I "$(ab_wake_script)" "${args[@]}"
+}
+
+ab_chiudi() {
+  # BR24-F2.3: close the wait of a task of this agent without a message to handle
+  # (returns already filed, a delegation of an earlier session). Returns of the task
+  # still in the inbox are filed with esito chiuso. Args: task_id, [note]
+  local agent slug
+  agent="${AB_AGENT:-$(ab_detect_agent "$PWD")}"
+  [[ -n "$agent" ]] || { echo "ERROR: workspace not mapped to any agent" >&2; return 1; }
+  slug="${AB_SESSION_SLUG:-$(ab_slug_for_cwd "$PWD")}"
+  local args=(chiudi --agent "$agent" --slug "$slug" --task-id "$1")
+  [[ -n "${2:-}" ]] && args+=(--note "$2")
   AB_HOME="$AB_HOME" /usr/bin/python3 -I "$(ab_wake_script)" "${args[@]}"
 }
 
@@ -1122,6 +1137,42 @@ ab_drain_fresh_list() {
   done < <(ab_list_inbox "$agent" | sort)
 }
 
+ab_msg_actionable() {
+  # BR24-F2.7: a message that asks this session to act, so it may hold the Stop:
+  # a question; a request/brief/handoff that delegates (kind delega, or an old one
+  # without kind that requires a response); a response on a task whose wait is
+  # still open (the outcome of my delegation, or the delegator's answer to me);
+  # a message "da agganciare". Events, cc-notify, comunicazioni, notices and
+  # reports never hold it: they leave the inbox with an outcome whenever.
+  # Args: message path. Returns 0 if actionable.
+  local f="$1" info type kind tid rr link w
+  info=$(jq -r '[(.type // ""), (.kind // ""), (.task_id // .payload.task_id // ""),
+                 (.requires_response // false | tostring), (.task_link.by // "")] | join("\u001f")' "$f" 2>/dev/null) || return 1
+  # Unit separator, not a tab: read would merge empty fields between tabs.
+  IFS=$'\x1f' read -r type kind tid rr link <<<"$info"
+  [[ "$link" == "da_agganciare" ]] && return 0
+  case "$type" in
+    question) return 0 ;;
+    request|brief|handoff)
+      [[ "$kind" == "delega" || ( -z "$kind" && "$rr" == "true" ) ]] && return 0 ;;
+    response)
+      [[ -n "$tid" ]] || return 1
+      w=$(find "$AB_HOME/waits" -path "*/@*/$tid.json" -print 2>/dev/null | head -1)
+      [[ -z "$w" ]] && return 0  # a task without a wait here: the delegator answers the executor
+      [[ "$(jq -r '.state // ""' "$w" 2>/dev/null)" == "expected" ]] && return 0 ;;
+  esac
+  return 1
+}
+
+ab_list_actionable() {
+  # Messages of this session (and shared root) that hold the Stop. Args: agent, [slug]
+  local f
+  while IFS= read -r f; do
+    [[ -n "$f" ]] && ab_msg_actionable "$f" && printf '%s\n' "$f"
+  done < <(ab_list_inbox "$1" "${2:-}")
+  return 0
+}
+
 ab_drain_for_stop() {
   # Main drain logic for Stop hook.
   # Exits 0 (allow stop) or prints block JSON to stdout and exits 1 (block stop).
@@ -1142,8 +1193,10 @@ ab_drain_for_stop() {
   # Scoped to this session: a message addressed to a SIBLING session must not
   # hold this one hostage. Shared-root messages still count for everyone —
   # they were sent to the agent, so whoever is around should deal with them.
-  local pending
-  pending=$(ab_list_inbox "$agent" "$slug" | grep -c . 2>/dev/null)
+  # BR24-F2.7: only messages that ask for an action count (ab_msg_actionable).
+  local pending actionable
+  actionable=$(ab_list_actionable "$agent" "$slug")
+  pending=$(grep -c . <<<"$actionable" 2>/dev/null)
   [[ -z "$pending" ]] && pending=0
 
   # Inbox empty → nothing to drain. Reset loop guard and allow stop.
@@ -1173,10 +1226,14 @@ ab_drain_for_stop() {
   ab_cursor_update "$agent" "" "$block_count"
 
   # Build block reason from pending messages (up to 5)
-  local msg_lines
-  msg_lines=$(AB_SESSION_SLUG="$slug" ab_drain_fresh_list "$agent" "")
+  local msg_lines="" f
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    msg_lines+="  $(basename "$f" .json)  from=$(jq -r '.from // "?"' "$f" 2>/dev/null)  intent=$(jq -r '.intent // .type // "?"' "$f" 2>/dev/null)"$'\n'
+  done < <(sort <<<"$actionable" | head -5)
+  msg_lines="${msg_lines%$'\n'}"
   local reason
-  reason="${pending} message(s) not handled yet (block ${block_count}/${cap}). Read each one and consume it with an outcome before stopping: bus_gestisci (MCP) or ab_gestisci <msg-id> <esito> (lib), esito chiuso | riarma | risposto | letto. On a return of your delegation: chiuso if the task is done, riarma if you keep waiting, risposto if the executor asked something.
+  reason="${pending} message(s) asking for an action not handled yet (block ${block_count}/${cap}). Read each one and consume it with an outcome before stopping: bus_gestisci (MCP) or ab_gestisci <msg-id> <esito> (lib), esito chiuso | riarma | risposto | letto. On a return of your delegation: chiuso if the task is done, riarma if you keep waiting, risposto if the executor asked something.
 ${msg_lines}"
 
   # Output Claude Code Stop hook decision JSON
@@ -1473,6 +1530,15 @@ ab_collect_host() {
   # 3. The host's custode report (OR18-F4.8): Orbit's Portineria floor reads it here.
   [[ "$reachable" -eq 1 ]] && ab_collect_custode "$host" "$sdir"
 
+  # 4. BR24-F2.5: the host's sessions and pending inbox (hosts/<host>/status.json), so
+  # the Ufficio and the registry see the mini at every round, not only when someone
+  # calls bus_status. A host down keeps its last sessions with ok:false.
+  if [[ "$reachable" -eq 1 ]]; then
+    ab_remote_status "$host" --force >/dev/null
+  else
+    ab_mark_status_unreachable "$host"
+  fi
+
   # Not `status`: read-only in zsh, where the slash commands source this lib.
   local queued=0 result="ok"
   [[ -d "$qdir" ]] && queued=$(find "$qdir" -name 'msg-*.json' -type f 2>/dev/null | wc -l | tr -d ' ')
@@ -1547,6 +1613,20 @@ ab_remote_status() {
   fi
   rm -f "$raw"
   printf '%s' "$cache"
+}
+
+ab_mark_status_unreachable() {
+  # hosts/<host>/status.json says the host is down, without another SSH try. Args: host
+  local cache
+  cache="$(ab_host_state_dir "$1")/status.json"
+  mkdir -p "$(dirname "$cache")"
+  if [[ -s "$cache" ]]; then
+    jq --arg ts "$(ab_iso_now)" '.ok = false | .error = "unreachable" | .checked_at = $ts' "$cache" > "$cache.tmp"
+  else
+    jq -n --arg host "$1" --arg ts "$(ab_iso_now)" \
+      '{host:$host, fetched_at:null, checked_at:$ts, ok:false, error:"unreachable", sessions:[], pending:[]}' > "$cache.tmp"
+  fi
+  ab_json_promote "$cache.tmp" "$cache"
 }
 
 ab_list_remote_sessions() {

@@ -7,7 +7,9 @@ Niente Onda vero, niente sessioni vere.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import socket
@@ -402,9 +404,12 @@ class WakeTest(unittest.TestCase):
         d.mkdir(parents=True)
         (d / ".wakes.log").write_text("\n".join(str(int(time.time()) - i) for i in range(wake.MAX_PER_HOUR)))
         self.expect()
-        self.deliver()
+        self.deliver(type="event")
         self.assertEqual(wake.tick(), {"postponed": ["t-20261017-abc123"]})
         self.assertEqual(self.wait_state()["pending_wake"]["reason"], "tetto_orario")
+        # BR24-F2.1: l'esito (response) passa anche oltre il tetto orario della sessione
+        self.deliver()
+        self.assertEqual(wake.tick(), {"woken": ["t-20261017-abc123"]})
 
     def test_wake_marks_session_for_chain(self):
         self.sessions([self.alita()])
@@ -596,7 +601,7 @@ class WakeTest(unittest.TestCase):
         self.expect()
         wake.task_log("t-20261017-abc123").parent.mkdir(parents=True, exist_ok=True)
         wake.task_log("t-20261017-abc123").write_text(f"{time.time():.0f}\n" * wake.TASK_MAX_PER_HOUR)
-        mid = self.deliver()
+        mid = self.deliver(type="event")
         self.assertEqual(wake.tick(), {"postponed": ["t-20261017-abc123"]})
         self.assertEqual(self.wait_state()["returns"][mid]["pending_wake"]["reason"], "tetto_task")
         self.assertEqual(self.wait_state()["pending_wake"]["reason"], "tetto_task")
@@ -608,7 +613,7 @@ class WakeTest(unittest.TestCase):
         self.expect(task="t-20261017-def456", to="nico/app-x")
         wake.pair_log("alita", "kai").parent.mkdir(parents=True, exist_ok=True)
         wake.pair_log("alita", "kai").write_text(f"{time.time():.0f}\n" * wake.PAIR_MAX_PER_HOUR)
-        k = self.deliver()
+        k = self.deliver(type="event")
         n = self.deliver(task="t-20261017-def456", **{"from": "nico", "from_session": "nico/app-x"})
         self.assertEqual(wake.tick(), {"postponed": ["t-20261017-abc123"], "woken": ["t-20261017-def456"]})
         self.assertEqual(self.wait_state()["returns"][k]["pending_wake"]["reason"], "tetto_coppia")
@@ -633,9 +638,12 @@ class WakeTest(unittest.TestCase):
                     if f.parent.name.startswith("@"):
                         (f.parent / ".done").mkdir(exist_ok=True)
                         f.rename(f.parent / ".done" / f.name)
-        self.assertLessEqual(wakes, wake.TASK_MAX_PER_HOUR)
+        # BR24-F2.1: gli esiti di kai hanno il loro tetto, le risposte di alita quello del task
+        self.assertLessEqual(wakes, wake.TASK_MAX_PER_HOUR + wake.RESPONSE_MAX_PER_HOUR)
         self.assertGreater(wakes, 0)
         self.assertEqual(len(wake._stamps(wake.task_log("t-20261017-abc123"))), wakes)
+        self.assertEqual(len(wake._stamps(wake.response_log("t-20261017-abc123"))), wake.RESPONSE_MAX_PER_HOUR)
+        self.assertNotIn("woken", out)  # a regime: nessuna sveglia
 
     # -- rete di sicurezza fuori delega (BS21-F3.1)
 
@@ -702,7 +710,7 @@ class WakeTest(unittest.TestCase):
         wake.tick()  # a: con sveglia
         b = self.deliver(where=".done")  # b: letto prima
         wake.task_log("t-20261017-abc123").write_text(f"{time.time():.0f}\n" * wake.TASK_MAX_PER_HOUR)
-        c = self.deliver()  # c: fermato dal tetto
+        c = self.deliver(type="event")  # c: fermato dal tetto
         wake.tick()
         old = self.deliver(task=None, **{"from": "vera", "from_session": "vera/growth"})
         p = next(self.home.rglob(f"{old}.json"))
@@ -922,7 +930,7 @@ class WakeTest(unittest.TestCase):
     def test_new_message_from_executor_session_is_hooked(self):
         self.sessions([self.alita()])
         self.expect()
-        mid = self.deliver(task=None, type="brief", kind="comunicazione")
+        mid = self.deliver(task=None)
         out = wake.tick()
         self.assertEqual(out["linked"], [f"{mid}>t-20261017-abc123"])
         self.assertEqual(out["woken"], ["t-20261017-abc123"])
@@ -1027,6 +1035,229 @@ class WakeTest(unittest.TestCase):
         p.rename(arch)
         self.assertFalse(wake._rewrite_message(p, msg))
         self.assertFalse(p.exists())
+
+    # -- BR24 passo 0: casi del 24 ottobre
+
+    def test_br24_final_response_is_not_held_by_the_task_or_pair_cap(self):
+        # caso t-20261024-irjocy: 3 domande e un ritorno intermedio nell'ultima ora,
+        # poi l'esito finale alle 17:24Z rimasto dietro tetto_task
+        self.sessions([self.alita()])
+        self.expect()
+        wake.task_log("t-20261017-abc123").parent.mkdir(parents=True, exist_ok=True)
+        wake.task_log("t-20261017-abc123").write_text(f"{time.time():.0f}\n" * wake.TASK_MAX_PER_HOUR)
+        wake.pair_log("alita", "kai").parent.mkdir(parents=True, exist_ok=True)
+        wake.pair_log("alita", "kai").write_text(f"{time.time():.0f}\n" * wake.PAIR_MAX_PER_HOUR)
+        q = self.question()
+        mid = self.deliver()
+        self.assertEqual(wake.tick(), {"postponed": ["t-20261017-abc123"], "woken": ["t-20261017-abc123"]})
+        self.assertIn(mid, self.onda.calls[0]["params"]["prompt"])
+        self.assertNotIn(q, self.onda.calls[0]["params"]["prompt"])
+        st = self.wait_state()
+        self.assertEqual(st["returns"][mid]["state"], "woken")
+        self.assertEqual(st["returns"][q]["pending_wake"]["reason"], "tetto_task")
+
+    def test_br24_responses_have_their_own_cap(self):
+        self.sessions([self.alita()])
+        self.expect()
+        wake.response_log("t-20261017-abc123").parent.mkdir(parents=True, exist_ok=True)
+        wake.response_log("t-20261017-abc123").write_text(f"{time.time():.0f}\n" * wake.RESPONSE_MAX_PER_HOUR)
+        mid = self.deliver()
+        self.assertEqual(wake.tick(), {"postponed": ["t-20261017-abc123"]})
+        self.assertEqual(self.wait_state()["returns"][mid]["pending_wake"]["reason"], "tetto_esiti")
+
+    def gestisci_during_wake(self, esito: str):
+        """Durante la sveglia (il giro ha l'attesa in memoria) la sessione da' un esito."""
+        real = wake.try_wake
+
+        def racing(tgt, d, text, capped=True):
+            mid = text.split("bus_read ")[1].split()[0].rstrip(".,;:)")
+            p = next((self.home / "inboxes" / "alita").rglob(f"{mid}.json"))
+            wake.gestisci("alita", "work-hub", p, esito)
+            return "onda"
+        wake.try_wake = racing
+        try:
+            return wake.tick()
+        finally:
+            wake.try_wake = real
+
+    def test_br24_tick_does_not_undo_a_close_given_meanwhile(self):
+        self.sessions([self.alita()])
+        self.expect()
+        mid = self.deliver()
+        self.gestisci_during_wake("chiuso")
+        st = self.wait_state()
+        self.assertEqual(st["state"], "closed")
+        self.assertEqual(st["returns"][mid]["state"], "handled")
+        self.assertNotIn("pending_wake", st)
+
+    def test_br24_tick_does_not_drop_rearmed_at(self):
+        # il test rosso di test-wake-lib.sh: riarma mentre gira la sveglia
+        self.sessions([self.alita()])
+        self.expect()
+        mid = self.deliver(type="event")
+        self.gestisci_during_wake("riarma")
+        st = self.wait_state()
+        self.assertEqual(st["state"], "expected")
+        self.assertIn("rearmed_at", st)
+        self.assertEqual(st["returns"][mid]["handled"], "riarma")
+
+    def test_br24_merge_keeps_handled_and_open_state(self):
+        disk = {"state": "closed", "returns": {"m1": {"state": "handled"}}, "last_activity": "2026-10-24T17:00:00Z"}
+        mine = {"state": "expired", "returns": {"m1": {"state": "woken"}, "m2": {"state": "pending",
+                "pending_wake": {"reason": "tetto_task"}}}, "last_activity": "2026-10-24T17:05:00Z",
+                "pending_wake": {"reason": "tetto_task"}}
+        out = wake.merge_wait(disk, mine)
+        self.assertEqual(out["state"], "closed")
+        self.assertEqual(out["returns"]["m1"]["state"], "handled")
+        self.assertEqual(out["returns"]["m2"]["state"], "pending")
+        self.assertEqual(out["last_activity"], "2026-10-24T17:05:00Z")
+        self.assertNotIn("pending_wake", out)  # attesa chiusa: niente rimando
+
+    def test_br24_close_removes_pending_wake_from_the_wait(self):
+        self.sessions([self.alita()])
+        self.expect()
+        wake.task_log("t-20261017-abc123").parent.mkdir(parents=True, exist_ok=True)
+        wake.task_log("t-20261017-abc123").write_text(f"{time.time():.0f}\n" * wake.TASK_MAX_PER_HOUR)
+        mid = self.deliver(type="event")
+        wake.tick()
+        self.assertEqual(self.wait_state()["pending_wake"]["reason"], "tetto_task")
+        wake.gestisci("alita", "work-hub", next(self.home.rglob(f"{mid}.json")), "chiuso")
+        st = self.wait_state()
+        self.assertEqual(st["state"], "closed")
+        self.assertNotIn("pending_wake", st)
+
+    # caso iii: messaggi a "kai" agganciati a t-20261021-xn9lv0
+    def to_bare_alita(self, **extra) -> str:
+        n = len(list(self.home.rglob("msg-*.json")))
+        mid = f"msg-20261024T163000Z-r{n:07d}"
+        d = self.home / "inboxes" / "alita"
+        d.mkdir(parents=True, exist_ok=True)
+        msg = {"id": mid, "from": "kai", "from_session": "kai/f3", "to": "alita", "type": "brief",
+               "intent": "x", "ts": iso(datetime.now(timezone.utc)), "payload": {"summary": "altro tema"}}
+        msg.update(extra)
+        (d / f"{mid}.json").write_text(json.dumps(msg))
+        return mid
+
+    def test_br24_comunicazione_is_never_hooked(self):
+        self.sessions([self.alita()])
+        self.expect()
+        mid = self.deliver(task=None, type="brief", kind="comunicazione")
+        out = wake.tick()
+        self.assertNotIn("linked", out)
+        self.assertNotIn("task_link", self.msg(mid))
+        self.assertEqual(self.onda.calls, [])
+
+    def test_br24_shared_inbox_message_is_hooked_only_as_a_reply(self):
+        self.sessions([self.alita()])
+        self.expect(delegation={"msg_id": "msg-deleg-1", "thread_id": "thread-d1"})
+        cloud = self.to_bare_alita(type="event", **{"from_session": "kai/cloud"})
+        same = self.to_bare_alita(type="response")  # stessa sessione esecutrice, ma all'agente intero
+        reply = self.to_bare_alita(type="response", in_reply_to="msg-deleg-1")
+        out = wake.tick()
+        self.assertEqual(out["linked"], [f"{reply}>t-20261017-abc123"])
+        self.assertNotIn("task_link", self.msg(cloud))
+        self.assertNotIn("task_link", self.msg(same))
+
+    def registry(self, agent: str, slug: str, age_s: float = 0) -> None:
+        d = self.home / "registry" / f"{agent}.d"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{slug}.json").write_text(json.dumps({"name": agent, "slug": slug, "last_seen": iso(
+            datetime.now(timezone.utc) - timedelta(seconds=age_s))}))
+
+    def test_br24_wait_belongs_to_its_session_while_it_lives(self):
+        self.expect()
+        self.registry("alita", "work-hub")
+        self.assertIsNone(wake.own_wait("alita", "t-20261017-abc123", "altra"))
+        self.assertIsNotNone(wake.own_wait("alita", "t-20261017-abc123", "work-hub"))
+        mid = self.deliver(where="", type="event")
+        p = next(self.home.rglob(f"{mid}.json"))
+        with self.assertRaises(ValueError):
+            wake.gestisci("alita", "altra", p, "riarma")
+        # la sessione che ha delegato e' finita: l'attesa passa a chi c'e'
+        self.registry("alita", "work-hub", age_s=wake.SESSION_TTL_S + 60)
+        self.assertIsNotNone(wake.own_wait("alita", "t-20261017-abc123", "altra"))
+        self.assertEqual(wake.gestisci("alita", "altra", p, "chiuso")["wait"]["state"], "closed")
+
+    # caso iv: attese con i ritorni gia' archiviati, e t-20261021-xn9lv0
+    def test_br24_close_a_wait_by_task_id(self):
+        self.expect()
+        old = self.deliver(where=".done")
+        pending = self.deliver(type="event")
+        out = wake.chiudi("alita", "work-hub", "t-20261017-abc123", "lavoro concluso")
+        self.assertEqual((out["state"], out["was"]), ("closed", "expected"))
+        self.assertEqual([f["id"] for f in out["filed"]], [pending])
+        st = self.wait_state()
+        self.assertEqual((st["state"], st["note"]), ("closed", "lavoro concluso"))
+        self.assertEqual(st["returns"][pending]["handled"], "chiuso")
+        self.assertFalse((self.home / "inboxes" / "alita" / "@work-hub" / f"{pending}.json").exists())
+        self.assertTrue((self.home / "inboxes" / "alita" / "@work-hub" / ".done" / f"{pending}.json").exists())
+        self.assertTrue(old)
+        with self.assertRaises(ValueError):
+            wake.chiudi("kai", "f3", "t-20261017-abc123")
+        # una sessione diversa dello stesso agente puo' chiuderla (delega di una sessione precedente)
+        self.expect(task="t-20261017-def456")
+        self.assertEqual(wake.chiudi("alita", "nuova", "t-20261017-def456")["state"], "closed")
+        # dalla riga di comando, come la usa la lib
+        self.expect(task="t-20261017-ghi789")
+        with contextlib.redirect_stdout(io.StringIO()) as buf:
+            self.assertEqual(wake.main(["chiudi", "--agent", "alita", "--slug", "work-hub",
+                                        "--task-id", "t-20261017-ghi789"]), 0)
+        self.assertEqual(json.loads(buf.getvalue())["state"], "closed")
+        self.assertEqual(self.wait_state("t-20261017-ghi789")["state"], "closed")
+
+    def test_br24_deadline_expires_even_with_handled_returns(self):
+        past = iso(datetime.now(timezone.utc) - timedelta(minutes=1))
+        self.expect(deadline=past)
+        f = self.home / "waits" / "alita" / "@work-hub" / "t-20261017-abc123.json"
+        rec = json.loads(f.read_text())
+        rec["returns"] = {"m-old": {"state": "handled", "type": "question", "at": past}}
+        f.write_text(json.dumps(rec))
+        self.assertEqual(wake.tick(), {"expired": ["t-20261017-abc123"]})
+        self.assertEqual(self.wait_state()["note"], "deadline passata")
+
+    def test_br24_old_unhandled_return_does_not_keep_a_wait_alive(self):
+        self.expect()
+        f = self.home / "waits" / "alita" / "@work-hub" / "t-20261017-abc123.json"
+        rec = json.loads(f.read_text())
+        old = iso(datetime.now(timezone.utc) - timedelta(hours=wake.WAIT_IDLE_H + 1))
+        rec["created_at"] = rec["last_activity"] = old
+        rec["returns"] = {"m-old": {"state": "pending", "type": "event", "at": old}}
+        f.write_text(json.dumps(rec))
+        self.assertEqual(wake.tick(), {"expired": ["t-20261017-abc123"]})
+        # un ritorno recente da leggere invece la tiene aperta
+        self.expect(task="t-20261017-def456")
+        f2 = self.home / "waits" / "alita" / "@work-hub" / "t-20261017-def456.json"
+        rec = json.loads(f2.read_text())
+        rec["created_at"] = old
+        rec["returns"] = {"m-new": {"state": "pending", "type": "event", "at": iso(datetime.now(timezone.utc))}}
+        f2.write_text(json.dumps(rec))
+        wake.tick()
+        self.assertEqual(self.wait_state("t-20261017-def456")["state"], "expected")
+
+    # caso ii: kai/orbit viva in Onda ma assente dal registro
+    def test_br24_registry_follows_onda(self):
+        self.sessions([self.kai(state="working"), dict(self.kai(), slug="vecchia", state="exited"),
+                       dict(self.kai(), agent="sconosciuto")])
+        wake.tick()
+        reg = self.home / "registry" / "kai.d"
+        self.assertEqual(sorted(p.stem for p in reg.glob("*.json")), ["f3"])
+        rec = json.loads((reg / "f3.json").read_text())
+        self.assertEqual((rec["source"], rec["workspace_path"]), ("onda", "/w/f3"))
+        self.assertTrue(wake.session_live("kai", "f3"))
+        # last_seen fermo durante un turno lungo: il giro lo rinfresca
+        self.registry("kai", "f3", age_s=3600)
+        wake.tick()
+        self.assertLess(time.time() - wake.parse_iso(json.loads((reg / "f3.json").read_text())["last_seen"]), 30)
+        # la voce aggiunta dal giro se ne va quando Onda non la da' piu' viva
+        self.sessions([])
+        (reg / "f3.json").write_text(json.dumps(dict(rec, source="onda")))
+        wake.tick()
+        self.assertFalse((reg / "f3.json").exists())
+        # Onda spento: il registro non si tocca
+        self.registry("kai", "f3", age_s=3600)
+        self.sessions([self.kai()], pid=999999)
+        wake.tick()
+        self.assertTrue((reg / "f3.json").exists())
 
 
 if __name__ == "__main__":

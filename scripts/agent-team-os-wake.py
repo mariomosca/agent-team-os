@@ -36,12 +36,14 @@ Gira con il python3 di sistema (3.9), solo stdlib. launchd lo lancia ogni 10 s
                           [--deadline ISO] [--task-id ID]       stampa il task_id
     agent-team-os-wake.py list [--agent A [--slug S]] [--all]   JSON
     agent-team-os-wake.py gestisci --agent A --slug S --msg-path P --esito E [--task-id T]
+    agent-team-os-wake.py chiudi --agent A --slug S --task-id T [--note N]  chiude un'attesa (BR24-F2.3)
     agent-team-os-wake.py report [--days 7] [--json]            misura della sveglia (BS21-F3.2)
 """
 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import random
@@ -158,6 +160,69 @@ def find_wait(task_id: str) -> Path | None:
     return None
 
 
+# BR24-F2.4: tre scrittori sullo stesso file di attesa (questo giro, gestisci
+# della lib e bus_gestisci del MCP). Ognuno rilegge e scrive dentro lo stesso
+# flock su locks/waits.flock (stesso nome in agent-bus-mcp). Il giro tiene
+# l'attesa in memoria anche per i secondi di una sveglia via Onda: non la
+# riscrive intera, unisce i suoi cambi a quello che trova su disco (save_wait).
+
+class WaitsLock:
+    def __enter__(self) -> "WaitsLock":
+        p = bus_home() / "locks" / "waits.flock"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        self.fh = p.open("a")
+        fcntl.flock(self.fh, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        fcntl.flock(self.fh, fcntl.LOCK_UN)
+        self.fh.close()
+
+
+def merge_wait(disk: dict | None, mine: dict) -> dict:
+    """I cambi del giro sopra lo stato su disco: un esito dato nel frattempo
+    (handled, closed, riarma) vince sempre."""
+    if not disk:
+        return mine
+    out = dict(disk)
+    returns = dict(disk.get("returns") or {})
+    for mid, e in (mine.get("returns") or {}).items():
+        if (returns.get(mid) or {}).get("state") != "handled":
+            returns[mid] = e
+    if returns:
+        out["returns"] = returns
+    acts = [x for x in (disk.get("last_activity"), mine.get("last_activity")) if x]
+    if acts:
+        out["last_activity"] = max(acts)
+    if mine.get("executor_session") and not disk.get("executor_session"):
+        out["executor_session"] = mine["executor_session"]
+    if disk.get("state") in OPEN_STATES and mine.get("state") == "expired":
+        for k in ("state", "expired_at", "note"):
+            if k in mine:
+                out[k] = mine[k]
+    return with_pending_wake(out)
+
+
+def with_pending_wake(rec: dict) -> dict:
+    """Sull'attesa, il perche' dell'ultimo rimando ancora aperto (lo legge il pannello).
+    Un'attesa chiusa non ne ha (BR24-F2.7)."""
+    why = [e["pending_wake"] for e in (rec.get("returns") or {}).values()
+           if e.get("state") == "pending" and e.get("pending_wake")]
+    if why and rec.get("state") in OPEN_STATES:
+        rec["pending_wake"] = max(why, key=lambda w: w.get("checked_at") or "")
+    else:
+        rec.pop("pending_wake", None)
+    return rec
+
+
+def save_wait(p: Path, rec: dict) -> dict:
+    """Scrive i cambi del giro su un'attesa, uniti a quella su disco. Ritorna lo stato scritto."""
+    with WaitsLock():
+        merged = merge_wait(read_json(p), rec)
+        write_json(p, merged)
+    return merged
+
+
 def expect(agent: str, slug: str, description: str, to: str | None = None,
            deadline: str | None = None, task_id: str | None = None,
            target: dict | None = None, delegation: dict | None = None) -> dict:
@@ -167,10 +232,6 @@ def expect(agent: str, slug: str, description: str, to: str | None = None,
         raise ValueError(f"task_id non valido: {task_id!r}")
     if deadline and parse_iso(deadline) is None:
         raise ValueError(f"deadline non ISO 8601: {deadline!r}")
-    existing = find_wait(task_id)
-    if existing is not None:
-        raise ValueError(f"il task {task_id} ha gia' un atteso ({existing.parent.parent.name}/"
-                         f"{existing.parent.name[1:]}): un task, un solo atteso")
     rec = {
         "v": WAIT_VERSION,
         "task_id": task_id,
@@ -187,7 +248,12 @@ def expect(agent: str, slug: str, description: str, to: str | None = None,
     if delegation and any(delegation.values()):
         # BS21: messaggio e thread della delega, per agganciare i ritorni scritti come messaggi nuovi.
         rec["delegation"] = {k: v for k, v in delegation.items() if v}
-    write_json(wait_dir(agent, slug) / f"{task_id}.json", rec)
+    with WaitsLock():
+        existing = find_wait(task_id)
+        if existing is not None:
+            raise ValueError(f"il task {task_id} ha gia' un atteso ({existing.parent.parent.name}/"
+                             f"{existing.parent.name[1:]}): un task, un solo atteso")
+        write_json(wait_dir(agent, slug) / f"{task_id}.json", rec)
     return rec
 
 
@@ -318,7 +384,8 @@ def executor_session(rec: dict) -> str | None:
 def linkable(msg: dict, agent: str) -> bool:
     if _msg_task_id(msg) or msg.get("task_link"):
         return False
-    if msg.get("kind") == "delega" or msg.get("type") in UNLINKABLE_TYPES:
+    # BR24-F2.6: una comunicazione dichiara che non torna nulla, quindi non e' un ritorno.
+    if msg.get("kind") in ("delega", "comunicazione") or msg.get("type") in UNLINKABLE_TYPES:
         return False
     return bool(msg.get("from")) and msg.get("from") != agent
 
@@ -400,9 +467,12 @@ def link_returns() -> dict[str, list[str]]:
         dirs = [base] + ([d for d in base.iterdir() if d.is_dir() and d.name.startswith("@")]
                          if base.is_dir() else [])
         for d in dirs:
-            # Un messaggio a una sessione si aggancia solo alle sue attese; uno
-            # all'agente intero a quelle di tutte le sue sessioni.
-            scope = [w for w in waits if d == base or d.name == f"@{w['slug']}"]
+            # Un messaggio a una sessione si aggancia solo alle sue attese. Uno
+            # all'agente intero (casella condivisa) non ha una sessione destinataria:
+            # si aggancia solo se risponde al messaggio della delega (BR24-F2.6,
+            # caso del 24/10: analisi notturne del cloud prese per ritorni).
+            shared = d == base
+            scope = [w for w in waits if shared or d.name == f"@{w['slug']}"]
             if not scope:
                 continue
             for p in sorted(d.glob("msg-*.json")):
@@ -416,6 +486,8 @@ def link_returns() -> dict[str, list[str]]:
                     continue
                 cands = link_candidates(msg, scope)
                 w, by, pool = choose_link(msg, cands)
+                if shared and by != "reply":
+                    continue
                 if w is not None:
                     msg["task_id"] = w["task_id"]
                     msg["task_link"] = {"by": by, "at": now_iso()}
@@ -650,6 +722,7 @@ def wake_via_tmux(pane: str, text: str) -> str:
 
 TASK_MAX_PER_HOUR = int(os.environ.get("AB_WAKE_TASK_MAX_PER_HOUR", "4"))
 PAIR_MAX_PER_HOUR = int(os.environ.get("AB_WAKE_PAIR_MAX_PER_HOUR", "6"))
+RESPONSE_MAX_PER_HOUR = int(os.environ.get("AB_WAKE_RESPONSE_MAX_PER_HOUR", "4"))
 # Un'attesa senza movimento per tanto si chiude da sola (scaduta, con avviso):
 # altrimenti un'attesa dimenticata aggancerebbe per sempre i messaggi dell'esecutore.
 WAIT_IDLE_H = float(os.environ.get("AB_WAIT_IDLE_H", "72"))
@@ -677,6 +750,18 @@ def wakes_last_hour(d: Path) -> int:
 
 def task_log(task_id: str) -> Path:
     return waits_root() / ".tasks" / f"{task_id}.log"
+
+
+def response_log(task_id: str) -> Path:
+    return waits_root() / ".tasks" / f"{task_id}.responses.log"
+
+
+def is_response(it: dict) -> bool:
+    """BR24-F2.1: un esito (response) su una delega propria. Non passa dai tetti di task,
+    coppia e sessione, che contano anche domande e messaggi intermedi: il 24/10 l'esito
+    finale e' rimasto senza sveglia dietro 3 domande e un ritorno intermedio. Ha solo
+    il suo tetto, RESPONSE_MAX_PER_HOUR per task, contro un botta e risposta a vuoto."""
+    return it["kind"] == "return" and (it["entry"] or {}).get("type") == "response"
 
 
 def pair_log(a: str, b: str) -> Path:
@@ -789,9 +874,10 @@ def notify_expired(rec: dict, idle: bool = False) -> None:
 
 # ---------------------------------------------------------------- giro
 
-def try_wake(rec: dict, d: Path, text: str) -> str:
-    """Scrive text nel prompt della sessione. Postpone se non ora."""
-    if wakes_last_hour(d) >= MAX_PER_HOUR:
+def try_wake(rec: dict, d: Path, text: str, capped: bool = True) -> str:
+    """Scrive text nel prompt della sessione. Postpone se non ora. capped=False: un
+    esito, fuori dal tetto orario della sessione (BR24-F2.1)."""
+    if capped and wakes_last_hour(d) >= MAX_PER_HOUR:
         raise Postpone("tetto_orario")
     sess = onda_session(rec)
     pane = (rec.get("target") or {}).get("tmux_pane")
@@ -849,24 +935,34 @@ def note_postponed(holder: dict, reason: str, label: str) -> None:
 
 
 def expire_if_due(path: Path, rec: dict) -> str | None:
-    """Scadenza senza ritorni, o attesa ferma da WAIT_IDLE_H ore: chiusa con un avviso."""
+    """Deadline passata, o attesa ferma da WAIT_IDLE_H ore: chiusa con un avviso.
+
+    BR24-F2.7: valgono anche con ritorni gia' arrivati e gestiti (prima una deadline
+    con un ritorno qualsiasi non scadeva piu'). Ferma la scadenza solo un ritorno
+    ancora da gestire e piu' giovane di WAIT_IDLE_H: un messaggio che aspetta una lettura.
+    """
     now = time.time()
+    fresh = any(e.get("state") == "pending" and now - (parse_iso(e.get("at")) or now) < WAIT_IDLE_H * 3600
+                for e in (rec.get("returns") or {}).values())
+    if fresh:
+        return None
     dl = parse_iso(rec.get("deadline"))
-    if dl is not None and now > dl and not rec.get("returns"):
-        rec.update(state="expired", expired_at=now_iso())
-        write_json(path, rec)
-        notify_expired(rec)
-        log(f"scaduto {rec['task_id']} {rec['agent']}/{rec['slug']}")
-        return "expired"
     last = max(parse_iso(rec.get(k)) or 0 for k in ("created_at", "last_activity", "rearmed_at"))
-    pending = any(e.get("state") == "pending" for e in (rec.get("returns") or {}).values())
-    if WAIT_IDLE_H > 0 and last and now - last > WAIT_IDLE_H * 3600 and not pending:
-        rec.update(state="expired", expired_at=now_iso(), note=f"inattiva da {WAIT_IDLE_H:.0f} ore")
-        write_json(path, rec)
-        notify_expired(rec, idle=True)
-        log(f"scaduto per inattivita' {rec['task_id']} {rec['agent']}/{rec['slug']}")
-        return "expired"
-    return None
+    if dl is not None and now > dl:
+        idle, note = False, "deadline passata"
+    elif WAIT_IDLE_H > 0 and last and now - last > WAIT_IDLE_H * 3600:
+        idle, note = True, f"inattiva da {WAIT_IDLE_H:.0f} ore"
+    else:
+        return None
+    at = now_iso()
+    rec.update(state="expired", expired_at=at, note=note)
+    rec.pop("pending_wake", None)
+    merged = save_wait(path, rec)
+    if merged.get("state") != "expired" or merged.get("expired_at") != at:
+        return None  # chiusa o riarmata nel frattempo da chi aspetta
+    notify_expired(rec, idle=idle)
+    log(f"scaduto {rec['task_id']} {rec['agent']}/{rec['slug']} ({note})")
+    return "expired"
 
 
 def collect_returns(path: Path, rec: dict, seen: list | None = None) -> list[dict]:
@@ -1290,6 +1386,11 @@ def wake_sessions(items: list[dict], recs_by_session: dict) -> dict[str, list[st
         for it in its:
             if it["kind"] == "urgent" and time.time() - _last_stamp(urgent_log(agent, it["peer"])) < URGENT_PAIR_S:
                 note_postponed(it["entry"], "tetto_urgenti", f"urgente {label} ({it['mid']})")
+            elif is_response(it):
+                if len(_stamps(response_log(it["task_id"]))) >= RESPONSE_MAX_PER_HOUR:
+                    note_postponed(it["entry"], "tetto_esiti", f"{it['task_id']} {label} ({it['mid']})")
+                else:
+                    ok.append(it)
             elif it["task_id"] and len(_stamps(task_log(it["task_id"]))) >= TASK_MAX_PER_HOUR:
                 note_postponed(it["entry"], "tetto_task", f"{it['task_id']} {label} ({it['mid']})")
             elif len(_stamps(pair_log(agent, it["peer"]))) >= PAIR_MAX_PER_HOUR:
@@ -1303,7 +1404,7 @@ def wake_sessions(items: list[dict], recs_by_session: dict) -> dict[str, list[st
             continue
         tgt = session_target(agent, slug, recs_by_session.get((agent, slug), []))
         try:
-            how = try_wake(tgt, d, batch_text(ok))
+            how = try_wake(tgt, d, batch_text(ok), capped=not any(is_response(it) for it in ok))
         except Postpone as p:
             for it in ok:
                 note_postponed(it["entry"], str(p), f"{it['task_id'] or it['kind']} {label} ({it['mid']})")
@@ -1326,6 +1427,8 @@ def wake_sessions(items: list[dict], recs_by_session: dict) -> dict[str, list[st
         note_wake(d, ok[0]["task_id"] or ok[0]["mid"])
         for tid in {it["task_id"] for it in ok if it["task_id"]}:
             _stamp(task_log(tid))
+        for tid in {it["task_id"] for it in ok if is_response(it)}:
+            _stamp(response_log(tid))
         for peer in {it["peer"] for it in ok}:
             _stamp(pair_log(agent, peer))
         for peer in {it["peer"] for it in ok if it["kind"] == "urgent"}:
@@ -1347,7 +1450,7 @@ def persist(items: list[dict]) -> None:
     """Scrive dove sta lo stato di ogni messaggio: l'attesa, .answers.json o il messaggio."""
     for it in items:
         if it["kind"] in ("return", "question"):
-            write_json(it["path"], it["rec"])
+            save_wait(it["path"], it["rec"])
         elif it["kind"] == "da_agganciare":
             if it.get("woken"):
                 it["entry"]["woken_at"] = it["entry"].get("woken_at") or now_iso()
@@ -1385,7 +1488,7 @@ def wake_round() -> dict[str, list[str]]:
             if (r := expire_if_due(p, rec)) is not None:
                 out.setdefault(r, []).append(rec["task_id"])
                 continue
-            write_json(p, rec)
+            save_wait(p, rec)
         except Exception as exc:  # un atteso rotto non ferma gli altri
             log(f"errore su {p}: {exc!r}")
             out.setdefault("error", []).append(p.stem)
@@ -1414,15 +1517,9 @@ def wake_round() -> dict[str, list[str]]:
         out.setdefault(k, []).extend(v)
     # i rimandi si scrivono anche senza sveglia (pending_wake, per il pannello)
     persist([it for it in items if not it.get("woken")])
-    # sull'attesa, il perche' dell'ultimo rimando ancora aperto: lo legge il pannello
+    # sull'attesa, il perche' dell'ultimo rimando ancora aperto (save_wait lo ricalcola)
     for p, rec in paths.values():
-        why = [e["pending_wake"] for e in (rec.get("returns") or {}).values()
-               if e.get("state") == "pending" and e.get("pending_wake")]
-        if why:
-            rec["pending_wake"] = max(why, key=lambda w: w.get("checked_at") or "")
-        else:
-            rec.pop("pending_wake", None)
-        write_json(p, rec)
+        save_wait(p, rec)
     return {k: sorted(set(v)) for k, v in out.items()}
 
 
@@ -1435,14 +1532,52 @@ def wake_round() -> dict[str, list[str]]:
 ESITI = ("chiuso", "riarma", "risposto", "letto")
 
 
-def own_wait(agent: str, task_id: str | None) -> tuple[Path, dict] | None:
+SESSION_TTL_S = float(os.environ.get("AB_SESSION_TTL_MIN", "240")) * 60
+
+
+def session_live(agent: str, slug: str) -> bool:
+    """Viva per Onda, oppure con una voce di registro entro il TTL (stessa regola della lib)."""
+    if slug in live_slugs(agent):
+        return True
+    reg = read_json(bus_home() / "registry" / f"{agent}.d" / f"{slug}.json") or {}
+    seen = parse_iso(reg.get("last_seen"))
+    return seen is not None and time.time() - seen < SESSION_TTL_S
+
+
+def own_wait(agent: str, task_id: str | None, slug: str | None = None) -> tuple[Path, dict] | None:
+    """L'attesa del task se e' di questa sessione (BR24-F2.6: per sessione, non per agente).
+
+    Un'altra sessione dello stesso agente la puo' gestire solo se quella che ha
+    delegato non e' piu' viva: l'attesa passa a chi c'e'. Senza slug, qualunque
+    sessione dell'agente (chiusura esplicita per task_id).
+    """
     if not task_id:
         return None
     p = find_wait(task_id)
     if p is None or p.parent.parent.name != agent:
         return None
+    if slug and p.parent.name != f"@{slug}" and session_live(agent, p.parent.name[1:]):
+        return None
     rec = read_json(p)
     return (p, rec) if rec else None
+
+
+def _apply_esito(rec: dict, mid: str, msg: dict, esito: str, now: str) -> None:
+    e = rec.setdefault("returns", {}).setdefault(mid, {
+        "from": msg.get("from_session") or msg.get("from"), "at": msg.get("ts") or now,
+        "type": msg.get("type"), "state": "pending"})
+    e.update(state="handled", handled=esito, handled_at=now)
+    e.pop("pending_wake", None)
+    if esito == "chiuso":
+        rec.update(state="closed", closed_at=now, closed_by=mid)
+    elif esito in ("riarma", "risposto"):
+        if rec.get("state") not in OPEN_STATES:
+            rec["reopened_from"] = rec.get("state")
+        rec["state"] = "expected"
+        rec["last_activity"] = now
+        if esito == "riarma":
+            rec["rearmed_at"] = now
+    with_pending_wake(rec)
 
 
 def gestisci(agent: str, slug: str, msg_path: Path, esito: str, task_id: str | None = None) -> dict:
@@ -1458,15 +1593,15 @@ def gestisci(agent: str, slug: str, msg_path: Path, esito: str, task_id: str | N
     if task_id:
         if msg.get("task_id") and msg["task_id"] != task_id:
             raise ValueError(f"{mid} e' gia' del task {msg['task_id']}")
-        if own_wait(agent, task_id) is None:
-            raise ValueError(f"il task {task_id} non e' una delega di {agent}")
+        if own_wait(agent, task_id, slug) is None:
+            raise ValueError(f"il task {task_id} non e' una delega di {agent}/{slug}")
         if not msg.get("task_id"):
             msg["task_id"] = task_id
             msg["task_link"] = dict(link, by="scelto", at=now_iso())
     elif link.get("by") == "da_agganciare" and esito in ("chiuso", "riarma"):
         raise ValueError(f"{mid} e' da agganciare ({', '.join(link.get('candidates') or [])}): "
                          "di' a quale task con --task-id")
-    own = own_wait(agent, _msg_task_id(msg))
+    own = own_wait(agent, _msg_task_id(msg), slug)
     if esito == "riarma" and own is None:
         raise ValueError("riarma vale solo per un ritorno su una tua delega")
     now = now_iso()
@@ -1476,24 +1611,51 @@ def gestisci(agent: str, slug: str, msg_path: Path, esito: str, task_id: str | N
     msg_path.unlink()
     out = {"message": mid, "esito": esito, "archived_to": str(dest)}
     if own is not None:
-        wp, rec = own
-        e = rec.setdefault("returns", {}).setdefault(mid, {
-            "from": msg.get("from_session") or msg.get("from"), "at": msg.get("ts") or now,
-            "type": msg.get("type"), "state": "pending"})
-        e.update(state="handled", handled=esito, handled_at=now)
-        e.pop("pending_wake", None)
-        if esito == "chiuso":
-            rec.update(state="closed", closed_at=now, closed_by=mid)
-        elif esito in ("riarma", "risposto"):
-            if rec.get("state") not in OPEN_STATES:
-                rec["reopened_from"] = rec.get("state")
-            rec["state"] = "expected"
-            rec["last_activity"] = now
-            if esito == "riarma":
-                rec["rearmed_at"] = now
-        write_json(wp, rec)
+        wp = own[0]
+        with WaitsLock():  # riletta dentro il lock: il giro della sveglia puo' averla appena scritta
+            rec = read_json(wp) or own[1]
+            _apply_esito(rec, mid, msg, esito, now)
+            write_json(wp, rec)
         out["wait"] = {"task_id": rec["task_id"], "state": rec["state"]}
     return out
+
+
+def chiudi(agent: str, slug: str, task_id: str, note: str | None = None) -> dict:
+    """BR24-F2.3: chiude l'attesa di un task senza un messaggio da gestire (ritorni gia'
+    archiviati, delega di una sessione precedente). I ritorni del task ancora in casella
+    (della sessione o condivisa) vanno in .done con esito chiuso."""
+    own = own_wait(agent, task_id)
+    if own is None:
+        raise ValueError(f"il task {task_id} non e' una delega di {agent}")
+    wp = own[0]
+    now = now_iso()
+    filed = []
+    base = bus_home() / "inboxes" / agent
+    for d in (base / f"@{slug}", base / own[0].parent.name, base):
+        for p in sorted(d.glob("msg-*.json")) if d.is_dir() else []:
+            msg = read_json(p)
+            if not msg or _msg_task_id(msg) != task_id or msg.get("kind") == "delega":
+                continue
+            msg["handled"] = {"esito": "chiuso", "at": now, "by": f"{agent}/{slug}", "via": "chiudi"}
+            write_json(p.parent / ".done" / p.name, msg)
+            p.unlink(missing_ok=True)
+            filed.append({"id": msg.get("id") or p.stem, "type": msg.get("type"),
+                          "summary": str((msg.get("payload") or {}).get("summary") or "")[:200]})
+    with WaitsLock():
+        rec = read_json(wp) or own[1]
+        prev = rec.get("state")
+        for f in filed:
+            e = (rec.setdefault("returns", {})).setdefault(f["id"], {"type": f["type"], "at": now})
+            e.update(state="handled", handled="chiuso", handled_at=now)
+            e.pop("pending_wake", None)
+        if prev in OPEN_STATES or prev == "expired":
+            rec.update(state="closed", closed_at=now, closed_by=f"chiudi:{agent}/{slug}")
+            if note:
+                rec["note"] = note
+        with_pending_wake(rec)
+        write_json(wp, rec)
+    log(f"chiuso {task_id} {rec['agent']}/{rec['slug']} da {agent}/{slug} (era {prev}, {len(filed)} in casella)")
+    return {"task_id": task_id, "state": rec["state"], "was": prev, "filed": filed}
 
 
 # ---------------------------------------------------------------- misura (BS21-F3.2)
@@ -1724,11 +1886,74 @@ def registro_prune() -> list[str]:
     return lines
 
 
+# BR24-F2.2: il registro si riempie solo con SessionStart (avvio a freddo) e coi
+# prompt, e SessionEnd lo svuota anche su /clear e --resume: una sessione viva in
+# Onda poteva mancare ("no live session" con la sessione al lavoro), o avere un
+# last_seen fermo durante un turno lungo. Ogni giro: le sessioni vive per Onda su
+# questa macchina hanno la loro voce, con last_seen fresco; una voce che il giro
+# ha aggiunto lui (source "onda") se ne va quando Onda non la da' piu' viva.
+ONDA_SEEN_S = 60
+
+
+def onda_live_sessions() -> list[dict] | None:
+    """Le sessioni vive in sessions.json su questa macchina. None se Onda non scrive."""
+    doc = read_json(bus_home() / "onda" / "sessions.json")
+    if not doc or doc.get("v") != 1 or not _pid_alive(doc.get("ondaPid")):
+        return None
+    written = parse_iso(doc.get("writtenAt"))
+    if written is None or time.time() - written > SESSIONS_FRESH_S:
+        return None
+    me = host_self()
+    return [s for s in doc.get("sessions") or [] if isinstance(s, dict) and s.get("agent") and s.get("slug")
+            and s.get("state") != "exited" and not (s.get("host") and me and s["host"] != me)]
+
+
+def registro_da_onda() -> list[str]:
+    live = onda_live_sessions()
+    if live is None:
+        return []
+    agents = (read_json(bus_home() / "AGENT_MAP.json") or {}).get("agents") or {}
+    me = host_self()
+    out = []
+    now = now_iso()
+    alive = set()
+    for s in live:
+        agent, slug = s["agent"], s["slug"]
+        if agent not in agents or not re.match(r"^[a-z0-9._-]+$", slug):
+            continue
+        alive.add((agent, slug))
+        f = bus_home() / "registry" / f"{agent}.d" / f"{slug}.json"
+        rec = read_json(f)
+        if rec is None:
+            rec = {"name": agent, "slug": slug, "active": True, "last_seen": now,
+                   "workspace_path": s.get("cwd") or "", "session_started": now, "source": "onda"}
+            if me:
+                rec["host"] = me
+            write_json(f, rec)
+            out.append(f"registro: aggiungo {agent}/{slug} (viva in Onda)")
+            log(out[-1])
+        elif time.time() - (parse_iso(rec.get("last_seen")) or 0) > ONDA_SEEN_S:
+            rec["last_seen"] = now
+            write_json(f, rec)
+    for f in (bus_home() / "registry").glob("*.d/*.json"):
+        rec = read_json(f) or {}
+        key = (f.parent.name[:-2], f.stem)
+        if rec.get("source") == "onda" and key not in alive:
+            f.unlink(missing_ok=True)
+            out.append(f"registro: tolgo {key[0]}/{key[1]} (non piu' viva in Onda)")
+            log(out[-1])
+    return out
+
+
 def tick() -> dict:
     out: dict[str, list[str]] = {}
     with Lock() as ok:
         if not ok:
             return {"skipped": ["un altro giro in corso"]}
+        try:
+            registro_da_onda()  # solo nel log: l'output del giro sono le sveglie
+        except Exception as exc:  # il registro non ferma la sveglia
+            log(f"errore registro da Onda: {exc!r}")
         if registro_due():
             if pruned := registro_prune():
                 out["registro"] = pruned
@@ -1767,6 +1992,11 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--msg-path", required=True)
     g.add_argument("--esito", required=True, choices=ESITI)
     g.add_argument("--task-id")
+    c = sub.add_parser("chiudi")
+    c.add_argument("--agent", required=True)
+    c.add_argument("--slug", required=True)
+    c.add_argument("--task-id", required=True)
+    c.add_argument("--note")
     rp = sub.add_parser("report")
     rp.add_argument("--days", type=float, default=7.0)
     rp.add_argument("--json", action="store_true")
@@ -1791,6 +2021,14 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "gestisci":
         try:
             res = gestisci(a.agent, a.slug, Path(a.msg_path), a.esito, a.task_id)
+        except (ValueError, OSError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(res, ensure_ascii=False))
+        return 0
+    if a.cmd == "chiudi":
+        try:
+            res = chiudi(a.agent, a.slug, a.task_id, a.note)
         except (ValueError, OSError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1

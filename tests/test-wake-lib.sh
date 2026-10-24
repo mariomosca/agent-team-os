@@ -101,10 +101,44 @@ G "$lid" letto >/dev/null
 ck "letto: in .read" "$(basename "$(dirname "$(msg "$lid")")")" ".read"
 e=$(send alita work-hub kai/f3 event); out=$(G "$e" riarma); rc=$?
 ck "riarma senza delega rifiutato" "$rc $([[ "$out" == *"delega"* ]] && echo spiega)" "1 spiega"
-sid=$(send alita work-hub kai/f3 event)
-stop=$(cd "$T" && AB_SESSION_SLUG=f3 "$BASH" -c "source '$R/scripts/agent-team-os-lib.sh'; ab_drain_for_stop kai 3")
+
+echo "── BR24-F2.7: lo Stop blocca solo su cio' che chiede un'azione"
+export AB_NO_WAKE_KICK=1  # da qui nessun giro della sveglia in background: casella ferma
+sleep 1  # i giri gia' partiti finiscono
+S(){ (cd "$T" && AB_SESSION_SLUG=f3 "$BASH" -c "source '$R/scripts/agent-team-os-lib.sh'; ab_drain_for_stop kai 3"); }
+# casella di kai/f3 e radice condivisa vuote, contatore azzerato
+find "$AB_HOME/inboxes/kai" -maxdepth 2 -name 'msg-*.json' -not -path '*/.*/*' -delete
+S >/dev/null
+for t in event; do send alita work-hub kai/f3 "$t" >/dev/null; done
+send leo pm kai brief AB_KIND=comunicazione >/dev/null
+send alita work-hub kai/f3 cc-notify >/dev/null
+send alita work-hub kai/f3 response >/dev/null  # senza task_id: una notizia
+send alita work-hub kai/f3 response AB_TASK_ID="$dt" >/dev/null  # task chiuso sopra
+stop=$(S); rc=$?
+ck "event, comunicazione, cc, response senza task o su task chiuso: non blocca" "$rc [$stop]" "0 []"
+sid=$(send alita work-hub kai/f3 question AB_TASK_ID=t-20261017-zzz999)
+stop=$(S); rc=$?
+ck "una domanda blocca" "$rc $(jq -r .decision <<<"$stop")" "1 block"
 ck "Stop chiede un esito" "$([[ "$stop" == *"bus_gestisci"* && "$stop" == *"riarma"* ]] && echo si)" "si"
-ck "Stop: JSON valido" "$(jq -r .decision <<<"$stop")" "block"
+ck "Stop elenca solo la domanda" "$(grep -o 'msg-[0-9TZ]*-[a-z0-9]*' <<<"$stop" | sort -u | tr '\n' ' ')" "$sid "
+G "$sid" letto >/dev/null
+did2=$(send alita work-hub kai/f3 request AB_KIND=delega)
+ck "una delega blocca" "$(S >/dev/null; echo $?)" "1"
+G "$did2" letto >/dev/null
+# esito di una delega aperta di kai/f3
+W2=$(env AB_FROM=kai AB_SESSION_SLUG=f3 AB_TO=alita/work-hub AB_TYPE=request AB_KIND=delega AB_INTENT=x \
+     AB_PAYLOAD_JSON='{"summary":"s"}' "$BASH" -c 'source scripts/agent-team-os-lib.sh; ab_write_message' 2>/dev/null)
+t2=$(jq -r .task_id "$(msg "$W2")")
+send alita work-hub kai/f3 response AB_TASK_ID="$t2" >/dev/null
+ck "l'esito di una delega aperta blocca" "$(S >/dev/null; echo $?)" "1"
+
+echo "── BR24-F2.3: ab_chiudi"
+C(){ AB_AGENT=kai AB_SESSION_SLUG="${2:-f3}" "$BASH" -c "source scripts/agent-team-os-lib.sh; ab_chiudi $1 'lavoro concluso'" 2>&1; }
+out=$(C "$t2")
+ck "chiude l'attesa e archivia l'esito in casella" "$(jq -r '.state + " " + (.filed | length | tostring)' <<<"$out") $(jq -r .state "$AB_HOME/waits/kai/@f3/$t2.json")" "closed 1 closed"
+ck "dopo la chiusura lo Stop passa" "$(S >/dev/null; echo $?)" "0"
+out=$(C t-20261017-nessuno); rc=$?
+ck "task non suo: errore" "$rc $([[ "$out" == *"non e' una delega"* ]] && echo spiega)" "1 spiega"
 
 rm -rf "$T"
 echo "── $P PASS, $F FAIL"
