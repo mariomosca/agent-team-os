@@ -102,3 +102,4 @@ def test_vista_globale(bus):
     assert len(v["attese"]) == 1 and v["attese"][0]["raw"]["state"] == "expected"
     assert {x["agent"] for x in v["agenti"]} == {"kai", "alita"}
     assert {s["slug"] for s in v["sessioni"]} == {"s1"}  # vive per heartbeat
+    assert v["onda"] == {"valido": False, "writtenAt": None, "sessioni": []}

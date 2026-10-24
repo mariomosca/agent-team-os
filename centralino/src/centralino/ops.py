@@ -418,8 +418,10 @@ class Centralino:
                   for k, v in sorted(self.amap.agents().items())]
         workspaces = {f"{x['agent']}/{x['slug']}": x["workspace"] for x in sessioni if x.get("workspace")}
         workspaces.update({x["agent"]: x["workspace_root"] for x in agenti if x.get("workspace_root")})
+        doc = self.onda.doc()
+        onda = {"valido": self.onda.valid(), "writtenAt": doc.get("writtenAt"), "sessioni": self.onda.entries()}
         return {"host": host, "generato_at": iso(adesso), "modo": self.modo.as_dict(), "agenti": agenti,
-                "sessioni": sessioni, "remoti": remoti, "messaggi": messaggi, "attese": attese,
+                "sessioni": sessioni, "onda": onda, "remoti": remoti, "messaggi": messaggi, "attese": attese,
                 "workspaces": workspaces}
 
     # ---------- servizio ----------
