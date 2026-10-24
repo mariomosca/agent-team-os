@@ -487,3 +487,39 @@ modello per usare le tool MCP (nessun Bash). `/god` sparisce.
 Il mini non ha un centralino: tiene il bus a file (lib, `wake.py` con tmux, custode). Il laptop gli
 consegna via SSH e raccoglie dal suo `outbox/laptop/` come oggi, ma dentro il centralino. Per questo
 `lib.sh`, `wake.py`, `collect.sh` e `custode.sh` restano nel repo; dal laptop non si usano più.
+
+## 14. Tetto sugli esiti: nessuno, c'è l'accorpamento
+
+Nel centralino un esito (`response` sul `task_id` di un'attesa aperta della sessione) non ha tetto.
+Il passo 0 aveva messo in `wake.py` un tetto di 4 esiti all'ora per task (`RESPONSE_MAX_PER_HOUR`),
+contro un botta e risposta a vuoto fra due sessioni. Nel centralino lo stesso rischio lo copre
+l'accorpamento di §6: una sessione al lavoro non si sveglia, e tutto quello che le arriva nel frattempo
+parte in **una** sveglia a fine turno. Un botta e risposta quindi non va oltre una sveglia per turno del
+destinatario, che è il ritmo del lavoro vero. Dato: nei 7 giorni misurati (INVENTARIO §6.2) c'è un solo
+episodio di tetto su un task (`irjocy`), ed era l'esito finale legittimo che il tetto ha trattenuto. Il
+tetto orario per sessione (10 all'ora, esiti esclusi) resta come rete di sicurezza contro un difetto,
+non come regola del lavoro normale. `wake.py` col suo tetto si spegne al passaggio.
+
+## 15. Dopo la prova: la rimozione (BR24-F5.5)
+
+Obiettivo di Alita: sotto le ~4.500 righe e un solo archivio, una volta confermata la prova. Sul branch
+oggi ci sono due sistemi, perché la modalità ombra li tiene in piedi tutti e due. Dopo la conferma si toglie:
+
+| Via | Righe | Note |
+|---|---|---|
+| `centralino/files.py` (FileBus) | 973 | il trasporto verso il mini (SSH, coda, raccolta) passa in un `remoto.py` di ~250 righe |
+| `centralino/ombra.py` | 441 | la tabella di sveglia (`_attese`, `destinazioni`, `giro_sveglia`) passa in `sveglia.py` (~120 righe) |
+| `centralino/migra.py` + modo in `config.py` | ~170 | il modo diventa uno solo |
+| `ops._Specchio`, i rami del modo file | ~80 | |
+| MCP: `bus.py` e i rami a file di `server.py` | ~1.500 | il server MCP resta un client da ~250 righe |
+| hook a file (`hooks/*.sh`, onda-prompt v2) | ~430 | restano gli hook v3 |
+
+Stima dopo la rimozione, laptop: centralino ~3.100 righe, MCP ~370, hook v3 ~250, in totale **~3.700**.
+`sim.py` (il banco di prova) resta come strumento di test e non entra nel conto.
+
+**Il nodo è il mini.** Oggi il mini gira sul bus a file: `lib.sh` (1.600 righe), `wake.py` (2.000, con
+tmux), `collect.sh`, `custode.sh`. Se il mini resta a file, quei 3.700 righe restano nel repo e
+l'obiettivo non si raggiunge. La proposta è che anche il mini abbia il suo centralino (stesso codice,
+canale tmux, nessuna raccolta: la fa il laptop). Il laptop gli consegna con `ssh mini … centralino consegna`
+invece di scrivere file nella sua casella, e raccoglie la sua coda `outbox/laptop` come oggi. Così
+`lib.sh` scende a quello che serve al custode, e `wake.py` sparisce. Va deciso prima di applicare F5.5.
