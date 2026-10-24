@@ -106,6 +106,8 @@ class HookOps:
         bloccano = []
         for mid, scope, m in self.c.bus.inbox_items(me.agent, me.slug):
             regola = regole.classifica(m, me.agent, me.slug, attese)
+            if regola == "delega" and self._domanda_aperta(me, m.get("task_id"), mid):
+                continue  # BR24-F5.5d: aspetta la risposta alla sua domanda, torna azionabile con lei
             if regole.blocca_stop(regola):
                 bloccano.append((mid, m))
         host = me.host or ""
@@ -132,6 +134,16 @@ class HookOps:
                   "Read each one and consume it before stopping: bus_reply to answer, bus_close with "
                   "chiuso (done), riarma (keep waiting on your delegation) or letto.\n" + lista)
         return {"block": True, "reason": reason, "pending": len(bloccano)}
+
+    def _domanda_aperta(self, me, tid, delega_id: str) -> bool:
+        """L'esecutore ha fatto una domanda sul task e da allora non gli è tornato niente."""
+        if not tid:
+            return False
+        r = self.c.store.read().execute(
+            "SELECT MAX(CASE WHEN from_agent=? AND from_slug=? AND type='question' THEN ts END) AS q, "
+            "MAX(CASE WHEN to_agent=? AND id<>? THEN ts END) AS dopo FROM messages WHERE task_id=?",
+            (me.agent, me.slug, me.agent, delega_id, tid)).fetchone()
+        return bool(r["q"]) and (r["dopo"] is None or r["dopo"] < r["q"])
 
     def op_end(self, caller: dict, a: dict, warnings: list) -> dict:
         me = self._evento(caller, "end")

@@ -123,3 +123,22 @@ def test_domanda_dell_esecutore_lascia_la_delega_aperta(bus):
     # l'esito sulla delega originale la consuma
     e = call("reply", {"message_id": mid, "summary": "fatto"}, caller=kai, sock=sock)
     assert e["ok"] and e["result"]["remaining"] == 0
+
+
+def test_stop_non_blocca_l_esecutore_in_attesa_della_risposta(bus):
+    # BR24-F5.5d: prova del 24/10, Alita bloccata 3 volte su 3 dopo la sua domanda
+    sock = bus / "centralino.sock"
+    kai, alita = _caller(bus, "kai"), _caller(bus, "alita")
+    stop = lambda: call("hook.stop", {}, caller=kai, sock=sock)["result"]["block"]  # noqa: E731
+    mid = call("send", {"to": "kai/s1", "intent": "x", "summary": "fai X", "message_type": "request",
+                        "kind": "delega"}, caller=alita, sock=sock)["result"]["id"]
+    assert stop() is True
+    call("reply", {"message_id": mid, "summary": "A o B?", "message_type": "question"}, caller=kai, sock=sock)
+    assert stop() is False and stop() is False
+    q = call("inbox", {}, caller=alita, sock=sock)["result"]["messages"][0]["id"]
+    risposta = call("reply", {"message_id": q, "summary": "A"}, caller=alita, sock=sock)["result"]["sent"]["id"]
+    assert stop() is True                       # la risposta blocca da sola
+    call("close", {"message_id": risposta, "esito": "letto"}, caller=kai, sock=sock)
+    assert stop() is True                       # e la delega torna azionabile
+    call("reply", {"message_id": mid, "summary": "fatto con A"}, caller=kai, sock=sock)
+    assert stop() is False
