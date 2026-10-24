@@ -2,7 +2,7 @@
 
 ![agent-team-os — coordinate Claude Code sessions](./assets/cover.png)
 
-> A minimal file-based protocol to coordinate multiple Claude Code instances across separate sessions.
+> A local bus to coordinate multiple Claude Code instances across separate sessions: a small daemon, SQLite, six MCP tools.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Release](https://img.shields.io/github/v/release/mariomosca/agent-team-os?label=release)](https://github.com/mariomosca/agent-team-os/releases/latest)
@@ -10,196 +10,151 @@
 
 **[Visit the landing page →](https://mariomosca.github.io/agent-team-os/)** for the full pitch, diagrams, FAQ and install instructions.
 
-## Bus v3 (October 2026)
-
-The bus now runs on a local daemon, the **centralino**, the only writer of its state (SQLite). Agents use six MCP tools (`bus_send`, `bus_reply`, `bus_close`, `bus_inbox`, `bus_read`, `bus_status`); the slash commands tell the model which tool to call. The sections below describe the file-based bus, which is still what the Mac mini runs. Start from [`docs/PROTOCOL-v3.md`](./docs/PROTOCOL-v3.md) (the protocol) and [`docs/CENTRALINO.md`](./docs/CENTRALINO.md) (the daemon's contract).
-
 ## Why
 
 If you run more than one Claude Code session — one per project, one per role, one per repo — you quickly hit a wall: the sessions don't talk to each other. You become the human postman, copy-pasting context, briefs and handoffs between terminals.
 
 Agent Team OS removes the postman.
 
-It's a tiny convention — a folder structure, a JSON message schema, a handful of bash helpers and slash commands — that lets each Claude Code instance read its own inbox at session start, send structured messages to its peers, and resume threaded conversations days later.
+Every machine runs a small daemon, the **centralino** (the switchboard). Each session sends structured messages to its peers through six MCP tools, finds its own inbox at session start, and is woken up when something it is waiting for comes back.
 
-No daemon. No server. No cloud. Just files on your machine.
+No server, no cloud. One daemon per machine, SQLite for state, a Unix socket on your own disk.
 
 ## What it gives you
 
-- **Inbox per agent** — each session sees what's waiting for it the moment you open it
-- **Structured messages** — versioned JSON with `from`, `to`, `intent`, `payload`, `context_refs`, deadlines
-- **Threads** — replies stay grouped, so you can pick up a conversation a week later
-- **Audit log** — append-only JSONL of every message sent, for free
-- **Slash commands** — `/inbox`, `/read`, `/send`, `/reply`, `/handoff`, `/thread`, `/bus`
-- **Live band above the prompt** (optional mod, Claude Code 2.1.287+) — pending messages for the session plus the **team** (which sibling sessions are stuck, from Onda), toast on urgent ones: [`mods/bus-band`](./mods/bus-band)
+- **Inbox per session**: each session sees what's waiting for it the moment you open it
+- **Delegations**: declare `kind=delega` and the bus tracks the wait under a `task_id`; every return wakes you
+- **Wake-ups**: an idle session gets a line in its prompt when a delegation, a question or an outcome arrives (Onda pane, or tmux on the Mac mini)
+- **Threads**: replies stay grouped, so you can pick up a conversation a week later
+- **Two machines**: one bus across a laptop and a Mac mini, over SSH
+- **Slash commands**: `/inbox`, `/read`, `/send`, `/reply`, `/handoff`, `/delegate`, `/thread`, `/bus`
+- **Live band above the prompt** (optional mod, Claude Code 2.1.287+) — pending messages for the session plus the **team** (which sibling sessions are stuck, from Onda): [`mods/bus-band`](./mods/bus-band)
 
 ## How it works
 
-```
-~/.agent-team-os/
-  AGENT_MAP.json                  # path -> agent + capabilities
-  registry/<agent>.d/<slug>.json  # one card per LIVE SESSION (active, last_seen, workspace)
-  inboxes/<agent>/                # broadcast msg-*.json — every session of that agent
-  inboxes/<agent>/@<slug>/        # messages for ONE session
-  inboxes/<agent>/@<slug>/.read/  # archive, next to the message it came from
-  threads/<thread-id>.jsonl       # conversation history
-  outbox/<agent>.jsonl            # append-only audit log
-  locks/                          # mkdir-based atomic locks
-```
+The centralino (`centralino/`, Python 3.12 with `uv`, stdlib only) is the only writer of the bus state, a SQLite database in `~/.agent-team-os/centralino.db`. It listens on a Unix socket (`0600`), decides who to wake and how, and talks to the other machine over SSH. Agents never touch files: they call MCP tools, and the hooks are thin clients of the same socket (with the daemon down they stay silent and never block).
 
-Each Claude Code session detects its identity from its current working directory via `AGENT_MAP.json`. A `SessionStart` hook registers the session and prints any pending inbox messages. Slash commands handle the rest.
+The six tools come from the separate MCP server [`agent-bus-mcp`](https://github.com/mariomosca/agent-bus-mcp), which you configure in Claude Code:
 
-### Sessions: one agent, several workspaces (v1.4)
+| Tool | What it does |
+|---|---|
+| `bus_send` | new message; with `kind='delega'` it registers the wait and returns the `task_id` |
+| `bus_reply` | answer a message (`response` or `question`); keeps thread and `task_id` |
+| `bus_close` | consume a message (`chiuso`, `riarma`, `letto`), or close a delegation by `task_id` |
+| `bus_inbox` | this session's pending messages and its open delegations |
+| `bus_read` | one message in full, or a whole thread |
+| `bus_status` | live sessions and hosts |
 
-An agent name maps to a whole tree of projects, so the same agent often has **several sessions open at once** — e.g. two `kai`, one per project. Addressing them by name alone makes them share a queue: whichever reads first wins, and the other never sees the message.
-
-So an address has two levels:
-
-| Address | Goes to |
-|---------|---------|
-| `kai` | every live session — use for announcements |
-| `kai/noi-calendar` | that one session |
-
-The message JSON keeps the bare agent in `to`; the session lives in the path. Sending to a name that has one session behaves exactly as before, so nothing existing has to change.
-
-Each session gets its own inbox, its own registry entry and its own drain cursor, so the Stop hook can no longer hold one session hostage to another's unread mail. `/bus` lists the live sessions and their pending counts; `/inbox` shows this session's messages and `--all` shows the others'.
+Each session finds its identity from its working directory via `~/.agent-team-os/AGENT_MAP.json`. The old tool names (`bus_gestisci`, `bus_archive`, `bus_waits`, `bus_expect`, `bus_thread`) stay as aliases until 31 October 2026.
 
 ### Architecture at a glance
 
-```mermaid
-flowchart LR
-    subgraph S["Multiple Claude Code sessions"]
-        direction TB
-        A[session 01<br/>ops]
-        B[session 02<br/>dev]
-        C[session 03<br/>growth]
-        D[session 04<br/>...]
-    end
-
-    FS[("~/.agent-team-os/<br/>filesystem")]
-
-    A -- write msg --> FS
-    B -- write msg --> FS
-    C -- write msg --> FS
-    D -- write msg --> FS
-
-    FS -. SessionStart<br/>reads inbox .-> A
-    FS -. SessionStart<br/>reads inbox .-> B
-    FS -. SessionStart<br/>reads inbox .-> C
-    FS -. SessionStart<br/>reads inbox .-> D
-
-    classDef session fill:#0a0a0a,stroke:#5eead4,color:#fff
-    classDef hub fill:#5eead4,stroke:#5eead4,color:#000
-    class A,B,C,D session
-    class FS hub
+```
+  Claude Code sessions (one per folder)
+  +-----------+  +-----------+  +-----------+
+  | ops/api   |  | dev/app   |  | growth/.. |
+  +-----+-----+  +-----+-----+  +-----+-----+
+        |  MCP: 6 bus_* tools  +  hooks (thin clients)
+        v              v              v
+  +---------------------------------------------+
+  |  centralino  (unix socket, only writer)     |
+  |  SQLite: messages, waits, sessions, wakes   |
+  +----+------------------------------+---------+
+       | wake line                    | ssh <host> '<centralino> consegna'
+       v                              v
+  Onda pane (idle?)            +--------------------+
+  tmux pane (Mac mini)         | centralino, mini   |
+                               | own SQLite, tmux   |
+                               +--------------------+
+  laptop <---- mini's outbox/laptop, collected by the laptop
 ```
 
-No daemon listens. Every session writes to and polls the filesystem independently. The hook only fires on session boundaries — there's nothing running between turns.
+### Sessions: one agent, several workspaces
 
-### Message lifecycle
+An agent name maps to a whole tree of projects, so the same agent often has several sessions open at once, one per folder. An address has two levels:
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Ops as ops session
-    participant FS as ~/.agent-team-os/
-    participant Dev as dev session
+| Address | Goes to |
+|---------|---------|
+| `kai/noi-calendar` | that one session (the slug is the folder name, or `AB_SESSION_SLUG`) |
+| `kai` | its only live session; with several, its home session; otherwise the shared box |
+| `kai@mini/crewmoor` | a session on another machine |
 
-    Ops->>FS: /send dev bug-fix
-    Note over FS: msg-...json written to<br/>inboxes/dev/
-    Note over FS: outbox/YYYY-MM-DD.jsonl<br/>appended (audit)
-    Note over FS: threads/thread-...json<br/>opened
+Each session has its own inbox. Always answer with `bus_reply`: it puts the right session and machine in the address for you.
 
-    Dev->>FS: SessionStart hook
-    FS-->>Dev: inbox banner<br/>"1 pending: brief from ops"
-    Dev->>FS: /read msg-...
-    Note over FS: msg moved to .read/
-    Dev->>FS: /reply msg-... response
-    Note over FS: reply written to inboxes/ops/<br/>thread auto-closed
+### Delegations
 
-    Ops->>FS: SessionStart hook
-    FS-->>Ops: inbox banner<br/>"1 response from dev"
-```
+Every `request`, `brief` and `handoff` declares what it wants, and the bus refuses the send without it:
 
-A request → response cycle never has both sessions live at the same time. Filesystem is the rendezvous.
+- `delega`: you want the outcome back. The wait is registered on your session, in the same transaction as the message, and the `task_id` travels with it.
+- `comunicazione`: nothing comes back, nobody is woken.
 
-### Routing rules
+The life of a delegation:
 
-```mermaid
-flowchart TB
-    ops((ops<br/>hub))
-    dev((dev))
-    growth((growth))
-    secure((secure<br/>isolated))
+1. The delegator calls `bus_send(kind='delega')`. The executor is woken if idle.
+2. If something is missing, the executor asks with `bus_reply(message_type='question')`. The question wakes the delegator and the delegation stays open. Until the answer arrives, the delegation does not hold the executor's Stop.
+3. The delegator answers with `bus_reply`, which wakes the executor.
+4. The executor sends the outcome with `bus_reply` on the delegation. It wakes the delegator.
+5. The delegator consumes it with `bus_close`: `chiuso` closes the wait, `riarma` keeps waiting, `letto` just marks it read.
 
-    ops <--> dev
-    ops <--> growth
-    ops <--> secure
-    dev <--> growth
+A message without a `task_id` is never taken for the return of a delegation. A wait expires at its `response_by`, or after 72 hours without activity, with a notice in the inbox. A delegation through an Onda pane (`onda_agent_prompt`) starts the prompt with `[delega]` or `[comunicazione]`; a hook registers the wait.
 
-    dev x--x secure
-    growth x--x secure
+### La sveglia: when the bus wakes a session
 
-    classDef hub fill:#5eead4,stroke:#5eead4,color:#000
-    classDef peer fill:#0a0a0a,stroke:#5eead4,color:#fff
-    classDef walled fill:#0a0a0a,stroke:#f87171,color:#fff
-    class ops hub
-    class dev,growth peer
-    class secure walled
-```
+A session counts as idle when Onda says so, with nothing typed in the box, for at least 5 seconds. A working session is never interrupted: messages queue up and arrive together at the end of the turn, in one wake. The channel is Onda (`agent.prompt` with `onlyIfIdle`) or tmux (on the Mac mini, which has no GUI login).
 
-Declare blocked pairs in `AGENT_MAP.json` to keep contexts isolated. Cross-impact between walled agents must route through the hub.
+| Arrives | Wakes | Holds the Stop |
+|---|---|---|
+| outcome of your delegation | always | yes |
+| question on your delegation | yes | yes |
+| answer to you as executor | yes | yes |
+| new delegation | yes | yes |
+| `urgent` message | yes, at most once per 15 min per pair | yes |
+| free question | no | yes |
+| communication, event, notice | no | no |
 
-## Install
+Safety net: 10 wakes per hour per session, outcomes excluded. A session that is alive but has no wake channel reads `canale: nessuno` in `bus_status`. A session is alive if Onda reports it, or if it sent a heartbeat in the last 120 seconds.
 
-### Option A — As a Claude Code plugin (recommended)
+### Stop hook (opt-in)
 
-In any Claude Code session:
-
-```
-/plugin marketplace add mariomosca/claude-plugins
-/plugin install agent-team-os@mariomosca-claude-plugins
-```
-
-The plugin registers its hooks, skill and slash commands automatically. On first run it drops a starter `AGENT_MAP.json` in `~/.agent-team-os/` for you to edit.
-
-### Option B — Manual install
-
-If you'd rather not use the plugin marketplace, the bundled installer does the same job:
-
-```bash
-git clone https://github.com/mariomosca/agent-team-os.git ~/agent-team-os
-cd ~/agent-team-os
-./install.sh
-```
-
-The installer:
-
-1. Copies the helper library to `~/.claude/scripts/agent-team-os-lib.sh`
-2. Copies the `SessionStart` hook to `~/.claude/hooks/agent-team-os-load.sh`
-3. Copies the slash commands to `~/.claude/commands/`
-4. Copies the auto-attaching skill to `~/.claude/skills/agent-team-os/`
-5. Creates `~/.agent-team-os/` runtime folders
-6. Drops a starter `AGENT_MAP.json` you can edit
-7. Copies the `bus-band` mod to `~/.claude/mods/bus-band/` (loaded only once you opt in, see below)
-
-Options: `--register-hooks` adds the two hooks to `settings.json` for you; `--host` / `--host-sync` are for [two machines](#two-machines). `CLAUDE_HOME=<dir>` installs into another Claude Code config folder.
-
-In both cases, edit `~/.agent-team-os/AGENT_MAP.json` to map your working directories to agent names.
-
-### Optional: drain-on-Stop hook (v2)
-
-The installer also copies a `Stop` hook (`agent-team-os-stop.sh`) but **does not register it** — it's opt-in because it changes behavior across every session. When enabled, it blocks a session from closing while its inbox still has unhandled messages (with a loop guard so you're never trapped). To turn it on, add to `~/.claude/settings.json`:
+The installer copies a `Stop` hook but does not register it, because it changes behavior across every session. When enabled, it blocks the end of a turn while the inbox holds a message from the "Holds the Stop" column, at most 3 times in a row (then it lets you close). A message leaves the inbox only with an explicit outcome (`bus_close` or `bus_reply`). To turn it on, add to `~/.claude/settings.json`:
 
 ```json
 { "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "~/.claude/hooks/agent-team-os-stop.sh" }] }] } }
 ```
 
-Test it isolated first — see [`docs/agentic-v2/SETTINGS-DIFF.md`](./docs/agentic-v2/SETTINGS-DIFF.md). See also [`AGENTS.md`](./AGENTS.md).
+Test it isolated first, see [`docs/agentic-v2/SETTINGS-DIFF.md`](./docs/agentic-v2/SETTINGS-DIFF.md).
+
+## Install
+
+Requires `jq` and `uv`.
+
+```bash
+git clone https://github.com/mariomosca/agent-team-os.git ~/agent-team-os
+cd ~/agent-team-os
+./install.sh --daemon --register-hooks
+```
+
+The installer is idempotent. It:
+
+1. Copies the thin hooks to `~/.claude/hooks/` and the client script `agent-team-os-centralino.py` to `~/.claude/scripts/`
+2. Copies the slash commands to `~/.claude/commands/` and the skill to `~/.claude/skills/agent-team-os/`
+3. Creates `~/.agent-team-os/` and drops a starter `AGENT_MAP.json` (never overwritten)
+4. Copies the `bus-band` mod to `~/.claude/mods/bus-band/` (loaded only once you opt in, see below)
+5. With `--daemon`: starts the centralino (launchd when there is a GUI login, a cron line on a headless Mac)
+6. With `--register-hooks`: adds SessionStart, UserPromptSubmit, SessionEnd and the PreToolUse hook on `onda_agent_prompt` to `settings.json` (backup first). The Stop hook stays opt-in.
+
+`CLAUDE_HOME=<dir>` installs into another Claude Code config folder. The options of the old file bus (`--file-bus`, `--sveglia`, `--host-sync`) are rejected.
+
+Then:
+
+1. Edit `~/.agent-team-os/AGENT_MAP.json` to map your working directories to agent names.
+2. Configure the MCP server [`agent-bus-mcp`](https://github.com/mariomosca/agent-bus-mcp) in Claude Code under the name `agent-bus`.
+
+To stop the centralino use launchd or the pid in `centralino.pid`, never `pkill -f centralino` (it also kills other instances).
 
 ### Optional: the `bus-band` mod (Claude Code 2.1.287+)
 
-A [mod](https://code.claude.com/docs/en/plugins/mods/overview) that keeps this session's pending messages in a band above the prompt and raises a toast when an urgent or high-priority one arrives. Read-only, no network. Turn it on for every session:
+A [mod](https://code.claude.com/docs/en/plugins/mods/overview) that keeps this session's pending messages in a band above the prompt and raises a toast when an urgent or high-priority one arrives. Read-only: it reads the centralino's view. Turn it on for every session:
 
 ```json
 { "env": { "CLAUDE_CODE_PLUGIN_DIRS": "~/.claude/mods/bus-band" } }
@@ -209,63 +164,48 @@ or for one session with `claude --plugin-dir <repo>/mods/bus-band`. Details: [`m
 
 ## Two machines
 
-One bus across two Macs — say a laptop you close and a Mac mini that stays on — when only one of them can open SSH to the other. Same user, same paths, same `AGENT_MAP.json` on both. No server, no new daemon besides one launchd job on the laptop: the bus is still files.
+One bus across two Macs, say a laptop you close and a Mac mini that stays on, when only one of them can open SSH to the other. Each machine runs its own centralino, with its own SQLite, from the same code.
 
-**Addresses.** Add `@host`: `kai@mini` reaches every session of `kai` on the mini, `kai@mini/crewmoor` one session. Without `@host` a message goes to the agent's own host (`agents.<a>.host`; the hub agent, `cc_awareness.hub`, lives on the host marked `hub`) or stays on the machine you are on. A host not in `hosts` is a clear error.
+**Addresses.** Add `@host`: `kai@mini` reaches the sessions of `kai` on the mini, `kai@mini/crewmoor` one session. Without `@host` a message goes to the agent's own host (`agents.<a>.host`), then to the hub host, then stays on this machine.
+
+**Configuration.** On the hub, `AGENT_MAP.json` lists the hosts, with the command that runs the other machine's centralino:
 
 ```json
 "hosts": {
   "laptop": { "hub": true },
-  "mini":   { "ssh": "mini", "bus_home": "/Users/me/.agent-team-os" }
+  "mini":   { "ssh": "mini", "centralino": "<command that runs the mini's centralino>" }
 }
 ```
 
-Each machine's own name is in `~/.agent-team-os/HOST` (`install.sh --host mini`); the hub needs none. Keeping it out of the map lets the map stay byte-identical on both machines.
+Each remote machine's own name is in `~/.agent-team-os/HOST` (`./install.sh --host mini --daemon --register-hooks` on the mini; the hub needs none).
 
-**Transport.** Only the machine that has an `ssh` target for the other one ever connects:
+**Transport.**
 
 | From → to | How |
 |---|---|
-| laptop → mini | SSH, atomic write (`tmp` + `mv`) into the mini's inbox |
-| laptop → mini, mini down | kept in the laptop's `outbox/mini/`, pushed at the next collection; the send says `queued`, it does not fail |
-| mini → laptop | written to the mini's `outbox/laptop/`; the laptop pulls it |
-| same machine | local, as before |
+| laptop → mini | `ssh <host> '<centralino> consegna'`, the mini's own centralino writes it |
+| laptop → mini, mini down | kept in the laptop's `remote_queue`; the send says `queued=true`, it does not fail |
+| mini → laptop | waits in the mini's `outbox/laptop/` until the laptop's centralino collects it |
 
-`outbox/<host>/` always means *not yet delivered to `<host>`* and mirrors the inbox layout (`<agent>/[@slug/]msg-*.json`), so the session travels in the path. Messages carry the sender's machine in `context.host` (additive, schema in [`schema/bus-message.schema.json`](./schema/bus-message.schema.json)), so `/reply` and the MCP `reply_to` answer `kai@mini/crewmoor` instead of a local `kai`. Thread ids travel with the message.
-
-**Collection.** On the laptop, `/inbox`, `/bus`, the MCP `bus_inbox`/`bus_status` and the `UserPromptSubmit` hook collect when the last round is older than 30 s (the hooks in the background, so a prompt never waits on SSH). One round = push what is queued for the mini, then pull the mini's `outbox/laptop/` in one `tar` over SSH: copy into the local inbox, verify, and only then delete on the mini. A message already delivered (or already archived) is not delivered twice; an unreadable one stays on the mini. A launchd job (`com.agent-team-os.raccolta-mini`, every 60 s, from `install.sh --host-sync`) covers sessions that never touch the bus. SSH runs with `BatchMode=yes`, `ConnectTimeout=5` and a 10-minute `ControlMaster`, so a round costs milliseconds while the mini is up and at most 5 s when it is not.
-
-**Status.** `/bus` and `bus_status` list the mini's live sessions (its registry read over SSH, cached 20 s, last known list kept while it is down), with their `agent@host/slug` address, what is queued for it and the last collection.
-
-**Install.**
-
-```bash
-# on the mini (Claude Code config in ~/.config/claude-mini)
-CLAUDE_HOME=~/.config/claude-mini ./install.sh --host mini --register-hooks
-# on the laptop
-./install.sh --host-sync
-```
-
-Routing rules and cc-awareness are unchanged: the host changes the transport, not who may talk to whom.
+Only the laptop ever opens SSH. `bus_status` lists the mini's live sessions with the age of the last known state.
 
 ### Il custode
 
-The machine that stays on runs agents with nobody watching, so when it breaks nobody sees it: an expired Claude login, a bus MCP server that starts without tools. The custode is not an agent, it is a script: every morning at 7:00 (launchd) it checks the host, writes a report and, if something is wrong, sends it on Telegram with the command that fixes it.
+The machine that stays on runs agents with nobody watching, so when it breaks nobody sees it: an expired Claude login, a bus MCP server that starts without tools. The custode is not an agent, it is a script (`scripts/agent-team-os-custode.sh`): every morning at 7:00 (launchd) it checks the host, writes a report and, if something is wrong, sends it on Telegram with the command that fixes it. It runs only on a remote host; on the hub it says so and exits 0.
 
-| Check | ok / warn / fail |
+| Check | What it looks at |
 |---|---|
-| `claude` | `claude -p "Rispondi solo: OK" --model haiku` with the host's `CLAUDE_CONFIG_DIR`, 120 s. **fail** on no answer or "login"/"expired" in the output |
-| `bus-mcp` | the `agent-bus` server (command read from `$CLAUDE_CONFIG_DIR/.claude.json`, as Claude Code starts it) answers `initialize` + `tools/list` with its 8 tools (v2.6: bus_expect, bus_waits). **fail** with the last stderr line or the missing tools |
-| `python` | the Python `uv` resolves in the server folder: **fail** if >= 3.15, **warn** if `.python-version` is missing |
-| `coda` | messages waiting in `outbox/<hub>/`: **warn** older than 1 h, **fail** older than 24 h (the laptop has not collected) |
 | `identita` | `HOST` set, `AGENT_MAP.json` valid, `hosts.<HOST>` present |
-| `repo` | every git folder under `~/Projects` (depth 1-2) on a branch with an upstream and no tracked changes: `git pull --ff-only`. Dirty or diverged: **warn**, not touched. Never `reset`, never `stash` |
+| `claude` | `claude -p` answers with the host's `CLAUDE_CONFIG_DIR`; **fail** on no answer or an expired login |
+| `centralino` | the host's centralino answers `status` |
+| `bus-mcp` | the `agent-bus` MCP server answers `initialize` + `tools/list` with its tools |
+| `python` | the Python `uv` resolves in the server folder |
+| `coda` | messages waiting in `outbox/<hub>/`: **warn** older than 1 h, **fail** older than 24 h (the laptop has not collected) |
+| `repo` | git folders under `~/Projects` get `git pull --ff-only` if clean; dirty or diverged: **warn**, never touched |
 | `disco` | **warn** under 20 GB free, **fail** under 5 |
-| `launchd` | every `com.portineria.*` / `com.agent-team-os.*` plist in `~/Library/LaunchAgents` is loaded, else **warn** |
+| `launchd` | the `com.agent-team-os.*` jobs in `~/Library/LaunchAgents` are loaded |
 
-**Registry cleanup (v2.7, `--registro`)**: every 10 min (crontab on the headless mini, a second launchd job `com.agent-team-os.custode-registro` elsewhere) the custode moves out of `registry/<agent>.d/` the sessions of this machine whose `pid` is dead (or, with no pid, `last_seen` older than `AB_SESSION_TTL_MIN`) into `registry/.stale-<YYYYMMDD>/<agent>.d_<slug>.json`, so a crash or a closed tmux leaves no ghost at a desk in Orbit's Ufficio, and sets `active:false` on `<agent>.json` when no session is left. One line per removal in `logs/custode.log`; `--registro --dry-run` only lists. The same cleanup (`ab_registry_prune`) also runs inside the wake's tick every 10 min (`AB_WAKE_REGISTRO_S`, 600; 0 = off), which is how the laptop gets it: the `com.agent-team-os.sveglia` job, log `logs/sveglia.log`.
-
-Telegram: token and chat from `~/.config/portineria-mini/telegram.env` (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`), the token goes to `curl` on stdin. All ok means silence, except one "tutto a posto" on Monday. No Telegram file: said in the report, the exit code still follows the checks.
+Telegram: token and chat from `~/.config/portineria-mini/telegram.env` (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`). All ok means silence, except one "tutto a posto" on Monday.
 
 ```bash
 # install on the mini (needs --host, or HOST already set to a non-hub host)
@@ -273,36 +213,15 @@ CLAUDE_HOME=~/.config/claude-mini ./install.sh --host mini --custode
 CLAUDE_HOME=~/.config/claude-mini ./install.sh --custode --uninstall   # remove it
 # by hand (--no-telegram to just look, --json for the JSON)
 ~/.config/claude-mini/scripts/agent-team-os-custode.sh --no-telegram
-~/.config/claude-mini/scripts/agent-team-os-custode.sh --registro --dry-run   # ghosts in the registry
-jq '.status, (.checks[] | select(.status != "ok"))' ~/.agent-team-os/hosts/self/custode.json
 ```
 
-Exit code `0` ok, `1` warn, `2` fail. `hosts/self/custode.json` is `{at, host, status, checks: [{name, status, detail, fix}], notify: {sent, note}}`, fails first, written atomically. Log in `~/.agent-team-os/logs/custode.log`. On the hub (no `HOST`, or `HOST` = the hub) it says so and exits 0.
-
-## La sveglia: deleghe dichiarate e ogni ritorno sveglia (v2.8)
-
-A message to a session that is alive but idle used to wait in the inbox until somebody woke that session by hand. Since v2.8 (plan BS21) the bus knows who delegated what to whom — between any two agents, no roles — and wakes whoever waits on every return:
-
-```
-Ritorno sul task t-20261021-ab12cd (spike parser) da kai/f3 (bus_read msg-…): leggilo e gestisci il messaggio con bus_gestisci (chiuso, riarma, risposto o letto).
-```
-
-- **Declare it**: every `request`, `brief` and `handoff` carries `kind` — `delega` (you want the outcome back) or `comunicazione` (nothing comes back). No default: `bus_send` / `ab_write_message` refuse the send without it (lib exit 5), with an error that explains the choice. `response`, `question`, `event` take none. Through an Onda pane (`onda_agent_prompt`): start the prompt with `[delega]` or `[comunicazione]`; a PreToolUse hook registers the wait and appends the line with the `task_id`, and refuses a long prompt that declares neither.
-- **A delegation is a wait**: `kind=delega` writes `waits/<agent>/@<slug>/<task_id>.json` on the sending session before delivery, puts the `task_id` on the message and answers `attesa registrata t-…`. `/delegate` is the shortcut.
-- **Hooking**: a return written as a new message (no `task_id`, no `in_reply_to`) gets the `task_id` of the open delegation anyway — reply to the delegation, then same executor session, same thread, same agent when the wait is unique. Several candidates and nothing decisive: the message is marked `da agganciare` and the receiver picks. Done by the wake on the receiving side, so it works across the two machines.
-- **Every return wakes**: the wait stays open after each wake. A session that is working is never interrupted: returns queue up and arrive together in the next wake (one wake, N messages, across tasks). The delegator's `response` wakes the executor when it is idle (it holds the delegation or asked a question on the task).
-- **A new delegation wakes its recipient** when idle (approved by Mario, 21/10): addressed to a session (or to an agent with a single live session here), priority not `low`, the session has no `waits/<agent>/@<slug>/.no-wake`; once per delegation, inside the caps. Delegations through an Onda pane are already in the prompt.
-- **Explicit consumption**: a message leaves the inbox only with an outcome — `bus_gestisci(message_id, esito)` / `ab_gestisci <msg> <esito>`: `chiuso` (done, wait closed), `riarma` (keep waiting, nothing sent), `risposto` (answer with the same `task_id`, wakes the executor, wait stays open), `letto`. The Stop hook counts what has no outcome and asks for one.
-- **Anti-chain**: caps per hour — 6 wakes per session, 4 per task, 6 per pair of agents; past a cap the message waits with `pending_wake = tetto_*` and the band flags it. A wait with no movement for 72 h expires with a notice. Safety net: a `high`/`urgent` message with `requires_response` wakes an idle recipient even outside a delegation, at most once every 15 minutes per pair.
-- **Measure**: `agent-team-os-wake.py report` — returns served (woken or read first, target >95%), delegations open/closed/expired, caps hit, messages unhandled for over an hour. Written every Monday to `reports/`, left in the hub agent's inbox; on the mini the custode adds it to its Monday Telegram.
-- **Channels**: Onda (`agent.prompt` with `onlyIfIdle`; needs an Onda that writes `hasText` in `sessions.json`) and tmux (`capture-pane` + `send-keys`, for the Mac mini). The pane is looked up at wake time: by Claude session id, pane, then agent/slug, live entries first, then entries Onda marked `exited` after 30 min of silence (Onda's own guard refuses with `no_session` if the session really ended). No channel for 5 minutes (`AB_WAKE_NOCHANNEL_S`): one `sveglia-senza-canale` notice, priority high, in the hub agent's inbox, instead of a silent postponement.
-- **Where**: `scripts/agent-team-os-wake.py` (system python3, stdlib), every 10 s via launchd (`./install.sh --sveglia`; crontab on a host with no GUI login), plus one round right after every send. Files `waits/<agent>/@<slug>/<task_id>.json` ([schema](schema/bus-wait.schema.json)), log `logs/sveglia.log`. Visible with `bus_waits` and in the bus-band ("Aspetto 2 deleghe"). Messages and waits from v2.6/v2.7 keep working: old closed waits stay closed.
+Exit code `0` ok, `1` warn, `2` fail. The JSON report is `~/.agent-team-os/hosts/self/custode.json`, the log `~/.agent-team-os/logs/custode.log`.
 
 ## Example: define your agents
 
 ```json
 {
-  "version": "1.2",
+  "version": "3.0",
   "rules": [
     { "pattern": "/Users/me/work",      "match": "prefix", "agent": "ops" },
     { "pattern": "/Users/me/projects",  "match": "prefix", "agent": "dev" },
@@ -319,93 +238,79 @@ Ritorno sul task t-20261021-ab12cd (spike parser) da kai/f3 (bus_read msg-…): 
 
 ## Example: send a message
 
-From your `ops` session:
+From your `ops` session, ask the model to delegate (or use the slash command):
 
 ```
-/send dev bug-fix
+/delegate dev bug-fix
 ```
 
-The wizard collects payload, deadline, context references and writes a JSON message to `~/.agent-team-os/inboxes/dev/`.
+The model previews the message (to, type, `kind`, priority, subject, deadline), and after your yes calls `bus_send(kind='delega')`. You get back a `task_id`.
 
-Next time you open a Claude Code session in `/Users/me/projects/...`, the `SessionStart` hook prints:
+The `dev` session is woken if idle, or sees at the next `SessionStart`:
 
 ```
 === Agent Team OS ===
 You are dev. Inbox: 1 pending.
-  - msg-20260520T091812Z-x7q3  [normal] brief/bug-fix from ops  (by 2026-05-23T18:00:00+02:00)
 ```
 
-Then:
+It reads the message with `bus_read`, works, and answers:
 
 ```
-/read msg-20260520T091812Z-x7q3
+bus_reply(message_id=<the delegation>, message_type='response', summary='...')
 ```
 
-…shows the full payload, resolves `context_refs` (file paths, GitHub issues, knowledge graph nodes), and moves the message to `.read/`.
+The reply wakes `ops`, which consumes it with `bus_close(esito='chiuso')`, closing the wait.
 
-When done:
-
-```
-/reply msg-20260520T091812Z-x7q3 response
-```
-
-…closes the thread and notifies the sender.
-
-## Message schema (v1.0)
+## Message fields
 
 ```json
 {
-  "id": "msg-<iso-compact>-<rand8>",
-  "version": "1.0",
-  "from": "ops",
-  "to": "dev",
-  "thread_id": "thread-YYYYMMDD-<rand>",
-  "in_reply_to": null,
-  "type": "request | response | brief | handoff | question | review-request | event | confirm | decline",
+  "id": "msg-...",
+  "from": "ops/api",
+  "to": "dev/app",
+  "type": "request | brief | handoff | event | response | question",
+  "kind": "delega | comunicazione",
   "intent": "bug-fix | draft-post | code-review | ...",
   "priority": "urgent | high | normal | low",
-  "payload": { },
+  "thread_id": "thread-...",
+  "in_reply_to": null,
+  "task_id": "t-...",
+  "response_by": "iso-8601",
+  "payload": { "summary": "...", "details": "..." },
   "context_refs": [
     "file:///abs/path",
     "gh://owner/repo/issues/123",
     "graphiti://node/<uuid>",
     "wiki://<slug>"
-  ],
-  "requires_response": true,
-  "response_by": "iso-8601",
-  "ts": "iso-8601"
+  ]
 }
 ```
 
-Constraints: payload under 10KB, no secrets, ISO-8601 timestamps with timezone, heavy content lives behind `context_refs`.
-
-## Routing rules
-
-You can declare blocked pairs in `AGENT_MAP.json` to keep contexts isolated — for example, prevent a personal content agent from messaging a work-only engineering agent. The `ab_write_message` helper refuses messages that violate the rules (exit code 2).
+`kind` is required for `request`, `brief` and `handoff`, absent on the rest. Constraints: payload under 10KB, no secrets, heavy content lives behind `context_refs`. The authoritative field list is in [`docs/PROTOCOL-v3.md`](./docs/PROTOCOL-v3.md) §4.
 
 ## Slash commands
 
+They are shortcuts that tell the model which MCP tool to call.
+
 | Command | What it does |
 |---------|--------------|
-| `/bus`     | Show roster and live sessions with pending counts |
-| `/inbox`   | List pending messages for this session (`--all` for every session of the agent) |
-| `/read <id>` | Read a message, resolve context_refs, consume it with an outcome (v2.8) |
-| `/send <to> <intent>` | Wizard to compose a new message (`<to>` = `agent` or `agent/slug`) |
-| `/reply <id> <type>`  | Reply to a message inside its thread |
+| `/bus`     | Show roster and live sessions |
+| `/inbox`   | List pending messages for this session and the delegations still waiting (`--all` for every session of the agent) |
+| `/read <id>` | Read a message, resolve context_refs, consume it with an outcome |
+| `/send <to> <intent>` | Compose a new message (`<to>` = `agent`, `agent/slug` or `agent@host/slug`) |
+| `/reply <id> <type>`  | Reply inside the thread (`response` or `question`) |
 | `/handoff <to>` | Hand off the current task to another agent |
-| `/delegate <to> <intent>` | Delegate and wait for the outcome (`kind=delega`, v2.8) |
+| `/delegate <to> <intent>` | Delegate and wait for the outcome (`kind=delega`) |
 | `/thread <id>`  | Show full thread history |
 
 ## Status
 
-- **v1.0**: file-based protocol, bash helpers, slash commands, `SessionStart` hook — battle-tested across five concurrent agents in production since May 2026.
-- **v1.4**: session identity — `agent/slug` addressing, per-session inbox, registry and drain cursor. Written after two sessions of the same agent were found stealing each other's messages.
-- **v3**: centralino with SQLite as the single source, one liveness rule, one wake table, six MCP actions, cleanup. GOD mode, TaskProvider, harvest, the workspace filter, `routing_rules.deny` and the flat registry are gone. See [`docs/PROTOCOL-v3.md`](./docs/PROTOCOL-v3.md).
-- **v2.8**: declared delegations (`kind`), automatic waits, hooking of returns, a wake on every return, explicit consumption (`bus_gestisci`), caps, safety net for urgent messages, weekly measure.
-- **v2.2**: `bus-band` shows the team — who is stuck (text left in the prompt box, waiting for a permission) and a button to put an out-of-mosaic workspace back in Onda.
-- **v2.1**: `bus-band` mod — the inbox as a live band above the prompt, built on Claude Code mods the day after they shipped.
-- **MCP server**: [`agent-bus-mcp`](https://github.com/mariomosca/agent-bus-mcp) exposes the bus as six typed tools (v3: `bus_send`, `bus_reply`, `bus_close`, `bus_inbox`, `bus_read`, `bus_status`), session addressing included.
-- **v1.1+**: realtime delivery, conductor pattern, active driver, autonomous mode with guard-rails — see [ROADMAP.md](./ROADMAP.md).
+- **v3 (October 2026)**: the centralino with SQLite as the single source, one liveness rule, one wake table, six MCP tools. The file bus (`lib.sh`, `wake.py`, `collect.sh`), GOD mode, TaskProvider, harvest, the workspace filter, `routing_rules.deny` and the flat registry are gone; their history is in git (tag `br24-pre-rimozione`). See [`docs/PROTOCOL-v3.md`](./docs/PROTOCOL-v3.md) and [`docs/CENTRALINO.md`](./docs/CENTRALINO.md).
+- **v2.8**: declared delegations (`kind`), automatic waits, a wake on every return, explicit consumption.
+- **v2.1/v2.2**: the `bus-band` mod, with the team view.
+- **v1.0 – v1.4**: the original file-based protocol, battle-tested across five concurrent agents since May 2026, and session addressing (`agent/slug`).
+- **MCP server**: [`agent-bus-mcp`](https://github.com/mariomosca/agent-bus-mcp).
+- Older ideas (conductor pattern, autonomous mode with guard-rails): [ROADMAP.md](./ROADMAP.md).
 
 ## Why not just use one Claude Code instance?
 
@@ -413,7 +318,7 @@ Because context is finite. One instance per role — engineering, marketing, ops
 
 ## Contributing
 
-PRs welcome. The schema is versioned (`version: "1.0"`) so backwards-compatible additions are easy. Breaking changes bump the major.
+PRs welcome. The protocol is documented in [`docs/PROTOCOL-v3.md`](./docs/PROTOCOL-v3.md); the daemon has its own tests in `centralino/tests/` and a simulation bench (`centralino sim`). Breaking changes bump the major.
 
 ## License
 
@@ -421,4 +326,4 @@ PRs welcome. The schema is versioned (`version: "1.0"`) so backwards-compatible 
 
 ---
 
-Built by [Mario Mosca](https://github.com/mariomosca) — AI Transformation Manager & indie builder. Originally extracted from a personal multi-agent setup running five Claude Code sessions in parallel.
+Built by [Mario Mosca](https://github.com/mariomosca) — IT Senior Manager & indie builder. Originally extracted from a personal multi-agent setup running five Claude Code sessions in parallel.
