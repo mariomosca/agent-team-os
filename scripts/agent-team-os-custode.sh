@@ -6,15 +6,11 @@
 # Non e' un agente: controlla, scrive un report e avvisa su Telegram.
 #
 #   agent-team-os-custode.sh [--no-telegram] [--json]
-#   agent-team-os-custode.sh --registro [--dry-run]
 #
-# --registro (v2.7, OR18-F3.3): solo la pulizia del registro, ogni 10 min da cron.
-# Toglie da registry/<agente>.d/ le sessioni con pid morto (SessionEnd non e'
-# girato: crash, tmux chiuso, riavvio) e mette active:false su <agente>.json
-# quando non ne restano. Log in logs/custode.log. Gira anche sul laptop a mano.
+# Il registro lo tiene il centralino (BR24-F5.7): la vecchia pulizia --registro non c'e' piu'.
 #
 # Controlli (ok|warn|fail, ciascuno con il comando per sistemare): Claude
-# risponde, il server MCP del bus espone i suoi tool, il Python scelto da uv,
+# risponde, il centralino del bus risponde, il server MCP del bus espone i suoi tool, il Python scelto da uv,
 # la coda verso il laptop, l'identita' sul bus, i repo sotto ~/Projects
 # (git pull --ff-only solo se puliti), il disco, i job launchd.
 #
@@ -32,33 +28,26 @@
 set -uo pipefail
 trap '' PIPE
 
-LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agent-team-os-lib.sh"
-# shellcheck source=/dev/null
-source "$LIB"
+AB_HOME="${AB_HOME:-$HOME/.agent-team-os}"
+AB_MAP="$AB_HOME/AGENT_MAP.json"
+iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+file_age() { local m; m=$(stat -f %m "$1" 2>/dev/null) || { echo 999999; return; }; echo $(( $(date +%s) - m )); }
 
 # launchd parte con un PATH minimo: aggiungo in coda dove vivono claude, uv, jq.
 PATH="$PATH:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin"
 
-TELEGRAM=1; PRINT_JSON=0; REGISTRO=0; DRY=""
+TELEGRAM=1; PRINT_JSON=0
 for a in "$@"; do
   case "$a" in
     --no-telegram) TELEGRAM=0 ;;
     --json) PRINT_JSON=1 ;;
-    --registro) REGISTRO=1 ;;
-    --dry-run) DRY="--dry-run" ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "Opzione sconosciuta: $a (vedi --help)" >&2; exit 64 ;;
   esac
 done
 
-if (( REGISTRO )); then
-  out=$(ab_registry_prune $DRY)
-  [[ -n "$out" ]] && sed "s/^/$(ab_iso_now) /" <<<"$out"
-  exit 0
-fi
-
-SELF=$(ab_host_self)
-HUB=$(ab_hub_host)
+SELF=$(head -1 "$AB_HOME/HOST" 2>/dev/null | tr -d '[:space:]')
+HUB=$(jq -r '(.hosts // {}) | to_entries[] | select(.value.hub == true) | .key' "$AB_MAP" 2>/dev/null | head -1)
 if [[ ! -s "$AB_HOME/HOST" || -z "$SELF" || "$SELF" == "$HUB" || "$SELF" == "laptop" ]]; then
   echo "custode: non sono un host remoto (HOST='${SELF}', hub='${HUB:-laptop}'). Niente da fare."
   exit 0
@@ -76,7 +65,7 @@ mkdir -p "$STATE"
 # Un custode alla volta: launchd e una mano possono partire insieme.
 LOCK="$STATE/custode.lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
-  if [[ $(ab_file_age "$LOCK") -lt 900 ]]; then
+  if [[ $(file_age "$LOCK") -lt 900 ]]; then
     echo "custode: gia' in corso (lock $LOCK)." >&2; exit 0
   fi
   rm -rf "$LOCK"; mkdir "$LOCK" 2>/dev/null || true
@@ -118,7 +107,7 @@ check_identity() {
       "scp laptop:~/.agent-team-os/AGENT_MAP.json $AB_MAP   # stesso file su tutte e due le macchine"
     return
   fi
-  if ! ab_host_exists "$SELF"; then
+  if ! jq -e --arg h "$SELF" '(.hosts // {}) | has($h)' "$AB_MAP" >/dev/null 2>&1; then
     add identita fail "HOST=$SELF ma \"hosts.$SELF\" manca in AGENT_MAP.json" \
       "ricopia AGENT_MAP.json dal laptop (deve contenere hosts.$SELF)"
     return
@@ -208,7 +197,7 @@ check_mcp() {
   fi
   local names want missing="" n
   names=$(jq -Rr 'fromjson? | select(.id == 2) | .result.tools[]?.name' "$w/out" | sort -u)
-  for want in bus_archive bus_expect bus_inbox bus_read bus_send bus_status bus_thread bus_waits; do
+  for want in bus_send bus_reply bus_close bus_inbox bus_read bus_status; do
     printf '%s\n' "$names" | grep -qx "$want" || missing="$missing $want"
   done
   n=$(printf '%s\n' "$names" | grep -c . )
@@ -251,7 +240,7 @@ check_queue() {
   old1=0; old24=0
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
-    a=$(ab_file_age "$f")
+    a=$(file_age "$f")
     (( a > oldest )) && oldest=$a
     (( a > 3600 )) && old1=$((old1+1))
     (( a > 86400 )) && old24=$((old24+1))
@@ -331,7 +320,20 @@ check_disk() {
   fi
 }
 
-# ---------- 8. launchd ----------
+# ---------- 8. centralino (BR24-F5.7) ----------
+
+CENTRALINO_DIR="${CUSTODE_CENTRALINO_DIR:-$PROJECTS/01-Building/agent-team-os/centralino}"
+check_centralino() {
+  local fix="cd $(dirname "$CENTRALINO_DIR") && ./install.sh --host $SELF --daemon"
+  if run_timeout 30 "$TMPD/c.out" "$TMPD/c.err" \
+       uv run --frozen --project "$CENTRALINO_DIR" centralino status --timeout 10; then
+    add centralino ok "$(jq -r '.stats.result | "\(.messaggi) messaggi, \(.pending) in casella, \(.sessioni_vive) sessioni vive"' "$TMPD/c.out" 2>/dev/null)"
+  else
+    add centralino fail "non risponde: $(last_line "$TMPD/c.err")" "$fix"
+  fi
+}
+
+# ---------- 9. launchd ----------
 
 check_launchd() {
   local p label n=0 bad=0 uid; uid=$(id -u)
@@ -352,6 +354,7 @@ check_launchd() {
 
 check_identity
 check_claude
+check_centralino
 resolve_mcp
 check_mcp
 check_python
@@ -361,7 +364,7 @@ check_disk
 check_launchd
 
 STATUS=$(jq -rs 'map(.status) | if index("fail") then "fail" elif index("warn") then "warn" else "ok" end' "$CHECKS")
-NOW=$(ab_iso_now)
+NOW=$(iso_now)
 jq -s --arg at "$NOW" --arg host "$SELF" --arg st "$STATUS" \
   '{at:$at, host:$host, status:$st,
     checks: (sort_by({"fail":0,"warn":1,"ok":2}[.status]))}' "$CHECKS" > "$TMPD/custode.json"
@@ -415,11 +418,7 @@ if [[ $TELEGRAM -eq 1 ]]; then
   elif [[ "${CUSTODE_WEEKDAY:-$(date +%u)}" == "1" ]]; then
     stamp="$STATE/custode-weekly"
     if [[ "$(cat "$stamp" 2>/dev/null)" != "$(date +%Y-%m-%d)" ]]; then
-      # BS21-F3.2: la misura della sveglia di questa macchina, calcolata ora.
-      sveglia=$(AB_HOME="$AB_HOME" /usr/bin/python3 -I "$(ab_wake_script)" report 2>/dev/null)
-      send_telegram "$HOST_LABEL, custode del lunedi': tutto a posto, $REPO_UPDATED repo aggiornati.${sveglia:+
-
-$sveglia}"
+      send_telegram "$HOST_LABEL, custode del lunedi': tutto a posto, $REPO_UPDATED repo aggiornati."
       [[ "$NOTIFY_SENT" == true ]] && date +%Y-%m-%d > "$stamp"
     fi
   fi

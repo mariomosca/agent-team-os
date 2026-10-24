@@ -442,9 +442,7 @@ modello per usare le tool MCP (nessun Bash). `/god` sparisce.
 
 ### 13.4 Cosa resta per il mini
 
-Il mini non ha un centralino: tiene il bus a file (lib, `wake.py` con tmux, custode). Il laptop gli
-consegna via SSH e raccoglie dal suo `outbox/laptop/` come oggi, ma dentro il centralino. Per questo
-`lib.sh`, `wake.py`, `collect.sh` e `custode.sh` restano nel repo; dal laptop non si usano più.
+Superato da BR24-F5.7: anche il mini ha il suo centralino (§17).
 
 ## 14. Tetto sugli esiti: nessuno, c'è l'accorpamento
 

@@ -1,4 +1,4 @@
-"""Hook v3 (centralino/hooks) lanciati come li lancia Claude Code, contro un daemon vero."""
+"""Hook v3 (hooks/) lanciati come li lancia Claude Code, contro un daemon vero."""
 
 import json
 import os
@@ -12,7 +12,7 @@ import pytest
 
 from centralino.client import call
 
-HOOKS = Path(__file__).resolve().parents[1] / "hooks"
+HOOKS = Path(__file__).resolve().parents[2] / "hooks"
 
 
 @pytest.fixture

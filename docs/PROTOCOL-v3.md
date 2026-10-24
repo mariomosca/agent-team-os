@@ -13,7 +13,7 @@ Il dettaglio di implementazione (API sul socket, schema SQL, modalità ombra) st
 | **MCP `agent-bus`** | client sottile: sei tool per gli agenti (`bus_send`, `bus_reply`, `bus_close`, `bus_inbox`, `bus_read`, `bus_status`). Manda al centralino i dati grezzi del chiamante (cwd, pid, pannello) e ne riceve l'identità risolta. Ogni 60 secondi manda un heartbeat |
 | **Hook** (SessionStart, UserPromptSubmit, Stop, SessionEnd, PreToolUse su `onda_agent_prompt`) | sottili: chiamano il centralino e non bloccano mai se non risponde |
 | **Onda** | il terminale. Scrive `onda/sessions.json` (stato di ogni pannello) e riceve la riga di sveglia (`agent.prompt` con `onlyIfIdle`). Non si tocca |
-| **Mac mini** | resta sul bus a file (`lib.sh`, `wake.py`, custode) perché non ha il centralino. Il laptop gli consegna via SSH e raccoglie dal suo `outbox/laptop/` |
+| **Mac mini** | ha il suo centralino, stesso codice (BR24-F5.7): sveglia via tmux, avviato da cron perché il mini non ha login grafico. Il laptop gli consegna con `ssh mini '<centralino> consegna'` e raccoglie dal suo `outbox/laptop/` |
 | **Cloud** (`alita@cloud`) | senza SSH: i suoi messaggi arrivano con la sync del repo e il centralino li accoglie come messaggi di un altro host |
 | **Orbit e bus-band** | leggono la vista globale in sola lettura del centralino (sessioni, attese, messaggi). Non decidono niente |
 
@@ -152,7 +152,7 @@ Tutto ciò che segue non aveva lettori o ne aveva di diretti dall'implementazion
 | cinque implementazioni degli indirizzi | un solo modulo |
 
 Alias delle vecchie tool (`bus_gestisci`, `bus_archive`, `bus_waits`, `bus_expect`, `bus_thread`) fino al
-31 ottobre 2026. `lib.sh`, `wake.py`, `collect.sh` e `custode.sh` restano nel repo per il mini.
+31 ottobre 2026. `lib.sh`, `wake.py` e `collect.sh` sono stati tolti con BR24-F5.7, quando anche il mini è passato al centralino; il custode resta, senza lib.
 
 ## 12. Migrazione e ritorno
 

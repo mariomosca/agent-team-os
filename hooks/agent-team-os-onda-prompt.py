@@ -1,38 +1,27 @@
 #!/usr/bin/env python3
-"""agent-team-os-onda-prompt.py — PreToolUse su onda_agent_prompt (bus v2.8, BS21-F1.4).
+"""agent-team-os-onda-prompt.py — PreToolUse su onda_agent_prompt, bus v3 (BR24-F4.2).
 
-Una delega passata scrivendo nel pane di un'altra sessione (onda_agent_prompt)
-non passa dal bus, quindi nessuno registrava l'attesa. Questo hook chiede la
-stessa scelta esplicita di bus_send:
-
-  [delega] <testo>         registra l'attesa sulla sessione che scrive (task_id,
-                           chi esegue = la sessione del pane di destinazione) e
-                           aggiunge in coda la riga su come rispondere col task_id
+Stesse regole della v2.8 (BS21-F1.4, BR24-F2.8), ma l'attesa la registra il centralino:
+  [delega] <testo>         attesa sulla sessione che scrive, riga col task_id in coda
   [comunicazione] <testo>  nessuna attesa: il marcatore si toglie e basta
-  prompt gia' con task_id  passa (bus_expect fatto a mano, prompt_line in coda);
-                           con [delega] davanti: niente seconda attesa ne' seconda riga
-  prompt corto             passa (risposte a menu, "sì", /exit, ...)
+  prompt gia' con task_id  passa; con [delega] davanti l'attesa si registra con quel task_id
+  prompt corto             passa
   prompt lungo senza scelta: rifiutato con la spiegazione, come bus_send senza kind
-
-Mai bloccare per un errore suo: qualunque eccezione = il prompt passa com'e'.
-Gira con il python3 di sistema (3.9), solo stdlib.
+Centralino irraggiungibile su una [delega]: il prompt passa senza marcatore e senza attesa,
+con il motivo nella risposta. Mai bloccare per un errore suo. Solo stdlib.
 """
-
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import re
+import socket
 import sys
 from pathlib import Path
 
-# Sotto questa lunghezza un prompt e' una risposta, non un incarico.
 DECLARE_MIN_CHARS = int(os.environ.get("AB_ONDA_DECLARE_MIN", "200"))
 MARK_RE = re.compile(r"^\s*\[(delega|comunicazione)\]\s*", re.I)
 TASK_RE = re.compile(r"task_id\s*=\s*['\"]?([A-Za-z0-9][A-Za-z0-9._-]{2,63})")
-SLUG_SAFE = re.compile(r"[^a-z0-9._-]")
-
 DENY_REASON = (
     "Dichiara che cosa e' questo prompt, come per bus_send: inizia il testo con [delega] "
     "se vuoi l'esito (il bus registra l'attesa, aggiunge la riga col task_id e ti sveglia "
@@ -41,52 +30,35 @@ DENY_REASON = (
 )
 
 
-def load_wake():
-    here = Path(__file__).resolve().parent
-    for cand in (here.parent / "scripts" / "agent-team-os-wake.py",
-                 Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
-                 / "scripts" / "agent-team-os-wake.py"):
-        if cand.is_file():
-            spec = importlib.util.spec_from_file_location("ab_wake", cand)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            return mod
-    return None
+def home() -> Path:
+    return Path(os.environ.get("AB_HOME") or Path.home() / ".agent-team-os")
 
 
-def detect_agent(wake, cwd: str) -> str | None:
-    """Agente della cartella, regola piu' lunga (come agent-bus-mcp)."""
-    if os.environ.get("AB_AGENT"):
-        return os.environ["AB_AGENT"]
-    amap = wake.read_json(wake.bus_home() / "AGENT_MAP.json") or {}
+def chiama(op: str, caller: dict, args: dict) -> dict:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(5)
     try:
-        resolved = str(Path(cwd).resolve())
-    except OSError:
-        resolved = cwd
-    best = None
-    for rule in amap.get("rules") or []:
-        pat = rule.get("pattern") or ""
-        if pat and ((cwd + "/").startswith(pat) or (resolved + "/").startswith(pat)):
-            if best is None or len(pat) > best[0]:
-                best = (len(pat), rule.get("agent") or "")
-    return best[1] if best and best[1] else None
+        s.connect(str(home() / "centralino.sock"))
+        s.sendall((json.dumps({"v": 1, "id": f"onda-{os.getpid()}", "op": op, "caller": caller,
+                               "args": args}, ensure_ascii=False) + "\n").encode("utf-8"))
+        buf = b""
+        while not buf.endswith(b"\n"):
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+    finally:
+        s.close()
+    return json.loads(buf)
 
 
-def slug_for(cwd: str) -> str:
-    if os.environ.get("AB_SESSION_SLUG"):
-        return os.environ["AB_SESSION_SLUG"]
-    try:
-        base = Path(cwd).resolve().name
-    except OSError:
-        base = Path(cwd).name
-    return SLUG_SAFE.sub("-", (base or "root").lower())
-
-
-def target_session(wake, terminal_id: str | None) -> str | None:
-    """agente/slug della sessione nel pane di destinazione, da sessions.json di Onda."""
+def target_session(terminal_id: str | None) -> str | None:
     if not terminal_id:
         return None
-    doc = wake.read_json(wake.bus_home() / "onda" / "sessions.json") or {}
+    try:
+        doc = json.loads((home() / "onda" / "sessions.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
     for s in doc.get("sessions") or []:
         if isinstance(s, dict) and s.get("terminalId") == terminal_id and s.get("agent"):
             return f"{s['agent']}/{s['slug']}" if s.get("slug") else s["agent"]
@@ -104,11 +76,9 @@ def answer(decision: str, reason: str | None = None, tool_input: dict | None = N
 
 def handle(event: dict) -> None:
     tool_input = event.get("tool_input")
-    if not isinstance(tool_input, dict):
+    if not isinstance(tool_input, dict) or not isinstance(tool_input.get("prompt"), str):
         return
-    prompt = tool_input.get("prompt")
-    if not isinstance(prompt, str):
-        return
+    prompt = tool_input["prompt"]
     m = MARK_RE.match(prompt)
     if not m:
         if len(prompt.strip()) >= DECLARE_MIN_CHARS and not TASK_RE.search(prompt):
@@ -118,47 +88,37 @@ def handle(event: dict) -> None:
     if m.group(1).lower() == "comunicazione":
         answer("allow", "comunicazione: nessuna attesa", {**tool_input, "prompt": body})
         return
-
-    wake = load_wake()
-    if wake is None:
-        return  # bus non installato: il prompt passa com'e', marcatore compreso
-    cwd = event.get("cwd") or os.getcwd()
-    agent = detect_agent(wake, cwd)
-    if not agent:
-        answer("deny", f"[delega] da una cartella che non e' di nessun agente ({cwd}): "
-                       "nessuna sessione a cui registrare l'attesa. Usa [comunicazione].")
-        return
-    slug = slug_for(cwd)
-    to = target_session(wake, tool_input.get("terminalId"))
-    # BR24-F2.8: [delega] su un prompt che ha gia' la sua riga col task_id (bus_expect
-    # fatto prima, prompt_line in coda): una seconda attesa e una seconda riga
-    # dividevano i ritorni fra due task (24/10: c80xi9 e c6hmvh). Si tiene la sua; se
-    # nessuno la aspetta ancora, l'attesa si registra con quel task_id.
-    if (tm := TASK_RE.search(body)) is not None:
-        tid = tm.group(1)
-        if wake.find_wait(tid) is None:
-            wake.expect(agent, slug, re.sub(r"\s+", " ", body).strip()[:120], to, task_id=tid,
-                        target={"onda_terminal_id": os.environ.get("ONDA_TERMINAL_ID"),
-                                "claude_session_id": os.environ.get("CLAUDE_CODE_SESSION_ID")
-                                or event.get("session_id"),
-                                "tmux_pane": os.environ.get("TMUX_PANE")})
-            wake.log(f"onda delega {tid} {agent}/{slug} -> {to or tool_input.get('terminalId')} (task_id del prompt)")
-        answer("allow", f"attesa {tid} gia' nel prompt", {**tool_input, "prompt": body})
-        return
+    caller = {"cwd": os.environ.get("CLAUDE_PROJECT_DIR") or event.get("cwd") or os.getcwd(),
+              "agent": os.environ.get("AB_AGENT") or None, "slug": os.environ.get("AB_SESSION_SLUG") or None,
+              "claude_session_id": event.get("session_id") or os.environ.get("CLAUDE_CODE_SESSION_ID"),
+              "onda_terminal_id": os.environ.get("ONDA_TERMINAL_ID"), "tmux_pane": os.environ.get("TMUX_PANE")}
+    to = target_session(tool_input.get("terminalId"))
     desc = re.sub(r"\s+", " ", body).strip()[:120]
-    target = {"onda_terminal_id": os.environ.get("ONDA_TERMINAL_ID"),
-              "claude_session_id": os.environ.get("CLAUDE_CODE_SESSION_ID") or event.get("session_id"),
-              "tmux_pane": os.environ.get("TMUX_PANE")}
-    rec = wake.expect(agent, slug, desc, to, target=target)
-    tid = rec["task_id"]
-    host = wake.host_self()
-    amap = wake.read_json(wake.bus_home() / "AGENT_MAP.json") or {}
-    addr = f"{agent}@{host}/{slug}" if host and amap.get("hosts") else f"{agent}/{slug}"
-    line = (f"Quando hai finito, manda l'esito con bus_send a {addr}, message_type='response', "
-            f"task_id='{tid}'. Se ti serve una risposta prima, manda le domande allo stesso "
-            f"indirizzo con message_type='question' e lo stesso task_id.")
-    wake.log(f"onda delega {tid} {agent}/{slug} -> {to or tool_input.get('terminalId')}")
-    answer("allow", f"attesa registrata {tid}", {**tool_input, "prompt": body.rstrip() + "\n\n" + line})
+    tm = TASK_RE.search(body)
+    args = {"description": desc, "delegated_to": to}
+    if tm:
+        args["task_id"] = tm.group(1)
+    try:
+        resp = chiama("expect", caller, args)
+    except (OSError, ValueError) as exc:
+        answer("allow", f"centralino irraggiungibile ({exc}): nessuna attesa registrata",
+               {**tool_input, "prompt": body})
+        return
+    if tm:
+        # la riga col task_id c'e' gia': se l'attesa esisteva, va bene lo stesso (conflict)
+        answer("allow", f"attesa {tm.group(1)} gia' nel prompt", {**tool_input, "prompt": body})
+        return
+    if not resp.get("ok"):
+        err = resp.get("error") or {}
+        if err.get("code") == "no_identity":
+            answer("deny", f"[delega] da una cartella che non e' di nessun agente: {err.get('message')} "
+                           "Usa [comunicazione].")
+        else:
+            answer("allow", f"attesa non registrata: {err.get('message')}", {**tool_input, "prompt": body})
+        return
+    r = resp["result"]
+    answer("allow", f"attesa registrata {r['task_id']}",
+           {**tool_input, "prompt": body.rstrip() + "\n\n" + r["prompt_line"]})
 
 
 def main() -> int:
