@@ -1470,6 +1470,9 @@ ab_collect_host() {
     rm -rf "$stage" "$stage.tar" "$done_list"
   fi
 
+  # 3. The host's custode report (OR18-F4.8): Orbit's Portineria floor reads it here.
+  [[ "$reachable" -eq 1 ]] && ab_collect_custode "$host" "$sdir"
+
   # Not `status`: read-only in zsh, where the slash commands source this lib.
   local queued=0 result="ok"
   [[ -d "$qdir" ]] && queued=$(find "$qdir" -name 'msg-*.json' -type f 2>/dev/null | wc -l | tr -d ' ')
@@ -1480,6 +1483,27 @@ ab_collect_host() {
     > "$sdir/last-collect.json.tmp" && ab_json_promote "$sdir/last-collect.json.tmp" "$sdir/last-collect.json"
   rmdir "$lock" 2>/dev/null
   printf '%s %s pushed=%d pulled=%d queued=%d\n' "$host" "$result" "$pushed" "$pulled" "$queued"
+}
+
+# How often the custode report of another host is fetched again (seconds). The
+# custode rewrites it every 10 minutes (--registro) and once a day (full check).
+AB_CUSTODE_TTL="${AB_CUSTODE_TTL:-300}"
+
+ab_collect_custode() {
+  # Copy <host>'s hosts/self/custode.json to hosts/<host>/custode.json, at most
+  # every AB_CUSTODE_TTL s. Only valid JSON replaces the copy; a host without the
+  # file (no custode there) leaves nothing. Args: host, state dir. Never fails.
+  local host="$1" sdir="$2" q="" out=""
+  (( $(ab_file_age "$sdir/custode.json") >= AB_CUSTODE_TTL )) || return 0
+  q=$(printf '%q' "$(ab_host_bus_home "$host")/hosts/self/custode.json")
+  out="$sdir/custode.json.tmp"
+  if ab_ssh "$host" "cat $q 2>/dev/null" </dev/null > "$out" 2>/dev/null && [[ -s "$out" ]] \
+     && jq -e 'type == "object"' "$out" >/dev/null 2>&1; then
+    ab_json_promote "$out" "$sdir/custode.json"
+  else
+    rm -f "$out"
+  fi
+  return 0
 }
 
 ab_remote_status() {
