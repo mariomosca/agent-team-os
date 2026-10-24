@@ -151,6 +151,21 @@ ck "mini giù: ok=false" "$(jq -r .ok "$cache")" "false"
 ck "ma le sessioni restano" "$(jq -r '.sessions[0].slug' "$cache")" "crewmoor"
 rm -f "$FAKE_SSH_DOWN"
 
+echo "── report del custode del mini (OR18-F4.8)"
+on_laptop ab_collect_outbox --force >/dev/null
+ck "senza custode sul mini: niente copia" "$([[ -e $L/hosts/mini/custode.json ]] && echo si || echo no)" "no"
+mkdir -p "$M/hosts/self"
+echo '{"at":"2026-10-24T07:00:00Z","host":"mini","status":"ok","checks":[]}' > "$M/hosts/self/custode.json"
+on_laptop ab_collect_outbox --force >/dev/null
+ck "la raccolta porta custode.json" "$(jq -r .status "$L/hosts/mini/custode.json" 2>/dev/null)" "ok"
+echo '{"at":"2026-10-24T07:10:00Z","host":"mini","status":"warn","checks":[]}' > "$M/hosts/self/custode.json"
+on_laptop ab_collect_outbox --force >/dev/null
+ck "entro 5 min non lo richiede" "$(jq -r .status "$L/hosts/mini/custode.json")" "ok"
+echo 'rotto' > "$M/hosts/self/custode.json"
+( AB_CUSTODE_TTL=0; on_laptop ab_collect_outbox --force >/dev/null )
+ck "un file rotto non sostituisce la copia" "$(jq -r .status "$L/hosts/mini/custode.json")" "ok"
+rm -f "$M/hosts/self/custode.json"
+
 echo "── gli hook non aspettano l'SSH"
 mkdir -p "$T/ws/alita-home"
 jq --arg ws "$T/ws/alita-home" '.rules = [{pattern:$ws, agent:"alita"}]' "$L/AGENT_MAP.json" > "$T/map" && mv "$T/map" "$L/AGENT_MAP.json"

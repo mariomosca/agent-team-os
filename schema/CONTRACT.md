@@ -266,6 +266,7 @@ Un campo nuovo e opzionale non cambia `v`. Un campo che cambia significato, o un
 - Scrittura remota atomica: `mkdir -p … && cat > X.tmp && mv X.tmp X`. I lettori ignorano già `*.tmp` (cercano `msg-*.json`).
 - Raccolta (solo da chi ha `ssh` verso l'altro): lock `locks/collect-<host>.lock` (mkdir, condiviso bash/MCP, scaduto dopo 120 s), timbro `hosts/<host>/last-collect` (soglia 30 s), esito `hosts/<host>/last-collect.json`. Ordine: push della coda, pull con un `tar` dell'outbox remota, copia nella inbox locale, verifica JSON, poi `rm` remoto dei soli file consegnati. Già presente in inbox, `.read/` o `.done/` = solo cancellazione remota. JSON illeggibile = resta sul mini.
 - Stato remoto: `hosts/<host>/status.json` `{host, fetched_at, ok, error?, sessions[], pending[]}`, TTL 20 s, all'errore conserva le sessioni con `ok:false`.
+- Report del custode remoto (OR18-F4.8): a ogni raccolta riuscita, al massimo ogni `AB_CUSTODE_TTL` s (300), `hosts/self/custode.json` dell'host viene copiato in `hosts/<host>/custode.json`. Solo JSON valido sostituisce la copia; un host senza custode non lascia nulla. Lo legge la Portineria di Orbit (piano terra dell'Ufficio).
 - Comandi remoti senza glob (la shell di login del mini è zsh: glob vuoto = errore).
 
 ## 17. Registry e messaggio
