@@ -253,7 +253,8 @@ if [[ "$DAEMON" -eq 1 ]]; then
     # No GUI login: cron every minute starts it when the pid in centralino.pid is gone.
     # serve itself refuses to start when a centralino already answers on the socket.
     D_CMD="$UV_BIN run --frozen --project $C_DIR centralino serve"
-    D_LINE="* * * * * AB_HOME=$BUS_HOME PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin; kill -0 \$(cat $BUS_HOME/centralino.pid 2>/dev/null || echo 0) 2>/dev/null || nohup $D_CMD >/dev/null 2>>$BUS_HOME/logs/centralino-errori.log &"
+    # The pid test needs a real pid: "kill -0 0" would hit the cron shell's own group and succeed.
+    D_LINE="* * * * * AB_HOME=$BUS_HOME PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin; p=\$(cat $BUS_HOME/centralino.pid 2>/dev/null); { [ -n \"\$p\" ] && kill -0 \"\$p\"; } 2>/dev/null || nohup $D_CMD >/dev/null 2>>$BUS_HOME/logs/centralino-errori.log &"
     { crontab -l 2>/dev/null | grep -v 'centralino serve' || true; echo "$D_LINE"; } | crontab -
     echo "Centralino → crontab (no GUI session here: started within a minute if its pid is gone)"
   fi
