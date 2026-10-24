@@ -823,17 +823,11 @@ class WakeTest(unittest.TestCase):
         self.sessions([self.kai()])
         self.assertEqual(wake.tick(), {"delegation": ["t-20261017-abc123"]})
 
-    def test_delegation_rules_low_priority_no_wake_and_bare_agent(self):
+    def test_delegation_rules_low_priority_and_bare_agent(self):
         self.sessions([self.kai()])
         self.delega_a_kai(prio="low")
         self.assertEqual(wake.tick(), {})
-        d = self.home / "waits" / "kai" / "@f3"
-        d.mkdir(parents=True, exist_ok=True)
-        (d / ".no-wake").write_text("")
         self.delega_a_kai(task="t-20261017-def456")
-        self.assertEqual(wake.tick(), {})
-        (d / ".no-wake").unlink()
-        # tolto .no-wake, la delega ancora in casella sveglia
         self.assertEqual(wake.tick(), {"delegation": ["t-20261017-def456"]})
         # all'agente intero: si sveglia solo se ha una sola sessione viva
         two = [self.kai(), dict(self.kai(term="pane-k2"), slug="altra", sessionId="s-k2")]

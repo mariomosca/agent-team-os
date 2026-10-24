@@ -14,6 +14,18 @@ describe('bus', () => {
     expect(agentForCwd(rules, '/tmp')).toBe(undefined)
   })
 
+  test('the longest pattern wins, on a folder boundary', () => {
+    const nested = [
+      { pattern: '/p', agent: 'kai' },
+      { pattern: '/p/06-Brandart', agent: 'nico' },
+      { pattern: '/w/work-hub', agent: 'alita' },
+    ]
+    expect(agentForCwd(nested, '/p/06-Brandart/x')).toBe('nico')
+    expect(agentForCwd(nested, '/p/07-Tooling')).toBe('kai')
+    expect(agentForCwd(nested, '/w/work-hub-x')).toBe(undefined)
+    expect(agentForCwd(nested, '/w/work-hub/')).toBe('alita')
+  })
+
   test('slug like the shell lib', () => {
     expect(slugForCwd('/Users/mariomosca/work-hub')).toBe('work-hub')
     expect(slugForCwd('/x/Noi Calendar/')).toBe('noi-calendar')

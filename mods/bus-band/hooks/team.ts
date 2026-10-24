@@ -19,36 +19,42 @@ export type SessionsFile = { ondaPid: number; sessions: TeamSession[] }
 
 const str = (v: unknown) => (typeof v === 'string' ? v : null)
 
+// The entries of sessions.json (or of the centralino's vista, which carries them as they are).
+export const parseSessionList = (list: readonly unknown[]): TeamSession[] => {
+  const sessions: TeamSession[] = []
+  for (const x of list) {
+    const s = (typeof x === 'object' && x !== null ? x : {}) as Record<string, unknown>
+    const sessionId = str(s.sessionId)
+    const workspaceId = str(s.workspaceId)
+    const slug = str(s.slug)
+    const cwd = str(s.cwd)
+    if (sessionId === null || workspaceId === null || slug === null || cwd === null) continue
+
+    sessions.push({
+      sessionId,
+      workspaceId,
+      agent: str(s.agent),
+      slug,
+      cwd,
+      // An unknown state is read as idle (contract §13).
+      state: STATES.includes(s.state as TeamState) ? (s.state as TeamState) : 'idle',
+      stateSince: str(s.stateSince) ?? '',
+      lastTool: str(s.lastTool),
+      mounted: s.mounted === true,
+      host: str(s.host) ?? 'laptop',
+    })
+  }
+
+  return sessions
+}
+
 // Null when the file is not usable: not JSON, unknown major version, no pid.
 export const parseSessions = (text: string): SessionsFile | null => {
   try {
     const raw = JSON.parse(text)
     if (raw.v !== 1 || !Number.isInteger(raw.ondaPid) || !Array.isArray(raw.sessions)) return null
 
-    const sessions: TeamSession[] = []
-    for (const s of raw.sessions) {
-      const sessionId = str(s?.sessionId)
-      const workspaceId = str(s?.workspaceId)
-      const slug = str(s?.slug)
-      const cwd = str(s?.cwd)
-      if (sessionId === null || workspaceId === null || slug === null || cwd === null) continue
-
-      sessions.push({
-        sessionId,
-        workspaceId,
-        agent: str(s.agent),
-        slug,
-        cwd,
-        // An unknown state is read as idle (contract §13).
-        state: STATES.includes(s.state) ? s.state : 'idle',
-        stateSince: str(s.stateSince) ?? '',
-        lastTool: str(s.lastTool),
-        mounted: s.mounted === true,
-        host: str(s.host) ?? 'laptop',
-      })
-    }
-
-    return { ondaPid: raw.ondaPid, sessions }
+    return { ondaPid: raw.ondaPid, sessions: parseSessionList(raw.sessions) }
   } catch {
     return null
   }

@@ -210,9 +210,7 @@ reg kai vivo "$LIVE" 2026-10-14T10:00:00Z             # pid vivo, anche se vecch
 reg kai senzapid 0 2026-10-14T10:00:00Z               # niente pid, vecchio: via
 reg kai fresco 0 "$NOWI"                              # niente pid, recente: resta
 reg kai altrohost 999999 2026-10-14T10:00:00Z laptop  # di un'altra macchina: non tocco
-reg leo vault 999999 2026-10-15T10:00:00Z             # unico di leo: via, poi active:false
-echo '{"name":"leo","active":true,"last_seen":"2026-10-15T10:00:00Z"}' > "$RG/leo.json"
-echo '{"name":"nico","active":true,"last_seen":"2026-10-15T10:00:00Z"}' > "$RG/nico.json"
+reg leo vault 999999 2026-10-15T10:00:00Z             # unico di leo: via
 reg nico rotto 0 x; echo '' > "$RG/nico.d/rotto.json"  # vuoto: via
 dry=$(AB_HOME="$M" bash "$R/scripts/agent-team-os-custode.sh" --registro --dry-run)
 ck "dry-run: elenca" "$(grep -c 'tolgo' <<<"$dry")" "4"
@@ -222,9 +220,7 @@ ck "rc 0" "$(tail -1 <<<"$out")" "rc=0"
 ck "restano vivo, fresco, altrohost" "$(ls "$RG/kai.d" | sort | tr '\n' ' ')" "altrohost.json fresco.json vivo.json "
 ck "messi da parte, non cancellati" "$(ls "$RG"/.stale-*/ | sort | tr '\n' ' ')" "kai.d_crewmoor.json kai.d_senzapid.json leo.d_vault.json nico.d_rotto.json "
 ck "pid morto nel log" "$(grep -c 'kai/crewmoor (pid 999999 morto)' <<<"$out")" "1"
-ck "leo senza sessioni: active false" "$(jq -r .active "$RG/leo.json")" "false"
-ck "nico senza sessioni: active false" "$(jq -r .active "$RG/nico.json")" "false"
-ck "riga con data" "$(grep -c '^20[0-9-]*T.* registro:' <<<"$out")" "6"
+ck "riga con data" "$(grep -c '^20[0-9-]*T.* registro:' <<<"$out")" "4"
 again=$(AB_HOME="$M" bash "$R/scripts/agent-team-os-custode.sh" --registro)
 ck "secondo giro: niente" "$again" ""
 kill "$LIVE" 2>/dev/null; wait "$LIVE" 2>/dev/null

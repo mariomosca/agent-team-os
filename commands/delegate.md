@@ -1,55 +1,20 @@
 ---
-description: Delegate a task to another agent and wait for its outcome. Args - "<to> <intent>". Same as /send with kind=delega; works between any two agents.
+description: Delega un compito a un altro agente e aspetta l'esito. Argomenti - "<a> <intento>". Come /send con kind=delega, tra due agenti qualsiasi.
 ---
 
-Delegate a task to `$1` with intent `$2`, waiting for the outcome. `$1` is a bus address:
-`kai`, `kai/slug`, or on another machine `kai@mini/slug` (see `/send`). No roles: any agent
-can delegate to any other (Nico→Kai, Kai→Vera, Leo→Alita, ...); routing rules still apply.
+Delega un compito a `$1` con intento `$2` e aspetta l'esito. `$1` è un indirizzo del bus: `kai`, `kai/slug`, `kai@mini/slug` (vedi `/send`). Nessun ruolo fisso: ogni agente può delegare a ogni altro.
 
-What a delegation does (bus v2.8, BS21):
-- the wait is registered on THIS session when the message is sent, with a `task_id` that
-  travels on the message (`attesa registrata t-...`);
-- whatever the recipient sends back on it — the result, a question, an update, even a new
-  message without `in_reply_to` — wakes this session when it is idle; while it works, the
-  returns queue up and arrive together at the next wake;
-- each return is consumed explicitly with `bus_gestisci` (chiuso, riarma, risposto, letto).
+Cosa fa una delega:
 
-Steps:
+- l'attesa si registra sulla TUA sessione al momento dell'invio, con un `task_id` che viaggia sul messaggio;
+- ogni ritorno sul `task_id` (esito, domanda, aggiornamento, anche un messaggio nuovo) sveglia questa sessione quando è ferma; mentre lavori i ritorni si accodano e arrivano insieme alla sveglia dopo;
+- ogni ritorno si consuma con un esito esplicito: `bus_close` (`chiuso` quando hai finito, `riarma` se aspetti ancora) oppure `bus_reply` per rispondere a una domanda.
 
-1. **Detect sender** and **check routing** as in `/send` steps 2-3.
+Passi:
 
-2. **Compose the payload** as in `/send` step 4: what to do, where (`project_path`), the
-   acceptance criteria, `context_refs`. Ask for a deadline (`response_by`, optional): past
-   it with no outcome the wait expires with a notice in your inbox.
+1. **Contenuto**: cosa fare, dove (`project_path` nei dettagli), criteri di accettazione, `context_refs`. Chiedi una scadenza (`response_by`, opzionale): scaduta senza esito, l'attesa decade con un avviso in casella.
+2. **Anteprima, poi conferma**: a chi, intento, priorità, oggetto, scadenza. Invia solo dopo il sì di Mario.
+3. **Invio**: `bus_send(to=$1, intent=$2, summary, message_type='request', kind='delega', details, context_refs, response_by)`. Il risultato porta il `task_id`.
+4. Conferma con id e `task_id` e di' a Mario che la sessione può andare a riposo: l'esito la sveglia.
 
-3. **Preview**, then send only after explicit confirmation:
-
-   ```
-   Delegation:
-     <FROM> → <TO>   intent: <INTENT>   priority: <PRIO>
-     summary: ...
-     deadline: ...
-   Confirm? (y/n)
-   ```
-
-4. **Send** — MCP first, the helper as fallback:
-
-   - MCP: `bus_send(to="<to>", intent="<intent>", summary="...", message_type="request",
-     kind="delega", response_by="<iso>")` → the result has `task_id` and `note`.
-   - Helper:
-
-     ```bash
-     LIB="${CLAUDE_PLUGIN_ROOT:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}/scripts/agent-team-os-lib.sh"
-     [[ -f "$LIB" ]] || LIB="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/agent-team-os-lib.sh"
-     source "$LIB"
-     AB_FROM="$(ab_detect_agent "$PWD")" AB_TO="<to>" AB_TYPE=request AB_KIND=delega \
-     AB_INTENT="<intent>" AB_PAYLOAD_JSON='{...}' AB_RESPONSE_BY="<iso>" \
-     MSG_ID=$(ab_write_message)   # stderr: attesa registrata t-...
-     ```
-
-5. **Confirm** with msg-id and task_id. Tell the user the session can now go idle: the
-   outcome wakes it.
-
-Delegating through an Onda pane instead of the bus (`onda_agent_prompt`): call `bus_expect`
-and append its `prompt_line` to the prompt, or start the prompt with `[delega]` and the
-bus hook does it for you.
+**Delega tramite un pannello di Onda** (`onda_agent_prompt` invece del bus): comincia il prompt con il marcatore `[delega]`. L'hook del prompt registra l'attesa da solo e aggiunge la riga con il `task_id`. Se scrivi il prompt senza il marcatore, l'attesa non esiste e l'esito non sveglia nessuno.

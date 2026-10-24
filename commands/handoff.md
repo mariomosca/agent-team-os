@@ -1,64 +1,15 @@
 ---
-description: Hand off the current task to another agent with auto-generated state summary. Args - "<to> [intent]".
+description: Passa il lavoro in corso a un altro agente con un riassunto dello stato. Argomenti - "<a> [intento]".
 ---
 
-Hand off the current task to agent `$1` with optional intent `$2` (default: `handoff`). `$1` is a bus address: `kai`, `kai/slug`, or on another machine `kai@mini/slug` (see `/send`).
+Passa il lavoro corrente a `$1`, con intento opzionale `$2` (default `handoff`). `$1` è un indirizzo del bus: `kai`, `kai/slug`, `kai@mini/slug` (vedi `/send`).
 
-Steps:
+1. **Raccogli lo stato** dalla sessione, senza chiedere a Mario quello che già sai: cosa è fatto, cosa resta (`next_steps`, espliciti e in ordine), blocchi, file toccati, stato dei test. Il materiale pesante va in `context_refs`, non nel testo.
+2. **Scegli il `kind`**:
+   - `delega` se rivuoi un esito (l'altro agente porta a termine e ti ritorna qualcosa);
+   - `comunicazione` se passi il testimone e basta.
+   Se non è chiaro, chiedi.
+3. **Anteprima, poi conferma**: a chi, `kind`, riassunto dello stato in poche righe, prossimi passi. Invia solo dopo il sì di Mario.
+4. **Invio**: `bus_send(to=$1, intent, summary, message_type='handoff', kind, details, context_refs)`, con `details` che contiene lo stato e i prossimi passi.
 
-1. **Parse args**: first token = `to`, optional second = `intent` (default `handoff`).
-
-2. **Detect sender** and **check routing** (see `/send`).
-
-3. **Auto-generate the state summary** from session context:
-
-   - `state_summary`: what's been done so far in 3-5 bullets.
-   - `next_steps`: what the recipient needs to pick up.
-   - `blockers`: anything stuck or unresolved.
-   - `files_touched`: list of file paths recently edited (if known).
-   - `tests_status`: pass/fail/unknown (if relevant).
-
-   **Don't invent state** you don't have. If you're at the start of a session with no context, ask the user what they want to hand off.
-
-4. **Resolve recipient's workspace** from `AGENT_MAP.json` so the user knows where to open the next session:
-
-   ```bash
-   TO_WORKSPACE=$(jq -r --arg a "$(ab_parse_addr_agent "$1")" '.rules[] | select(.agent == $a) | .pattern' "${AB_MAP:-$HOME/.agent-team-os/AGENT_MAP.json}" | head -1)
-   ```
-
-5. **Show a preview** before sending:
-
-   ```
-   Handoff:
-     <FROM> → <TO> (workspace: <path>)
-     intent: <intent>
-     kind: delega | comunicazione
-     state_summary: ...
-     next_steps: ...
-     blockers: ...
-   Confirm? (y/n)
-   ```
-
-6. **Send via helper** with `type=handoff` and priority `high`:
-
-   ```bash
-   AB_FROM="$AGENT" \
-   AB_TO="$1" \
-   AB_TYPE="handoff" \
-   AB_INTENT="${2:-handoff}" \
-   AB_KIND="<delega|comunicazione>" \
-   AB_PRIORITY="high" \
-   AB_PAYLOAD_JSON='{...}' \
-   AB_CONTEXT_REFS_JSON='[...]' \
-   AB_REQUIRES_RESPONSE=false \
-   MSG_ID=$(ab_write_message)
-   ```
-
-7. Confirm with msg-id + thread-id. Tell the user: "Open a session in `<TO_WORKSPACE>` to continue."
-
-Notes:
-- **Kind is mandatory** (BS21): `delega` if you want the outcome of the handed-off work back
-  (the bus registers the wait and wakes this session on every return), `comunicazione` if you
-  are passing it on for good. Ask the user when it is not clear; there is no default.
-- Routing rules apply: if denied, suggest routing via a hub agent.
-- Handoff is a **special case of `send`** with a richer payload — the message type is `handoff` so the recipient knows to consume the state directly instead of asking.
+Conferma con l'id del messaggio e, per `delega`, il `task_id`. Il destinatario riceve il messaggio e, se è fermo, viene svegliato.

@@ -6,10 +6,7 @@
 # Functions: ab_detect_agent, ab_iso_now, ab_msg_id, ab_lock, ab_unlock,
 #            ab_write_message, ab_list_inbox, ab_count_inbox, ab_resolve_msg_path,
 #            ab_mark_read, ab_log_outbox, ab_thread_append, ab_update_registry,
-#            ab_msg_project_path, ab_msg_workspace_match, ab_count_inbox_here,
-#            ab_count_inbox_elsewhere,
-#            ab_cursor_path, ab_cursor_get_last, ab_cursor_update,
-#            ab_drain_fresh_count, ab_drain_fresh_list, ab_drain_for_stop,
+#            ab_cursor_path, ab_cursor_update, ab_drain_for_stop,
 #            v2.5 hosts: ab_host_self, ab_resolve_host, ab_parse_addr_host,
 #            ab_deliver_remote, ab_collect_outbox, ab_remote_status,
 #            ab_list_remote_sessions, ab_reply_address
@@ -201,8 +198,7 @@ ab_registry_prune() {
   # v2.7 (OR18-F3.3): set aside registry entries of sessions that are gone without a
   # SessionEnd hook (crash, killed tmux, reboot). An entry of this machine goes when
   # its pid is dead; one without a pid when last_seen is older than
-  # AB_SESSION_TTL_MIN. An agent with no entry left gets active:false in its flat
-  # file. Prints one line per change. Args: [--dry-run]
+  # AB_SESSION_TTL_MIN. Prints one line per change. Args: [--dry-run]
   local dry=0; [[ "${1:-}" == "--dry-run" ]] && dry=1
   local ttl=$(( ${AB_SESSION_TTL_MIN:-240} * 60 )) now me f d agent pid host seen age why ts
   now=$(date -u +%s); me=$(ab_host_self)
@@ -235,16 +231,6 @@ ab_registry_prune() {
           && mv -f "$f" "$AB_HOME/registry/.stale-$(date +%Y%m%d)/${agent}.d_$(basename "$f")"
       fi
     done
-    f="$AB_HOME/registry/${agent}.json"
-    if ! compgen -G "$d/*.json" >/dev/null && [[ -s "$f" ]] \
-       && [[ "$(jq -r '.active // false' "$f" 2>/dev/null)" == "true" ]]; then
-      echo "registro: $agent senza sessioni, active:false"
-      if (( ! dry )); then
-        ts=$(ab_iso_now)
-        jq --arg ts "$ts" '.active = false | .last_seen = (.last_seen // $ts)' "$f" > "$f.tmp" \
-          && ab_json_promote "$f.tmp" "$f"
-      fi
-    fi
   done
   return 0
 }
@@ -535,18 +521,6 @@ ab_write_message() {
       echo "WARN: no live session '$to/$to_slug'. Live: $(printf '%s ' $live)" >&2
       echo "      Delivering anyway; it will be read when that session starts." >&2
     fi
-  fi
-
-  # Routing rules: check deny list in AGENT_MAP
-  local denied
-  denied=$(jq -r --arg from "$from" --arg to "$to" '
-    .routing_rules[$from].deny // [] | index($to) // "ok"
-  ' "$AB_MAP" 2>/dev/null)
-  if [[ "$denied" != "ok" && -n "$denied" && "$denied" != "null" ]]; then
-    local reason
-    reason=$(jq -r --arg from "$from" '.routing_rules[$from].reason // "isolation rule"' "$AB_MAP")
-    echo "ERROR: routing denied $from→$to ($reason). Route via a hub agent if configured." >&2
-    return 2
   fi
 
   local msg_id
@@ -928,54 +902,13 @@ ab_json_promote() {
 # ---------- Registry ----------
 
 ab_update_registry() {
-  # Update active state + last_seen for given agent.
+  # Registers the session in registry/<agent>.d/<slug>.json (ab_update_session_registry).
+  # BR24-F5.2: the flat registry/<agent>.json is no longer written. The name stays
+  # because the hooks (load, urgent, end) still call it.
   # Args: agent, active(true|false), workspace_path
-  local agent="$1"
-  local active="${2:-true}"
-  local workspace="${3:-$PWD}"
-  # v1.4: each live session gets its own registry entry. The flat file below is kept
-  # in sync for older readers (Onda plugin, /bus), but it can only describe one
-  # session — ab_list_sessions is the accurate source.
-  # BS21-F1.5: the session's own slug (AB_SESSION_SLUG, e.g. a second copy of an agent
-  # in the same folder), not the folder name: two sessions there must not share one entry.
-  ab_update_session_registry "$agent" "$active" "$workspace" "${AB_SESSION_SLUG:-}"
-
-  local f="$AB_HOME/registry/${agent}.json"
-  [[ -f "$f" ]] || return 0
-  local ts
-  ts=$(ab_iso_now)
-  local tmp="${f}.tmp"
-
-  # Input guard: an existing-but-empty or corrupt file must be rebuilt, not fed to jq.
-  # `[[ -f ]]` above is satisfied by a 0-byte file, and jq on empty input exits 0 with no
-  # output, so without this the entry can never recover once emptied.
-  if ! [[ -s "$f" ]] || ! jq empty "$f" 2>/dev/null; then
-    jq -n --arg name "$agent" \
-          --argjson active "$active" \
-          --arg ts "$ts" \
-          --arg ws "$workspace" \
-      '{
-        name: $name,
-        active: $active,
-        last_seen: (if $active then $ts else null end),
-        workspace_path: (if $active then $ws else null end),
-        session_started: (if $active then $ts else null end)
-      }' > "$tmp"
-    ab_json_promote "$tmp" "$f"
-    return $?
-  fi
-
-  jq --argjson active "$active" \
-     --arg ts "$ts" \
-     --arg ws "$workspace" \
-     '
-     .active = $active
-     | .last_seen = $ts
-     | .workspace_path = $ws
-     | (if .session_started == null and $active then .session_started = $ts else . end)
-     | (if $active == false then .session_started = null else . end)
-     ' "$f" > "$tmp"
-  ab_json_promote "$tmp" "$f"
+  # BS21-F1.5: the session's own slug (AB_SESSION_SLUG), not the folder name: two
+  # sessions in one folder must not share one entry.
+  ab_update_session_registry "$1" "${2:-true}" "${3:-$PWD}" "${AB_SESSION_SLUG:-}"
 }
 
 # ---------- Pretty print ----------
@@ -989,78 +922,6 @@ ab_msg_summary() {
     (if .payload.summary then "  | " + (.payload.summary | .[0:60]) else "" end) +
     (if .response_by then "  (by " + .response_by + ")" else "" end)
   ' "$msg_path" 2>/dev/null
-}
-
-# ---------- Workspace filtering (v1.2) ----------
-
-ab_msg_project_path() {
-  # Extract context.project_path from a message file. Echoes empty if absent.
-  local msg_path="$1"
-  [[ -f "$msg_path" ]] || return 0
-  local p
-  p=$(jq -r '.context.project_path // ""' "$msg_path" 2>/dev/null)
-  [[ "$p" == "null" ]] && p=""
-  echo "$p"
-}
-
-ab_msg_workspace_match() {
-  # Decide if a message is "in scope" for the current workspace.
-  # Echoes one of: "here" | "elsewhere" | "global"
-  local msg_path="$1"
-  local cwd="${2:-$PWD}"
-  local mp
-  mp=$(ab_msg_project_path "$msg_path")
-  if [[ -z "$mp" ]]; then
-    echo "global"
-    return 0
-  fi
-  cwd="${cwd%/}"
-  mp="${mp%/}"
-  if [[ "$cwd" == "$mp" ]]; then
-    echo "here"
-    return 0
-  fi
-  if [[ "$cwd" == "$mp"/* ]]; then
-    echo "here"
-    return 0
-  fi
-  if [[ "$mp" == "$cwd"/* ]]; then
-    echo "here"
-    return 0
-  fi
-  echo "elsewhere"
-}
-
-ab_count_inbox_here() {
-  # Count inbox messages that match current workspace (here + global).
-  local agent="$1"
-  local cwd="${2:-$PWD}"
-  local count=0
-  while IFS= read -r f; do
-    [[ -z "$f" ]] && continue
-    local m
-    m=$(ab_msg_workspace_match "$f" "$cwd")
-    if [[ "$m" == "here" || "$m" == "global" ]]; then
-      count=$((count+1))
-    fi
-  done < <(ab_list_inbox "$agent")
-  echo "$count"
-}
-
-ab_count_inbox_elsewhere() {
-  # Count inbox messages NOT in current workspace scope.
-  local agent="$1"
-  local cwd="${2:-$PWD}"
-  local count=0
-  while IFS= read -r f; do
-    [[ -z "$f" ]] && continue
-    local m
-    m=$(ab_msg_workspace_match "$f" "$cwd")
-    if [[ "$m" == "elsewhere" ]]; then
-      count=$((count+1))
-    fi
-  done < <(ab_list_inbox "$agent")
-  echo "$count"
 }
 
 # ---------- Drain-on-Stop (v2.0 §4) ----------
@@ -1078,63 +939,16 @@ ab_cursor_path() {
   fi
 }
 
-ab_cursor_get_last() {
-  # Return lastProcessed msg-id from cursor.json (empty string if cursor absent).
-  local agent="$1"
-  local f
-  f=$(ab_cursor_path "$agent")
-  [[ -f "$f" ]] || { echo ""; return 0; }
-  jq -r '.lastProcessed // ""' "$f" 2>/dev/null
-}
-
 ab_cursor_update() {
-  # Write cursor: lastProcessed + drainBlockCount.
-  # Args: agent, lastProcessed, drainBlockCount
+  # Write the cursor: only the loop-guard counter drainBlockCount (the old
+  # lastProcessed field was never filled and is gone, BR24-F5.2).
+  # Args: agent, drainBlockCount
   local agent="$1"
-  local last="$2"
-  local count="${3:-0}"
+  local count="${2:-0}"
   local f
   f=$(ab_cursor_path "$agent")
   mkdir -p "$(dirname "$f")"
-  printf '{"lastProcessed":"%s","drainBlockCount":%d}\n' "$last" "$count" > "$f"
-}
-
-ab_drain_fresh_count() {
-  # Count inbox messages with id > lastProcessed (string sort; ISO timestamp IDs are sortable).
-  # Args: agent, lastProcessed (empty string = all messages are fresh)
-  local agent="$1"
-  local last="${2:-}"
-  local count=0
-  while IFS= read -r f; do
-    [[ -z "$f" ]] && continue
-    local mid
-    mid=$(basename "$f" .json)
-    if [[ -z "$last" || "$mid" > "$last" ]]; then
-      count=$((count+1))
-    fi
-  done < <(ab_list_inbox "$agent")
-  echo "$count"
-}
-
-ab_drain_fresh_list() {
-  # Return up to 5 fresh message summaries (id | from | intent) for block reason.
-  # Args: agent, lastProcessed
-  local agent="$1"
-  local last="${2:-}"
-  local n=0
-  while IFS= read -r f; do
-    [[ -z "$f" ]] && continue
-    local mid
-    mid=$(basename "$f" .json)
-    if [[ -z "$last" || "$mid" > "$last" ]]; then
-      local from intent
-      from=$(jq -r '.from // "?"' "$f" 2>/dev/null)
-      intent=$(jq -r '.intent // .type // "?"' "$f" 2>/dev/null)
-      echo "  ${mid}  from=${from}  intent=${intent}"
-      n=$((n+1))
-      [[ "$n" -ge 5 ]] && break
-    fi
-  done < <(ab_list_inbox "$agent" | sort)
+  printf '{"drainBlockCount":%d}\n' "$count" > "$f"
 }
 
 ab_msg_actionable() {
@@ -1203,7 +1017,7 @@ ab_drain_for_stop() {
   if [[ "$pending" -eq 0 ]]; then
     local cursor_file
     cursor_file=$(ab_cursor_path "$agent")
-    [[ -f "$cursor_file" ]] && ab_cursor_update "$agent" "" 0
+    [[ -f "$cursor_file" ]] && ab_cursor_update "$agent" 0
     exit 0
   fi
 
@@ -1218,12 +1032,12 @@ ab_drain_for_stop() {
 
   # Loop guard: blocked cap times already and inbox still not drained → relent.
   if [[ "$block_count" -ge "$cap" ]]; then
-    ab_cursor_update "$agent" "" 0
+    ab_cursor_update "$agent" 0
     exit 0
   fi
 
   block_count=$((block_count + 1))
-  ab_cursor_update "$agent" "" "$block_count"
+  ab_cursor_update "$agent" "$block_count"
 
   # Build block reason from pending messages (up to 5)
   local msg_lines="" f
@@ -1666,9 +1480,3 @@ ab_reply_address() {
   fi
   printf '%s' "$addr"
 }
-
-# --- v2.0: load TaskProvider module if present (same dir as this lib) ---
-if [[ -f "$_ATO_LIB_DIR/agent-team-os-taskprovider.sh" ]]; then
-  # shellcheck source=/dev/null
-  source "$_ATO_LIB_DIR/agent-team-os-taskprovider.sh"
-fi

@@ -1,49 +1,20 @@
 ---
-description: Read a message by id, resolve context_refs, then consume it with an outcome (chiuso | riarma | risposto | letto).
+description: Leggi un messaggio per id, risolvi i context_refs e consumalo con un esito (chiuso, riarma, risposta, letto).
 ---
 
-Read message `$ARG` (full or partial id, prefix match).
+Leggi il messaggio `$ARG` (id completo o prefisso).
 
-Steps:
+1. Chiama `bus_read(message_id=...)`. Il risultato porta il messaggio intero, l'indirizzo a cui rispondere (`reply_to`) e un suggerimento sul task (`_task_hint`): "hai delegato" se il messaggio è un ritorno di una tua delega, "stai eseguendo" se è la delega che ti hanno dato.
+2. Risolvi i `context_refs` che servono al lavoro: `file://` con Read, `wiki://` e `graphiti://` con le tool dedicate, `gh://` con la tool GitHub. Non risolvere quelli che non servono.
+3. Mostra il messaggio: mittente, tipo e `kind`, priorità, oggetto, dettagli, scadenza, riferimenti.
+4. Consuma il messaggio, sempre con un esito esplicito:
 
-1. **Resolve the message**:
+| Situazione | Azione |
+|---|---|
+| Ho risposto o devo rispondere | `bus_reply(message_id, summary, message_type='response')`: archivia il messaggio con esito `risposto` |
+| Ho una domanda per chi mi ha delegato | `bus_reply(message_id, summary, message_type='question')` |
+| Ritorno di una mia delega, lavoro finito | `bus_close(message_id, esito='chiuso')`: chiude anche l'attesa |
+| Ritorno intermedio, aspetto ancora | `bus_close(message_id, esito='riarma')` |
+| Comunicazione, evento, solo da sapere | `bus_close(message_id, esito='letto')` |
 
-   ```bash
-   LIB="${CLAUDE_PLUGIN_ROOT:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}/scripts/agent-team-os-lib.sh"
-   [[ -f "$LIB" ]] || LIB="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/agent-team-os-lib.sh"
-   source "$LIB"
-   AGENT=$(ab_detect_agent "$PWD")
-   MSG_ID="$ARG"
-   MSG_PATH=$(ab_resolve_msg_path "$AGENT" "$MSG_ID")
-   [[ -z "$MSG_PATH" ]] && { echo "Message $MSG_ID not found in $AGENT inbox."; exit 1; }
-   ```
-
-2. **Print the full message**:
-
-   ```bash
-   jq '.' "$MSG_PATH"
-   ```
-
-3. **Resolve `context_refs`**. For each ref in `.context_refs[]`:
-   - `file:///abs/path` → read the file (truncate if huge) and inline an excerpt.
-   - `gh://owner/repo/issues/N` → if `gh` CLI is available, run `gh issue view N --repo owner/repo`.
-   - `graphiti://node/<uuid>` or `graphiti://search/<query>` → if a Graphiti MCP is wired up, query it.
-   - `wiki://<slug>` → if a wiki backend is available, fetch the entry.
-   - Other URIs → just print the value.
-
-4. **Synthesize for the user** in 3-5 lines: who sent it, what they're asking, deadline, what's needed to respond. Propose next action: `/reply <msg-id> accept|decline|response|confirm`, or "start the work and reply later".
-
-5. **Consume it with an outcome** (bus v2.8): a message leaves the inbox only this way.
-
-   - A return on a delegation of yours (it has a `task_id` and `waits/<you>/@*/<task_id>.json`
-     exists): **chiuso** if the task is done, **riarma** if you keep waiting, **risposto** if the
-     executor asked something (send the answer first with `/reply`, same thread and task_id).
-   - A message "da agganciare" (`.task_link.by == "da_agganciare"`): pick the task among
-     `.task_link.candidates` and pass it as third argument.
-   - Anything else: **letto** if you only read it, **chiuso** once you dealt with it.
-
-   ```bash
-   ab_gestisci "$MSG_PATH" <chiuso|riarma|risposto|letto> [<task_id>]
-   ```
-
-6. If the message has `requires_response: true` and `response_by` is set, remind about the deadline.
+Un messaggio senza esito resta in casella e tiene aperto lo Stop se richiede un'azione. Non chiuderlo "per toglierlo di mezzo": se il lavoro non è finito, `riarma` o rispondi.

@@ -44,15 +44,15 @@ Let the conductor open workspaces and spawn teammates instead of pasting command
 - Adapter contract: open workspace, split pane, run command, list active sessions, focus session, send keystrokes
 - Conductor stays terminal-agnostic — bring your own driver for tmux/zellij/Warp/etc.
 
+## v3 — Centralino (24 ott 2026, piano BR24)
+
+Un daemon locale, unico scrittore dello stato in SQLite; sei tool MCP; una regola di sessione viva, una tabella di sveglia, una regola dello Stop; pulizia automatica. Il mini resta sul bus a file. Protocollo: `docs/PROTOCOL-v3.md`, contratto del daemon: `docs/CENTRALINO.md`.
+
 ## v2.0 — Hive-GOD-Agentic (SHIPPED 2026-06-06)
 
-Dual-GOD orchestration + TaskProvider layer + drain-on-Stop + harvest. See `PLAN-AGENT-TEAM-OS.md` §v2.0.
+Dual-GOD orchestration + TaskProvider layer + drain-on-Stop + harvest. Dual GOD, TaskProvider e harvest sono stati tolti il 24 ott 2026 (BR24-F5.2: nessun lettore, nessun uso recente); resta la drain-on-Stop.
 
-- ✅ **Dual GOD**: `gods[]` in AGENT_MAP, per-agent `domain`/`god`. Semi-autonomous contract (`docs/agentic-v2/GOD-CONTRACT.md`): propose → confirm → dispatch.
-- ✅ **TaskProvider layer** (`scripts/agent-team-os-taskprovider.sh`): domain → provider routing (side→orbit; brandart senza provider dal 2026-10-01, PMOHub dismesso) + declared mapping per §6. Reference impl: Orbit (extended natively, separate repo).
 - ✅ **drain-on-Stop hook** (`hooks/agent-team-os-stop.sh`): blocks Stop on non-empty inbox, loop guard (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`). NOT auto-registered — gated, see `docs/agentic-v2/SETTINGS-DIFF.md`.
-- ✅ **harvest/telemetry** (`scripts/agent-team-os-harvest.sh`): token+cost per agent from `~/.claude/projects` JSONL, per-model pricing.
-- ⏳ TODO: VoiceInk ingestion wiring, GOD persona files import GOD-CONTRACT.
 - ↪️ The "MCP server wrapper" listed here shipped in v1.4 as `agent-bus-mcp`.
 
 ## v2.5 — Two machines, one bus (2026-10-14)

@@ -3,6 +3,12 @@
 > Entry point for an AI coding agent (Claude Code, etc.) reading this repo.
 > Humans: see [README.md](./README.md) and the [landing page](https://mariomosca.github.io/agent-team-os/).
 
+## Bus v3 (October 2026)
+
+On the laptop the bus is run by the **centralino**, a local daemon that is the only writer of the state (SQLite). Agents talk to it through six MCP tools: `bus_send`, `bus_reply`, `bus_close`, `bus_inbox`, `bus_read`, `bus_status`; the slash commands (`/send`, `/inbox`, ...) just tell the model which tool to call, with no Bash. Protocol: [docs/PROTOCOL-v3.md](./docs/PROTOCOL-v3.md). Daemon contract: [docs/CENTRALINO.md](./docs/CENTRALINO.md). Skill: `skills/agent-team-os/SKILL.md`.
+
+Everything below describes the file-based bus, which the Mac mini still runs (it has no centralino): `lib.sh`, `wake.py`, `collect.sh`, `custode.sh`.
+
 ## What this is
 
 A **file-based protocol** to coordinate multiple AI coding-agent sessions (one per project/role/repo) that otherwise can't talk to each other. No daemon, no server — just a folder, a JSON message schema, bash helpers, slash commands, and lifecycle hooks. Runtime lives in `~/.agent-team-os/`; the integration (hooks/commands/skill/scripts) is copied into `~/.claude/` by the installer.
@@ -16,7 +22,7 @@ git clone https://github.com/mariomosca/agent-team-os && cd agent-team-os && ./i
 `install.sh` is idempotent: copies the lib + v2 modules + hooks + commands + skill into `~/.claude/`, creates `~/.agent-team-os/`, and drops a starter `AGENT_MAP.json` if none exists. It does **not** touch `settings.json` (you register hooks yourself — see below). Requires `jq`.
 
 After install:
-1. Edit `~/.agent-team-os/AGENT_MAP.json` — map your workspace paths to agent names (+ v2: `gods[]`, per-agent `domain`/`god`).
+1. Edit `~/.agent-team-os/AGENT_MAP.json` — map your workspace paths to agent names.
 2. Register hooks in `~/.claude/settings.json` (next section).
 3. Open a session in a mapped workspace; try `/inbox` or `/bus`.
 
@@ -38,22 +44,17 @@ The `Stop` hook is copied by the installer but **NOT auto-registered** — it's 
 - **Reply in-thread**: `/reply <msg-id> <type>` (type = accept|decline|response|confirm).
 - **Two machines (v2.5)**: address `agent@host[/slug]` (e.g. `kai@mini/crewmoor`). Laptop → mini goes over SSH (queued in `outbox/<host>/` if down); mini → laptop waits in the mini's `outbox/laptop/` until the laptop collects. `/bus` shows both machines. See README "Two machines".
 - **Delegating with a result to wait for (v2.6)**: `bus_send(expect_result=true)` or `bus_expect` → `task_id`; the executor answers `type: response` with the same `task_id`; when it arrives and the waiting session is idle, `scripts/agent-team-os-wake.py` writes one line into its prompt (Onda or tmux), once. v2.7: a `question` with the same `task_id` also wakes the delegator, once per question, without consuming the wait; the asker carries `waiting_agent` in its registry entry. See README "La sveglia".
-- **Slash commands**: `/bus` (roster), `/inbox`, `/read <id>`, `/send`, `/reply`, `/handoff`, `/thread`.
+- **Slash commands**: `/bus` (roster), `/inbox`, `/read <id>`, `/send`, `/reply`, `/handoff`, `/thread`, `/delegate`.
 
-## v2.0 — hive-GOD-agentic (optional layers)
+## Optional layers
 
-- **Dual GOD orchestration**: GOD agents (`gods[]` in AGENT_MAP) orchestrate a domain — they decompose, propose to the human, then dispatch. Contract: [docs/agentic-v2/GOD-CONTRACT.md](./docs/agentic-v2/GOD-CONTRACT.md). Semi-autonomous: propose → human confirms → dispatch.
-- **TaskProvider layer**: pluggable task manager per domain (`scripts/agent-team-os-taskprovider.sh`). `ab_task_provider <agent>` resolves the provider; `ab_task_mapping <provider>` returns the declared status/assignee/priority/dependsOn/meetingIngestion mapping. Reference impl: Orbit (side). Brandart has no provider (PMOHub dismissed on 2026-10-01).
 - **drain-on-Stop hook**: keeps agents from closing with an unhandled inbox (opt-in, above).
-- **harvest/telemetry**: `scripts/agent-team-os-harvest.sh <cwd>` → token + USD cost per agent from `~/.claude/projects/*.jsonl`, per-model pricing.
 
 ## Key files
 
 | Path | Purpose |
 |------|---------|
-| `scripts/agent-team-os-lib.sh` | core bash helpers (`ab_*`); auto-sources taskprovider |
-| `scripts/agent-team-os-taskprovider.sh` | v2 TaskProvider routing + mapping |
-| `scripts/agent-team-os-harvest.sh` | v2 token/cost telemetry |
+| `scripts/agent-team-os-lib.sh` | core bash helpers (`ab_*`) |
 | `scripts/agent-team-os-collect.sh` | v2.5 one collection round with the other machines (launchd runs it) |
 | `scripts/agent-team-os-wake.py` | v2.6 the wake: expected results, one wake per expected message (v2.7: questions too) into an idle session (`install.sh --sveglia`) |
 | `schema/bus-wait.schema.json` | v2.6 expected-result file `waits/<agent>/@<slug>/<task_id>.json` |
@@ -66,8 +67,9 @@ The `Stop` hook is copied by the installer but **NOT auto-registered** — it's 
 | `commands/*.md` | slash commands |
 | `skills/agent-team-os/SKILL.md` | the skill (agent-invocable) |
 | `examples/AGENT_MAP.example.json` | starter config (v2 shape) |
-| `docs/agentic-v2/` | GOD contract, settings diff, briefs |
+| `docs/PROTOCOL-v3.md`, `docs/CENTRALINO.md` | the v3 protocol and the centralino contract |
+| `docs/agentic-v2/` | settings diff for the Stop hook |
 
 ## Source of truth
 
-The authoritative protocol spec lives in the consumer's `PLAN-AGENT-TEAM-OS.md` (symlinked at `~/.agent-team-os/PROTOCOL.md`). This repo is the distributable implementation.
+The authoritative protocol is [docs/PROTOCOL-v3.md](./docs/PROTOCOL-v3.md). The older file-based spec (`PLAN-AGENT-TEAM-OS.md`, symlinked at `~/.agent-team-os/PROTOCOL.md`) stays valid only for the mini.

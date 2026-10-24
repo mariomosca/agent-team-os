@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Modello, NON installato (BR24-F3: niente launchd attivo senza l'ok di Alita).
+  Segnaposto: __UV__ (path di uv), __CENTRALINO_DIR__ (questa cartella), __AB_HOME__ (~/.agent-team-os).
+  Installazione, quando autorizzata: sostituire i segnaposto, copiare in ~/Library/LaunchAgents/,
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.agent-team-os.centralino.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.agent-team-os.centralino</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__UV__</string>
+    <string>run</string>
+    <string>--frozen</string>
+    <string>--project</string>
+    <string>__CENTRALINO_DIR__</string>
+    <string>centralino</string>
+    <string>serve</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AB_HOME</key><string>__AB_HOME__</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>/dev/null</string>
+  <key>StandardErrorPath</key><string>__AB_HOME__/logs/centralino-errori.log</string>
+</dict>
+</plist>

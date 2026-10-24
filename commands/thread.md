@@ -1,37 +1,12 @@
 ---
-description: Show a thread's full history. Args - "<thread-id>" (or empty for recent threads).
+description: Mostra la storia completa di un thread. Argomento - "<thread-id>" (senza argomento, i thread recenti dalla casella).
 ---
 
-Show thread `$1` history, or list recent open threads if no arg.
+Mostra il thread `$1`.
 
-Steps:
+- Con argomento: `bus_read(thread_id=$1)`. Restituisce i messaggi del thread in ordine di tempo.
+- Senza argomento: `bus_inbox(all_sessions=true)` e raggruppa per `thread_id` i messaggi che trovi, mostrando quelli con più attività.
 
-1. **No arg** → list recent threads:
+Presenta il thread come una cronologia: ora, da chi a chi, tipo e `kind`, oggetto, stato (in casella, letto, risposto, chiuso). Se il thread appartiene a una delega, indica il `task_id` e se l'attesa è ancora aperta.
 
-   ```bash
-   echo "=== Recent threads ==="
-   ls -t "$HOME"/.agent-team-os/threads/*.json 2>/dev/null | head -10 | while IFS= read -r f; do
-     [[ -f "$f" ]] || continue
-     jq -r '
-       "─── " + .id + " ───" +
-       "\n  subject: " + .subject +
-       "\n  participants: " + (.participants | join(", ")) +
-       "\n  status: " + .status +
-       "\n  messages: " + (.messages | length | tostring) +
-       "\n  opened: " + .opened
-     ' "$f"
-   done
-   ```
-
-2. **With arg** → show full thread:
-
-   ```bash
-   THREAD_ID="$1"
-   THREAD_FILE="${AB_HOME:-$HOME/.agent-team-os}/threads/${THREAD_ID}.json"
-   [[ -f "$THREAD_FILE" ]] || { echo "Thread $THREAD_ID not found."; exit 1; }
-   jq '.' "$THREAD_FILE"
-   ```
-
-3. **Resolve each message** in the thread — for each entry in `.messages[]`, find the actual message file (check both `inboxes/<agent>/` and `inboxes/<agent>/.read/`) and print a short summary (`from`, `to`, `type`, `intent`, `summary`, `ts`).
-
-4. After the listing, if status is `open` propose `/reply <last-msg-id> <type>` to close it, or `/read <msg-id>` for details on a specific message.
+Sola lettura: non consuma niente.

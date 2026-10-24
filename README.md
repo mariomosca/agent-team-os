@@ -10,6 +10,10 @@
 
 **[Visit the landing page →](https://mariomosca.github.io/agent-team-os/)** for the full pitch, diagrams, FAQ and install instructions.
 
+## Bus v3 (October 2026)
+
+The bus now runs on a local daemon, the **centralino**, the only writer of its state (SQLite). Agents use six MCP tools (`bus_send`, `bus_reply`, `bus_close`, `bus_inbox`, `bus_read`, `bus_status`); the slash commands tell the model which tool to call. The sections below describe the file-based bus, which is still what the Mac mini runs. Start from [`docs/PROTOCOL-v3.md`](./docs/PROTOCOL-v3.md) (the protocol) and [`docs/CENTRALINO.md`](./docs/CENTRALINO.md) (the daemon's contract).
+
 ## Why
 
 If you run more than one Claude Code session — one per project, one per role, one per repo — you quickly hit a wall: the sessions don't talk to each other. You become the human postman, copy-pasting context, briefs and handoffs between terminals.
@@ -25,7 +29,6 @@ No daemon. No server. No cloud. Just files on your machine.
 - **Inbox per agent** — each session sees what's waiting for it the moment you open it
 - **Structured messages** — versioned JSON with `from`, `to`, `intent`, `payload`, `context_refs`, deadlines
 - **Threads** — replies stay grouped, so you can pick up a conversation a week later
-- **Routing rules** — declare which agents can talk to which (e.g. isolate work contexts from personal ones)
 - **Audit log** — append-only JSONL of every message sent, for free
 - **Slash commands** — `/inbox`, `/read`, `/send`, `/reply`, `/handoff`, `/thread`, `/bus`
 - **Live band above the prompt** (optional mod, Claude Code 2.1.287+) — pending messages for the session plus the **team** (which sibling sessions are stuck, from Onda), toast on urgent ones: [`mods/bus-band`](./mods/bus-band)
@@ -34,9 +37,8 @@ No daemon. No server. No cloud. Just files on your machine.
 
 ```
 ~/.agent-team-os/
-  AGENT_MAP.json                  # path -> agent + capabilities + routing rules
+  AGENT_MAP.json                  # path -> agent + capabilities
   registry/<agent>.d/<slug>.json  # one card per LIVE SESSION (active, last_seen, workspace)
-  registry/<agent>.json           # flat card, kept for older readers
   inboxes/<agent>/                # broadcast msg-*.json — every session of that agent
   inboxes/<agent>/@<slug>/        # messages for ONE session
   inboxes/<agent>/@<slug>/.read/  # archive, next to the message it came from
@@ -193,7 +195,7 @@ The installer also copies a `Stop` hook (`agent-team-os-stop.sh`) but **does not
 { "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "~/.claude/hooks/agent-team-os-stop.sh" }] }] } }
 ```
 
-Test it isolated first — see [`docs/agentic-v2/SETTINGS-DIFF.md`](./docs/agentic-v2/SETTINGS-DIFF.md). For the full v2 layers (dual-GOD orchestration, TaskProvider, telemetry) see [`AGENTS.md`](./AGENTS.md).
+Test it isolated first — see [`docs/agentic-v2/SETTINGS-DIFF.md`](./docs/agentic-v2/SETTINGS-DIFF.md). See also [`AGENTS.md`](./AGENTS.md).
 
 ### Optional: the `bus-band` mod (Claude Code 2.1.287+)
 
@@ -311,9 +313,6 @@ Ritorno sul task t-20261021-ab12cd (spike parser) da kai/f3 (bus_read msg-…): 
     "ops":    { "role": "orchestrator", "capabilities": ["planning", "tracking"] },
     "dev":    { "role": "engineer",     "capabilities": ["bug-fix", "code-review", "refactor"] },
     "growth": { "role": "content",      "capabilities": ["draft-post", "review-copy"] }
-  },
-  "routing": {
-    "blocked_pairs": []
   }
 }
 ```
@@ -388,7 +387,7 @@ You can declare blocked pairs in `AGENT_MAP.json` to keep contexts isolated — 
 
 | Command | What it does |
 |---------|--------------|
-| `/bus`     | Show roster, live sessions with pending counts, and routing rules |
+| `/bus`     | Show roster and live sessions with pending counts |
 | `/inbox`   | List pending messages for this session (`--all` for every session of the agent) |
 | `/read <id>` | Read a message, resolve context_refs, consume it with an outcome (v2.8) |
 | `/send <to> <intent>` | Wizard to compose a new message (`<to>` = `agent` or `agent/slug`) |
@@ -401,10 +400,11 @@ You can declare blocked pairs in `AGENT_MAP.json` to keep contexts isolated — 
 
 - **v1.0**: file-based protocol, bash helpers, slash commands, `SessionStart` hook — battle-tested across five concurrent agents in production since May 2026.
 - **v1.4**: session identity — `agent/slug` addressing, per-session inbox, registry and drain cursor. Written after two sessions of the same agent were found stealing each other's messages.
+- **v3**: centralino with SQLite as the single source, one liveness rule, one wake table, six MCP actions, cleanup. GOD mode, TaskProvider, harvest, the workspace filter, `routing_rules.deny` and the flat registry are gone. See [`docs/PROTOCOL-v3.md`](./docs/PROTOCOL-v3.md).
 - **v2.8**: declared delegations (`kind`), automatic waits, hooking of returns, a wake on every return, explicit consumption (`bus_gestisci`), caps, safety net for urgent messages, weekly measure.
 - **v2.2**: `bus-band` shows the team — who is stuck (text left in the prompt box, waiting for a permission) and a button to put an out-of-mosaic workspace back in Onda.
 - **v2.1**: `bus-band` mod — the inbox as a live band above the prompt, built on Claude Code mods the day after they shipped.
-- **MCP server**: [`agent-bus-mcp`](https://github.com/mariomosca/agent-bus-mcp) exposes the bus as six typed tools (`bus_status`, `bus_inbox`, `bus_read`, `bus_send`, `bus_archive`, `bus_thread`), session addressing included. Optional: the slash commands keep working on the same files.
+- **MCP server**: [`agent-bus-mcp`](https://github.com/mariomosca/agent-bus-mcp) exposes the bus as six typed tools (v3: `bus_send`, `bus_reply`, `bus_close`, `bus_inbox`, `bus_read`, `bus_status`), session addressing included.
 - **v1.1+**: realtime delivery, conductor pattern, active driver, autonomous mode with guard-rails — see [ROADMAP.md](./ROADMAP.md).
 
 ## Why not just use one Claude Code instance?
