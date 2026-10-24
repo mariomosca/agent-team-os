@@ -8,8 +8,23 @@ export type AgentRule = { pattern: string; match?: string; agent: string }
 
 const PRIORITIES: readonly Priority[] = ['urgent', 'high', 'normal', 'low']
 
-export const agentForCwd = (rules: readonly AgentRule[], cwd: string) =>
-  rules.find(rule => cwd.startsWith(rule.pattern))?.agent
+// The longest matching pattern wins, on a folder boundary (/a/work-hub does not
+// match /a/work-hub-x): the centralino's rule (BR24, docs/CENTRALINO.md §2).
+export const agentForCwd = (rules: readonly AgentRule[], cwd: string) => {
+  const c = cwd.replace(/\/+$/, '')
+  let best: AgentRule | undefined
+  let bestLen = -1
+  for (const rule of rules) {
+    const p = rule.pattern.replace(/\/+$/, '')
+    if (c !== p && !c.startsWith(`${p}/`)) continue
+    if (p.length > bestLen) {
+      best = rule
+      bestLen = p.length
+    }
+  }
+
+  return best?.agent
+}
 
 export const slugForCwd = (cwd: string) => {
   const base = cwd.replace(/\/+$/, '').split('/').pop() || 'root'

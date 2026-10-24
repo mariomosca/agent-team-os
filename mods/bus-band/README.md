@@ -17,6 +17,14 @@ Bus alita/work-hub: 2 in attesa, 1 urgenti o alta (+1 di altri workspace)  [Nasc
 - Read-only on messages: it never moves, archives or writes a message (the only thing it ever writes is the Onda request file above). `/read`, `/inbox` and the MCP tools stay the way to act on them.
 - Honours `AB_HOME` like the shell lib (default `~/.agent-team-os`).
 
+## Fonte: il centralino (BR24-F4.3)
+
+From BR24 the band reads the bus from its **centralino** (`agent-team-os/centralino`, contract `docs/CENTRALINO.md`): one read-only op, `vista`, on `$AB_HOME/centralino.sock` (or `AB_CENTRALINO_SOCK`), once per round for all three sections. Liveness of the Squadra rows, pending messages and waits come from there, records in the bus file format, so the same parsers read them. The mod engine cannot speak line-JSON on a socket (`$.http` speaks HTTP), so the request goes through `nc -U` (`$.process.run`, 2 s timeout).
+
+If the socket is missing or does not answer, the round reads today's files as before, and a dim line at the bottom of the band says so (`Bus letto dai file: ...`). The line only appears in a band that is already drawn: a missing centralino alone never raises it.
+
+Agent from cwd now uses the **longest** matching rule on a folder boundary, the centralino's rule, instead of the first one.
+
 ## Aspetto (v2.3)
 
 ```

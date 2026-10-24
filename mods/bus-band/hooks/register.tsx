@@ -24,6 +24,8 @@ import {
 } from './team'
 import { askRows, orderWaits, parseWait, toWaitRow, waitsHeadline } from './waits'
 import type { Wait } from './waits'
+import { fallbackText, inboxOf, parseVista, sessionsOf, vistaRequest, waitsOf } from './vista'
+import type { Vista } from './vista'
 
 const snapshot = atom({ plugin: 'bus-band', key: 'snapshot' } as const, null)
 const isHidden = atom({ plugin: 'bus-band', key: 'isHidden' } as const, false)
@@ -33,7 +35,11 @@ const isTeamHidden = atom({ plugin: 'bus-band', key: 'isTeamHidden' } as const, 
 
 const waits = atom({ plugin: 'bus-band', key: 'waits' } as const, null)
 
+// BR24-F4.3: why this round read the files instead of the centralino (null when it read the centralino).
+const fallback = atom({ plugin: 'bus-band', key: 'fallback' } as const, null)
+
 const POLL_MS = 20_000
+const VISTA_TIMEOUT_MS = 2_000
 const SHOWN = 3
 const TEAM_SHOWN = 4
 const WAITS_SHOWN = 3
@@ -46,20 +52,45 @@ const busRoot = async ($: EngineInterface) => {
   return busHome ?? `${home}/.agent-team-os`
 }
 
+// The bus centralino's vista (BR24-F4.3), one call per round for the three sections.
+// Null with the reason when the daemon is not there or does not answer: the round
+// reads today's files instead and the band says so.
+type Source = { vista: Vista } | { vista: null; why: string }
+
+const loadVista = async ($: EngineInterface): Promise<Source> => {
+  const root = await busRoot($)
+  if (root === null) return { vista: null, why: 'nessuna cartella del bus' }
+  const sock = (await $.env.get('AB_CENTRALINO_SOCK')) ?? `${root}/centralino.sock`
+  if (!(await $.fs.exists(sock))) return { vista: null, why: 'il centralino del bus non è attivo' }
+  const id = `r-band-${Math.random().toString(36).slice(2, 8)}`
+  const out = await $.process
+    .run(['nc', '-U', sock], { stdin: vistaRequest(id), timeoutMs: VISTA_TIMEOUT_MS })
+    .catch(() => null)
+  if (out === null || out.exitCode !== 0) return { vista: null, why: 'il centralino del bus non risponde' }
+  const parsed = parseVista(out.stdout)
+
+  return 'vista' in parsed ? { vista: parsed.vista } : { vista: null, why: parsed.error }
+}
+
 // The team as Onda sees it. Null (section absent) when the file is missing,
 // unusable, or written by an Onda that is no longer alive, and in a session another
 // agent opened for a delegated task (SESSIONE_DELEGATA=1): there it is only noise.
-const scanTeam = async ($: EngineInterface): Promise<TeamSnapshot | null> => {
+const scanTeam = async ($: EngineInterface, vista: Vista | null): Promise<TeamSnapshot | null> => {
   if ((await $.env.get('SESSIONE_DELEGATA')) === '1') return null
   const root = await busRoot($)
   if (root === null) return null
-  const file = `${root}/onda/sessions.json`
-  if (!(await $.fs.exists(file))) return null
 
-  const parsed = parseSessions(await $.fs.read(file))
+  // The centralino already checked that Onda runs and the file is fresh.
+  let parsed = vista !== null ? sessionsOf(vista) : null
+  if (vista === null) {
+    const file = `${root}/onda/sessions.json`
+    if (!(await $.fs.exists(file))) return null
+    parsed = parseSessions(await $.fs.read(file))
+    if (parsed === null) return null
+    const alive = await $.process.run(['kill', '-0', String(parsed.ondaPid)])
+    if (alive.exitCode !== 0) return null
+  }
   if (parsed === null) return null
-  const alive = await $.process.run(['kill', '-0', String(parsed.ondaPid)])
-  if (alive.exitCode !== 0) return null
 
   const cwd = await $.session.cwd()
   const map = JSON.parse(await $.fs.read(`${root}/AGENT_MAP.json`))
@@ -81,20 +112,28 @@ const scanTeam = async ($: EngineInterface): Promise<TeamSnapshot | null> => {
 }
 
 // The results this session waits for (bus v2.6). Null when there are none.
-const scanWaits = async ($: EngineInterface): Promise<WaitsSnapshot | null> => {
+const scanWaits = async ($: EngineInterface, vista: Vista | null): Promise<WaitsSnapshot | null> => {
   const root = await busRoot($)
   if (root === null) return null
   const cwd = await $.session.cwd()
   const map = JSON.parse(await $.fs.read(`${root}/AGENT_MAP.json`))
   const agent = agentForCwd(map.rules ?? [], cwd)
   if (agent === undefined) return null
-  const dir = `${root}/waits/${agent}/@${slugForCwd(cwd)}`
-  if (!(await $.fs.exists(dir))) return null
 
+  const texts: string[] = []
+  if (vista !== null) {
+    texts.push(...waitsOf(vista, agent, slugForCwd(cwd)))
+  } else {
+    const dir = `${root}/waits/${agent}/@${slugForCwd(cwd)}`
+    if (!(await $.fs.exists(dir))) return null
+    for (const entry of await $.fs.list(dir)) {
+      if (entry.kind !== 'file' || !/^[^.].*\.json$/.test(entry.name)) continue
+      texts.push(await $.fs.read(`${dir}/${entry.name}`))
+    }
+  }
   const found: Wait[] = []
-  for (const entry of await $.fs.list(dir)) {
-    if (entry.kind !== 'file' || !/^[^.].*\.json$/.test(entry.name)) continue
-    const w = parseWait(await $.fs.read(`${dir}/${entry.name}`))
+  for (const text of texts) {
+    const w = parseWait(text)
     if (w !== null) found.push(w)
   }
   const now = Date.now()
@@ -127,7 +166,7 @@ const requestMount = async ($: EngineInterface, workspaceId: string) => {
   $.ui.toast('Richiesta inviata a Onda')
 }
 
-const scan = async ($: EngineInterface): Promise<BusSnapshot | null> => {
+const scan = async ($: EngineInterface, vista: Vista | null): Promise<BusSnapshot | null> => {
   // Same bus home as the shell lib: AB_HOME, else ~/.agent-team-os.
   const busHome = await $.env.get('AB_HOME')
   const home = await $.env.get('HOME')
@@ -141,21 +180,27 @@ const scan = async ($: EngineInterface): Promise<BusSnapshot | null> => {
   const slug = slugForCwd(cwd)
 
   // Shared root (messages to the bare agent name) plus this session's own dir.
-  const dirs = [`${root}/inboxes/${agent}`, `${root}/inboxes/${agent}/@${slug}`]
+  const found: [string, string][] = []
+  if (vista !== null) {
+    found.push(...inboxOf(vista, agent, slug))
+  } else {
+    for (const dir of [`${root}/inboxes/${agent}`, `${root}/inboxes/${agent}/@${slug}`]) {
+      if (!(await $.fs.exists(dir))) continue
+      for (const entry of await $.fs.list(dir)) {
+        if (entry.kind !== 'file' || !/^msg-.*\.json$/.test(entry.name)) continue
+        found.push([await $.fs.read(`${dir}/${entry.name}`), entry.name])
+      }
+    }
+  }
   const messages: BusMessage[] = []
   let elsewhere = 0
-
-  for (const dir of dirs) {
-    if (!(await $.fs.exists(dir))) continue
-    for (const entry of await $.fs.list(dir)) {
-      if (entry.kind !== 'file' || !/^msg-.*\.json$/.test(entry.name)) continue
-      const parsed = parseMessage(await $.fs.read(`${dir}/${entry.name}`), entry.name)
-      if (parsed === null) continue
-      if (workspaceMatch(parsed.projectPath, cwd) === 'elsewhere') {
-        elsewhere += 1
-      } else {
-        messages.push(parsed.message)
-      }
+  for (const [text, name] of found) {
+    const parsed = parseMessage(text, name)
+    if (parsed === null) continue
+    if (workspaceMatch(parsed.projectPath, cwd) === 'elsewhere') {
+      elsewhere += 1
+    } else {
+      messages.push(parsed.message)
     }
   }
 
@@ -171,8 +216,8 @@ let seenStuck: Set<string> | null = null
 // Expired waits already announced, so the deadline toasts once.
 let seenExpired: Set<string> | null = null
 
-async function refreshWaits($: EngineInterface) {
-  const next = await scanWaits($).catch(() => null)
+async function refreshWaits($: EngineInterface, vista: Vista | null) {
+  const next = await scanWaits($, vista).catch(() => null)
   const expired = next?.expired ?? []
   const fresh = seenExpired === null ? [] : expired.filter(id => !seenExpired!.has(id))
   seenExpired = new Set(expired)
@@ -181,8 +226,8 @@ async function refreshWaits($: EngineInterface) {
   if (fresh.length > 0) $.ui.toast(`Bus: nessun esito entro la scadenza per ${fresh.join(', ')}`)
 }
 
-async function refreshTeam($: EngineInterface) {
-  const next = await scanTeam($).catch(() => null)
+async function refreshTeam($: EngineInterface, vista: Vista | null) {
+  const next = await scanTeam($, vista).catch(() => null)
   const keys = stuckKeys(next?.sessions ?? [])
   const fresh = seenStuck === null ? [] : [...keys].filter(([, episode]) => !seenStuck!.has(episode))
   seenStuck = new Set(keys.values())
@@ -193,9 +238,11 @@ async function refreshTeam($: EngineInterface) {
 }
 
 async function refresh($: EngineInterface) {
-  await refreshTeam($)
-  await refreshWaits($)
-  const next = await scan($)
+  const source = await loadVista($).catch(() => ({ vista: null, why: 'il centralino del bus non risponde' }))
+  await update($, fallback, () => (source.vista === null ? fallbackText(source.why) : null))
+  await refreshTeam($, source.vista)
+  await refreshWaits($, source.vista)
+  const next = await scan($, source.vista)
   const ids = new Set(next?.messages.map(m => m.id) ?? [])
   const fresh = seen === null ? [] : (next?.messages ?? []).filter(m => !seen!.has(m.id))
   seen = ids
@@ -256,12 +303,15 @@ export const register: Register = on => {
     if (isQuiet) return next(e)
 
     const { Box, Button, Text } = $.ui.resolve(e)
+    // Only inside a band already drawn: a missing centralino alone never raises it.
+    const viaFile = await read($, fallback)
 
     return (
       <Box flexDirection="column">
         {showMessages ? messagesBlock($, snap, Box, Button, Text) : null}
         {showWaits ? waitsBlock(attese, Box, Text) : null}
         {showTeam ? teamBlock($, squadra, Box, Button, Text) : null}
+        {viaFile !== null ? <Text dimColor>{viaFile}</Text> : null}
       </Box>
     )
   })
