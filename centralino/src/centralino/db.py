@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -124,18 +124,6 @@ CREATE TABLE IF NOT EXISTS remote_queue (
   last_error TEXT
 );
 
-CREATE TABLE IF NOT EXISTS shadow_diffs (
-  id     INTEGER PRIMARY KEY,
-  at     TEXT NOT NULL,
-  giro   INTEGER NOT NULL,
-  area   TEXT NOT NULL,
-  chiave TEXT NOT NULL,
-  attesa TEXT,
-  sqlite TEXT,
-  file   TEXT
-);
-CREATE INDEX IF NOT EXISTS diffs_at ON shadow_diffs(at, area);
-
 CREATE TABLE IF NOT EXISTS thread_legacy (
   thread_id TEXT NOT NULL,
   id        TEXT NOT NULL,
@@ -148,7 +136,6 @@ CREATE TABLE IF NOT EXISTS thread_legacy (
 MIGRAZIONI = [
     ("sessions", "waiting_agent", "TEXT"),          # v2: domanda in attesa di risposta (era nel registro)
     ("sessions", "drain_blocks", "INTEGER NOT NULL DEFAULT 0"),  # v2: blocchi consecutivi dello Stop
-    ("wake_decisions", "modo", "TEXT NOT NULL DEFAULT 'ombra'"),  # v2: ombra = solo decisa, attiva = eseguita
 ]
 
 
@@ -178,8 +165,25 @@ class Store:
                 cols = {r["name"] for r in self._w.execute(f"PRAGMA table_info({table})")}
                 if col not in cols:
                     self._w.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+            self._v3()
             self._w.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
                             (str(SCHEMA_VERSION),))
+
+    def _v3(self) -> None:
+        """v3 (F5.5): niente più modo ombra. Via la tabella dei confronti e le decisioni solo
+        decise (mai eseguite), poi la colonna ``modo``. Una volta sola, sui database più vecchi."""
+        r = self._w.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        if r is None or int(r["value"]) >= 3:
+            return
+        self._w.execute("DROP TABLE IF EXISTS shadow_diffs")
+        cols = {c["name"] for c in self._w.execute("PRAGMA table_info(wake_decisions)")}
+        if "modo" in cols:
+            self._w.execute("DELETE FROM wake_decisions WHERE modo='ombra'")
+            try:
+                self._w.execute("ALTER TABLE wake_decisions DROP COLUMN modo")
+            except sqlite3.OperationalError:
+                pass  # SQLite vecchio: la colonna resta col suo default, nessuno la legge più
+        self._w.execute("DELETE FROM meta WHERE key='sveglia_log_offset'")
 
     def _connect(self) -> sqlite3.Connection:
         c = sqlite3.connect(self.path, timeout=10, isolation_level=None, check_same_thread=False)

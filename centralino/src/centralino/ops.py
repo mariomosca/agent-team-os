@@ -1,87 +1,43 @@
 """Le operazioni del centralino (contratto §3 e §13).
 
-Modo ombra (``fonte: file``): i file restano la fonte per tutti i lettori, quindi le letture
-leggono i file; ogni scrittura passa da ``Store.tx()`` e da ``FileBus``, che la notifica a
-``_Specchio`` dentro la stessa transazione: SQLite non è mai avanti ai file.
-
-Modo attivo (``fonte: sqlite``): ``DbBus`` al posto di ``FileBus``, stesse operazioni,
-stato solo nel database. Le risposte hanno la stessa forma nei due modi.
+Ogni operazione è una chiamata sul socket; ogni scrittura passa da ``Store.tx()`` e da ``DbBus``,
+che tiene lo stato solo in SQLite.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, config
+from . import __version__
 from .db import Store
-from .files import BusError, FileBus, location_of
+from .dbbus import BusError, DbBus
 from .indirizzi import AgentMap, ErroreIndirizzo
 from .log import Log
+from .remoto import read_json
 from .tempo import iso_now
 from .vivo import OndaView, Vivacita
 
 PRIORITA = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
 
 
-class _Specchio:
-    """Riceve le scritture di FileBus e le replica nella transazione aperta."""
-
-    def __init__(self, central: "Centralino"):
-        self.c = central
-
-    def message(self, record: dict, *, path: Path | None, state: str, to_slug: str | None,
-                to_host: str, delivery: str) -> None:
-        if self.c._tx_conn is None:
-            # scrittura fatta fuori dal lock (raccolta via SSH): si registra al prossimo _flush
-            self.c._pendenti.append(dict(record=record, path=path, state=state, to_slug=to_slug,
-                                         to_host=to_host, delivery=delivery))
-            return
-        conn = self.c._conn()
-        Store.put_message(conn, record, state=state, to_slug=to_slug, to_host=to_host,
-                          path=str(path) if path else None, origin="centralino", delivery=delivery,
-                          mid=path.stem if path else None)
-        if delivery == "queued":
-            conn.execute("INSERT OR REPLACE INTO remote_queue (msg_id, host, queued_at) VALUES (?,?,?)",
-                         (record["id"], to_host, iso_now()))
-
-    def wait(self, rec: dict) -> None:
-        Store.put_wait(self.c._conn(), rec, origin="centralino")
-
-
 class Centralino:
-    def __init__(self, home: Path, db_path: Path | None = None, log_path: Path | None = None,
-                 kick_wake: Callable[[dict], None] | None = None, pid_alive=None):
+    def __init__(self, home: Path, db_path: Path | None = None, log_path: Path | None = None, pid_alive=None):
         self.home = Path(home)
-        self.modo = config.leggi(self.home)
         self.amap = AgentMap(self.home)
         self.store = Store(db_path or self.home / "centralino.db")
         self._tx_conn = None
-        if self.modo.sqlite:
-            from .dbbus import DbBus
-            self.files: FileBus = DbBus(self.home, self.amap, self)
-        else:
-            self.files = FileBus(self.home, self.amap)
-            self.files.osservatore = _Specchio(self)
+        self.bus = DbBus(self.home, self.amap, self)
+        self.remoto = self.bus.remoto
         self.onda = OndaView(self.home, pid_alive) if pid_alive else OndaView(self.home)
         self.vivo = Vivacita(self.onda, self.store, self.amap.host_self())
-        self.files.session_live = lambda agent, slug: self.vivo.stato(agent, slug).viva
+        self.bus.session_live = lambda agent, slug: self.vivo.stato(agent, slug).viva
         self.log = Log(log_path)
-        # chi invia sveglia subito: in ombra un giro di wake.py, in attivo il giro del centralino
+        # chi invia sveglia subito: il giro della sveglia non aspetta i suoi 10 s
         self.sveglia_ora = threading.Event()
-        if kick_wake is not None:
-            self._kick = kick_wake
-        elif self.modo.attiva:
-            self._kick = lambda caller: self.sveglia_ora.set()
-        else:
-            self._kick = _kick_wake
-        self._pendenti: list[dict] = []
         self.started = time.time()
 
     # ---------- transazione corrente ----------
@@ -151,7 +107,7 @@ class Centralino:
         payload: dict[str, Any] = {"summary": a.get("summary") or ""}
         if a.get("details"):
             payload.update(a["details"])
-        out = self._write(lambda: self.files.send(
+        out = self._write(lambda: self.bus.send(
             sender=me.agent, to=a.get("to") or "", msg_type=a.get("message_type") or "request",
             intent=a.get("intent") or "", payload=payload, priority=a.get("priority") or "normal",
             thread=a.get("thread_id"), in_reply_to=a.get("in_reply_to"),
@@ -159,7 +115,7 @@ class Centralino:
             response_by=a.get("response_by"), sender_session=me.slug, task_id=a.get("task_id"),
             kind=kind, target=_target(caller), live_slugs=self._live))
         if kind != "delega":
-            self._kick(caller)
+            self.sveglia_ora.set()
         return out
 
     def op_reply(self, caller: dict, a: dict, warnings: list) -> dict:
@@ -173,28 +129,28 @@ class Centralino:
         summary = (a.get("summary") or "").strip()
         if not summary:
             raise BusError("bus_reply: summary vuoto")
-        orig = self.files.read_message(me.agent, mid)
+        orig = self.bus.read_message(me.agent, mid)
         if orig["_location"]["state"] == "pending":
-            out = self._write(lambda: self.files.handle(me.agent, me.slug, orig["id"], "risposto", reply=summary,
+            out = self._write(lambda: self.bus.handle(me.agent, me.slug, orig["id"], "risposto", reply=summary,
                                                         live_slugs=self._live, reply_type=typ,
                                                         details=a.get("details")))
         else:
             payload: dict[str, Any] = {"summary": summary, **(a.get("details") or {})}
-            sent = self._write(lambda: self.files.send(
-                sender=me.agent, to=self.files.reply_address(orig), msg_type=typ,
+            sent = self._write(lambda: self.bus.send(
+                sender=me.agent, to=self.bus.reply_address(orig), msg_type=typ,
                 intent=f"re-{orig.get('intent') or 'risposta'}", payload=payload,
                 thread=orig.get("thread_id"), in_reply_to=orig["id"], sender_session=me.slug,
                 task_id=orig.get("task_id"), live_slugs=self._live))
             out = {"message": orig["id"], "esito": None, "task_id": orig.get("task_id"),
                    "sent": {"id": sent["id"], "to": sent["delivered_to"], "queued": sent.get("queued"),
                             "warning": sent.get("warning")}}
-        self._kick(caller)
-        out["remaining"] = self.files.count_inbox(me.agent, me.slug)
+        self.sveglia_ora.set()
+        out["remaining"] = self.bus.count_inbox(me.agent, me.slug)
         return out
 
     def op_expect(self, caller: dict, a: dict, warnings: list) -> dict:
         me = self._who(caller)
-        rec = self._write(lambda: self.files.expect(
+        rec = self._write(lambda: self.bus.expect(
             me.agent, me.slug, a.get("description") or "", delegated_to=a.get("delegated_to"),
             deadline=a.get("deadline"), task_id=a.get("task_id"), target=_target(caller)))
         addr = f"{me.agent}/{me.slug}"
@@ -212,15 +168,15 @@ class Centralino:
             # passo 0 (BR24-F2.3): senza message_id, task_id + chiuso chiudono l'attesa
             if not a.get("task_id") or a.get("esito") != "chiuso":
                 raise BusError("without message_id: task_id and esito='chiuso' close a delegation's wait")
-            out = self._write(lambda: self.files.close_wait(me.agent, me.slug, a["task_id"]))
-            out["remaining"] = self.files.count_inbox(me.agent, me.slug)
+            out = self._write(lambda: self.bus.close_wait(me.agent, me.slug, a["task_id"]))
+            out["remaining"] = self.bus.count_inbox(me.agent, me.slug)
             return out
-        out = self._write(lambda: self.files.handle(me.agent, me.slug, a.get("message_id") or "",
+        out = self._write(lambda: self.bus.handle(me.agent, me.slug, a.get("message_id") or "",
                                                     a.get("esito") or "", task_id=a.get("task_id"),
                                                     reply=a.get("reply"), live_slugs=self._live))
         if out.get("sent") and not out["sent"].get("queued"):
-            self._kick(caller)
-        out["remaining"] = self.files.count_inbox(me.agent, me.slug)
+            self.sveglia_ora.set()
+        out["remaining"] = self.bus.count_inbox(me.agent, me.slug)
         return out
 
     def op_close(self, caller: dict, a: dict, warnings: list) -> dict:
@@ -231,29 +187,29 @@ class Centralino:
         if a.get("message_id"):
             if esito not in ("chiuso", "riarma", "letto"):
                 raise BusError("bus_close: esito chiuso, riarma o letto (per rispondere usa bus_reply)")
-            out = self._write(lambda: self.files.handle(me.agent, me.slug, a["message_id"], esito,
+            out = self._write(lambda: self.bus.handle(me.agent, me.slug, a["message_id"], esito,
                                                         task_id=a.get("task_id"), live_slugs=self._live))
         elif a.get("task_id"):
             if esito != "chiuso":
                 raise BusError("bus_close con solo task_id: esito chiuso")
-            out = self._write(lambda: self.files.close_wait(me.agent, me.slug, a["task_id"], a.get("note")))
+            out = self._write(lambda: self.bus.close_wait(me.agent, me.slug, a["task_id"], a.get("note")))
         else:
             raise BusError("bus_close: serve message_id oppure task_id")
-        out["remaining"] = self.files.count_inbox(me.agent, me.slug)
+        out["remaining"] = self.bus.count_inbox(me.agent, me.slug)
         return out
 
     def op_archive(self, caller: dict, a: dict, warnings: list) -> dict:
         me = self._who(caller)
         state = a.get("state") or "done"
-        dest = self._write(lambda: self.files.archive_message(me.agent, a.get("message_id") or "", state))
+        dest = self._write(lambda: self.bus.archive_message(me.agent, a.get("message_id") or "", state))
         return {"archived": a.get("message_id"), "state": state, "path": str(dest),
-                "remaining": self.files.count_inbox(me.agent, me.slug)}
+                "remaining": self.bus.count_inbox(me.agent, me.slug)}
 
     def op_inbox(self, caller: dict, a: dict, warnings: list) -> dict:
         me = self._who(caller)
         self._collect()
         items = []
-        for mid, scope, data in self.files.inbox_items(me.agent, me.slug, all_sessions=bool(a.get("all_sessions"))):
+        for mid, scope, data in self.bus.inbox_items(me.agent, me.slug, all_sessions=bool(a.get("all_sessions"))):
             row = self._summarize(mid, scope, data, me.slug)
             if a.get("unread_only") and not row["requires_response"]:
                 continue
@@ -261,7 +217,7 @@ class Centralino:
         items.sort(key=lambda r: (PRIORITA.get(r["priority"], 2), r["ts"] or ""))
         out: dict[str, Any] = {"agent": me.agent, "slug": me.slug, "count": len(items), "messages": items}
         mie = []
-        for w in self.files.list_waits(me.agent, me.slug):
+        for w in self.bus.list_waits(me.agent, me.slug):
             if w.get("state") != "expected":
                 continue
             rets = [{"msg_id": k, "type": e.get("type"), "from": e.get("from"), "summary": e.get("summary"),
@@ -279,8 +235,8 @@ class Centralino:
         if a.get("thread_id") and not a.get("message_id"):
             return self.op_thread(caller, a, warnings)
         me = self._who(caller)
-        data = self.files.read_message(me.agent, a.get("message_id") or "")
-        data["_reply_to"] = self.files.reply_address(data)
+        data = self.bus.read_message(me.agent, a.get("message_id") or "")
+        data["_reply_to"] = self.bus.reply_address(data)
         link = data.get("task_link") or {}
         tid = data.get("task_id")
         gest = (f"bus_gestisci(message_id='{data['id']}', esito=...): chiuso (finito), riarma (non ha "
@@ -291,11 +247,11 @@ class Centralino:
                 f"Da agganciare: {data.get('from')} ha piu' deleghe aperte da te "
                 f"({', '.join(link.get('candidates') or [])}) e questo messaggio non dice a quale "
                 f"appartiene. Decidi tu: {gest}, con task_id='<quello giusto>'.")
-        elif tid and self.files.own_wait(me.agent, tid, me.slug) is not None:
+        elif tid and self.bus.own_wait(me.agent, tid, me.slug) is not None:
             what = "Domanda" if data.get("type") == "question" else "Ritorno"
             data["_task_hint"] = (f"{what} sul task {tid} che hai delegato a {data['_reply_to']}. "
                                   f"Gestiscilo con {gest}.")
-        elif tid and (other := self.files.wait_owner(tid)) is not None and other[0] == me.agent:
+        elif tid and (other := self.bus.wait_owner(tid)) is not None and other[0] == me.agent:
             # BR24-F2.6: delegato da un'altra sessione viva di questo agente, non da questa
             data["_task_hint"] = (f"Messaggio sul task {tid}, delegato da un'altra sessione ({me.agent}/"
                                   f"{other[1]}), non da te: non chiuderlo per lei. Se non ti "
@@ -310,20 +266,20 @@ class Centralino:
                 f"message_type='response', in_reply_to='{data['id']}') — the task_id travels with "
                 "it and wakes the sender. Questions on the way: message_type='question', same "
                 "task_id (in_reply_to carries it). Every return wakes the delegator.")
-        self.files.clear_waiting_agent(me.agent, me.slug, answer=data)
+        self.bus.clear_waiting_agent(me.agent, me.slug, answer=data)
         if a.get("archive"):
-            dest = self._write(lambda: self.files.archive_message(me.agent, a.get("message_id") or "", "read"))
+            dest = self._write(lambda: self.bus.archive_message(me.agent, a.get("message_id") or "", "read"))
             data["_location"]["archived_to"] = str(dest)
         return data
 
     def op_thread(self, caller: dict, a: dict, warnings: list) -> dict:
         tid = a.get("thread_id") or ""
-        entries = self.files.thread(tid)
+        entries = self.bus.thread(tid)
         return {"thread_id": tid, "count": len(entries), "entries": entries}
 
     def op_waits(self, caller: dict, a: dict, warnings: list) -> dict:
         me = self._who(caller)
-        rows = self.files.list_waits(me.agent, None if a.get("all_sessions") else me.slug,
+        rows = self.bus.list_waits(me.agent, None if a.get("all_sessions") else me.slug,
                                      bool(a.get("include_closed")))
         asks, unhandled = [], []
         for r in rows:
@@ -353,7 +309,7 @@ class Centralino:
         except ErroreIndirizzo as exc:
             me = {"error": str(exc), "host": host}
         collected = self._collect()
-        remote = {h: self.files.remote_sessions(h) for h in self.amap.remote_hosts()}
+        remote = {h: self.remoto.remote_sessions(h) for h in self.amap.remote_hosts()}
         names = [a["agent"]] if a.get("agent") else sorted(self.amap.agents())
         roster = []
         for name in names:
@@ -363,7 +319,7 @@ class Centralino:
             vive = self.vivo.vive(name)
             live = [{"slug": s.slug, "host": host,
                      "address": f"{name}/{s.slug}" if len(vive) > 1 else name,
-                     "workspace": s.workspace, "pending": self.files.count_inbox(name, s.slug),
+                     "workspace": s.workspace, "pending": self.bus.count_inbox(name, s.slug),
                      "stato": s.descrizione, "canale": s.canale}
                     for s in vive]
             for h, rs in remote.items():
@@ -372,7 +328,7 @@ class Centralino:
                           "last_seen": s.get("last_seen"), "stato": f"viva su {h} (registro remoto)"}
                          for s in rs if s.get("name") == name]
             roster.append({"agent": name, "role": info.get("role", ""), "domain": info.get("domain"),
-                           "live_sessions": live, "broadcast_pending": self.files.broadcast_pending(name)})
+                           "live_sessions": live, "broadcast_pending": self.bus.broadcast_pending(name)})
         out: dict[str, Any] = {"me": me, "roster": roster}
         if self.amap.hosts():
             hosts = {}
@@ -381,14 +337,13 @@ class Centralino:
                     continue
                 hinfo: dict[str, Any] = {}
                 if h in remote:
-                    snap = self.files.remote_status(h)
+                    snap = self.remoto.remote_status(h)
                     hinfo["reachable"] = snap.get("ok", False)
                     hinfo["fetched_at"] = snap.get("fetched_at")
                 q = self.home / "outbox" / h
                 hinfo["queued_for_it"] = len(list(q.rglob("msg-*.json"))) if q.is_dir() else 0
                 last = self.home / "hosts" / h / "last-collect.json"
                 if last.is_file():
-                    from .files import read_json
                     hinfo["last_collect"] = read_json(last)
                 hosts[h] = hinfo
             out["hosts"] = hosts
@@ -421,8 +376,7 @@ class Centralino:
 
     def op_vista(self, caller: dict, a: dict, warnings: list) -> dict:
         """Sola lettura, senza chiamante e senza heartbeat: i record nel formato dei file di
-        oggi (``raw``), così i parser di Orbit e della band cambiano solo la fonte. Legge
-        SQLite (in modo ombra è lo specchio dei file, al più 5 s indietro)."""
+        oggi (``raw``), così i parser di Orbit e della band cambiano solo la fonte."""
         from datetime import timedelta
         from .tempo import iso, now
         adesso = now()
@@ -437,10 +391,6 @@ class Centralino:
             waiting = None
             if row is not None and row["waiting_agent"]:
                 waiting = json.loads(row["waiting_agent"])
-            elif not self.modo.sqlite:
-                from .files import read_json
-                waiting = (read_json(self.home / "registry" / f"{st.agent}.d" / f"{st.slug}.json") or {}).get(
-                    "waiting_agent")
             sessioni.append({**st.as_dict(),
                              "claude_session_id": (onda or {}).get("sessionId") or (row["claude_session_id"] if row else None),
                              "onda_terminal_id": (onda or {}).get("terminalId") or (row["onda_terminal_id"] if row else None),
@@ -449,7 +399,6 @@ class Centralino:
                              "waiting_agent": waiting, "onda": onda if onda and onda.get("state") != "exited" else onda})
         remoti = {}
         for h in self.amap.remote_hosts():
-            from .files import read_json
             snap = read_json(self.home / "hosts" / h / "status.json") or {}
             remoti[h] = {"ok": bool(snap.get("ok")), "fetched_at": snap.get("fetched_at"),
                          "sessioni": snap.get("sessions") or []}
@@ -470,7 +419,7 @@ class Centralino:
         workspaces.update({x["agent"]: x["workspace_root"] for x in agenti if x.get("workspace_root")})
         doc = self.onda.doc()
         onda = {"valido": self.onda.valid(), "writtenAt": doc.get("writtenAt"), "sessioni": self.onda.entries()}
-        return {"host": host, "generato_at": iso(adesso), "modo": self.modo.as_dict(), "agenti": agenti,
+        return {"host": host, "generato_at": iso(adesso), "agenti": agenti,
                 "sessioni": sessioni, "onda": onda, "remoti": remoti, "messaggi": messaggi, "attese": attese,
                 "workspaces": workspaces}
 
@@ -487,10 +436,7 @@ class Centralino:
                 "pending": cnt("SELECT COUNT(*) FROM messages WHERE state='pending'"),
                 "attese_aperte": cnt("SELECT COUNT(*) FROM waits WHERE state='expected'"),
                 "sessioni_vive": len(self.vivo.vive()),
-                "decisioni_sveglia": cnt("SELECT COUNT(*) FROM wake_decisions"),
-                "differenze": cnt("SELECT COUNT(*) FROM shadow_diffs")}
-
-    # ombra.* sono aggiunte da ombra.py (Ombra.registra)
+                "decisioni_sveglia": cnt("SELECT COUNT(*) FROM wake_decisions")}
 
     OPS: dict[str, Callable] = {
         "send": op_send, "reply": op_reply, "expect": op_expect, "handle": op_handle,
@@ -503,43 +449,35 @@ class Centralino:
     # ---------- utilità ----------
 
     def raccolta(self) -> list[dict]:
-        """Giro periodico verso gli altri host (modo attivo, F4.4): consegna la coda, tira giù
-        quello che hanno lasciato per noi e aggiorna lo stato delle loro sessioni (F2.5)."""
-        out = self.files.collect(force=True)
+        """Giro periodico verso gli altri host: consegna la coda, tira giù quello che hanno
+        lasciato per noi e aggiorna lo stato delle loro sessioni."""
+        out = self.remoto.collect(force=True)
         for h in self.amap.remote_hosts():
-            self.files.remote_status(h, force=True)
-        if self.modo.sqlite:
-            q = self.home / "outbox"
-            def scrivi():
-                c = self._conn()
-                for r in c.execute("SELECT msg_id, host FROM remote_queue").fetchall():
-                    if not any((q / r["host"]).rglob(f"{r['msg_id']}.json")):
-                        c.execute("DELETE FROM remote_queue WHERE msg_id=?", (r["msg_id"],))
-                        c.execute("UPDATE messages SET delivery='remote' WHERE id=?", (r["msg_id"],))
-            self._write(scrivi)
+            self.remoto.remote_status(h, force=True)
+        q = self.home / "outbox"
+
+        def scrivi():
+            c = self._conn()
+            for r in c.execute("SELECT msg_id, host FROM remote_queue").fetchall():
+                if not any((q / r["host"]).rglob(f"{r['msg_id']}.json")):
+                    c.execute("DELETE FROM remote_queue WHERE msg_id=?", (r["msg_id"],))
+                    c.execute("UPDATE messages SET delivery='remote' WHERE id=?", (r["msg_id"],))
+        self._write(scrivi)
         if any(x.get("pulled") for x in out):
             self.sveglia_ora.set()
         return out
 
     def _collect(self) -> list[dict]:
         """Raccolta dagli altri host FUORI dal lock di scrittura: l'SSH può durare secondi e non
-        deve fermare gli altri scrittori. Quello che arriva si registra dopo, in una transazione breve."""
+        deve fermare gli altri scrittori; ogni messaggio arrivato si registra in una transazione breve."""
         if not self.amap.remote_hosts():
             return []
-        out = self.files.collect()
-        if self._pendenti:
-            pendenti, self._pendenti = self._pendenti, []
-
-            def scrivi():
-                for p in pendenti:
-                    self.files.osservatore.message(p.pop("record"), **p)
-            self._write(scrivi)
-        return out
+        return self.remoto.collect()
 
     def _summarize(self, mid: str, scope: str, data: dict, own_slug: str) -> dict:
         return {"id": mid, "from": data.get("from"), "from_session": data.get("from_session"),
                 "from_host": (data.get("context") or {}).get("host"),
-                "reply_to": self.files.reply_address(data), "type": data.get("type"),
+                "reply_to": self.bus.reply_address(data), "type": data.get("type"),
                 "intent": data.get("intent"), "priority": data.get("priority", "normal"),
                 "requires_response": data.get("requires_response", False),
                 "response_by": data.get("response_by"), "thread_id": data.get("thread_id"),
@@ -552,19 +490,3 @@ def _target(caller: dict) -> dict:
     return {"onda_terminal_id": caller.get("onda_terminal_id"),
             "claude_session_id": caller.get("claude_session_id"),
             "tmux_pane": caller.get("tmux_pane")}
-
-
-def _kick_wake(caller: dict) -> None:
-    """Un giro della sveglia di oggi subito, come faceva il MCP (fire and forget)."""
-    script = os.environ.get("AB_WAKE_SCRIPT")
-    if not script:
-        cfg = caller.get("config_dir") or str(Path.home() / ".claude")
-        script = str(Path(cfg) / "scripts" / "agent-team-os-wake.py")
-    if not Path(script).is_file():
-        return
-    py = "/usr/bin/python3" if Path("/usr/bin/python3").exists() else sys.executable
-    try:
-        subprocess.Popen([py, "-I", script, "tick"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True)
-    except OSError:
-        pass

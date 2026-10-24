@@ -18,9 +18,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import tempo
-from .files import atomic_write, read_json
-from .ombra import Ombra
+from .hookops import HookOps
 from .ops import Centralino
+from .remoto import atomic_write, read_json
+from .sveglia import Sveglia
 
 
 class Rifiuto(Exception):
@@ -34,7 +35,6 @@ class Banco:
     home: Path
     t: datetime = field(default_factory=lambda: datetime(2026, 10, 24, 16, 0, tzinfo=timezone.utc))
     onda_sessions: dict = field(default_factory=dict)
-    attivo: bool = False
 
     def __post_init__(self):
         self.root = self.home / "ws"
@@ -66,14 +66,8 @@ class Banco:
         (self.home / "AGENT_MAP.json").write_text(json.dumps(amap), encoding="utf-8")
         (self.home / "personas").mkdir(exist_ok=True)
         (self.home / "personas" / "kai.md").write_text("# Kai\n", encoding="utf-8")
-        if self.attivo:
-            from . import config
-            config.scrivi(self.home, config.Modo("sqlite", "attiva", False))
-        self.c = Centralino(self.home, kick_wake=lambda caller: None, pid_alive=lambda pid: True)
-        self.ombra = Ombra(self.c)
-        self.ombra.registra()
-        from .hookops import HookOps
-        HookOps(self.c, self.ombra).registra()
+        self.c = Centralino(self.home, pid_alive=lambda pid: True)
+        HookOps(self.c).registra()
         self.prompt: list[tuple[str, str]] = []   # (terminalId, testo) scritti dal finto Onda
         self.onda_rifiuta: str | None = None
 
@@ -82,8 +76,7 @@ class Banco:
                 return {"errorCode": "not_idle", "reason": self.onda_rifiuta}
             self.prompt.append((params["terminalId"], params["prompt"]))
             return {"submitted": True}
-        from .sveglia import Sveglia
-        self.sveglia = Sveglia(self.c, self.ombra, onda_call=finta_onda)
+        self.sveglia = Sveglia(self.c, onda_call=finta_onda)
         self._scrivi_onda()
 
     # ---------- tempo e Onda ----------
@@ -151,24 +144,17 @@ class Banco:
         return out
 
     def giro(self) -> None:
-        if self.attivo:
-            self.ombra.importa(solo_nuovi=True)
-            self.sveglia.giro()
-        else:
-            self.ombra.importa()
-            self.ombra.giro_sveglia()
+        self.sveglia.giro()
 
     def prompt_a(self, addr: str) -> list[str]:
         agent, _, slug = addr.partition("/")
         return [t for term, t in self.prompt if term == f"pane-{agent}-{slug}"]
 
-    def scrivi_come_lib(self, to: str, record: dict) -> Path:
-        """Un messaggio scritto da un altro componente (lib, wake.py, sync): fuori dal centralino."""
+    def consegna(self, to: str, record: dict) -> str:
+        """Un messaggio che arriva da fuori (cloud, altro host): entra dall'op ``consegna``."""
         agent, _, slug = to.partition("/")
-        d = self.home / "inboxes" / agent / (f"@{slug}" if slug else "")
-        path = d / f"{record['id']}.json"
-        atomic_write(path, record)
-        return path
+        self.op(None, "consegna", record=record, agent=agent, slug=slug or None)
+        return record["id"]
 
     def chiudi(self) -> None:
         self.c.store.close()
@@ -227,7 +213,7 @@ def caso_irjocy(b: Banco) -> None:
     _check(len(giri) == 1, "esito e domanda accorpati nello stesso giro")
     r = b.op("alita/work-hub", "handle", message_id=esito["id"], esito="chiuso")
     _check(r["wait"]["state"] == "closed", "chiuso chiude l'attesa")
-    wait = read_json(b.home / "waits" / "alita" / "@work-hub" / f"{tid}.json")
+    wait = json.loads(b.c.store.wait(tid)["raw"])
     _check("pending_wake" not in wait, "nessun pending_wake resta sull'attesa chiusa")
 
 
@@ -258,15 +244,15 @@ def caso_xn9lv0(b: Banco) -> None:
     _check(not b.stato("kai/agent-team-os").viva, "la delegante è chiusa")
     com = b.op("alita/work-hub", "send", to="kai", intent="onda-release", summary="comunicazione",
                message_type="brief", kind="comunicazione")
-    cloud = b.scrivi_come_lib("kai", _msg("msg-20261024T013000Z-cloud001", "alita/cloud", "kai", "response",
-                                          tempo.iso(b.t), summary="analisi notturna", context={"host": "cloud"}))
+    cloud = b.consegna("kai", _msg("msg-20261024T013000Z-cloud001", "alita/cloud", "kai", "response",
+                                   tempo.iso(b.t), summary="analisi notturna", context={"host": "cloud"}))
     b.giro()
     dec = b.decisioni("kai/orbit")
     _check(dec[com["id"]][:2] == ("nessuna", "niente"), f"comunicazione: niente sveglia {dec.get(com['id'])}")
-    _check(dec[cloud.stem][:2] == ("nessuna", "niente"), "cloud senza task_id: mai un ritorno")
-    _check(b.ombra.blocca_stop("kai", "orbit") == [], "non bloccano lo Stop")
+    _check(dec[cloud][:2] == ("nessuna", "niente"), "cloud senza task_id: mai un ritorno")
+    _check(b.sveglia.blocca_stop("kai", "orbit") == [], "non bloccano lo Stop")
     _check(not b.decisioni("kai/agent-team-os"), "nessuna sveglia cercata sulla sessione chiusa")
-    row = b.c.store.message(cloud.stem)
+    row = b.c.store.message(cloud)
     _check(row["task_id"] is None, "il centralino non aggancia: task_id resta vuoto")
     r = b.op("kai/orbit", "read", message_id=com["id"])
     _check("_task_hint" not in r, "kai/orbit non si sente dire 'hai delegato'")
@@ -330,7 +316,7 @@ def caso_delega_completa(b: Banco) -> None:
     b.giro()
     _check(b.decisioni("alita/work-hub")[q["id"]][1:] == ("coda", "al_lavoro:working"),
            "domanda a una sessione al lavoro: in coda")
-    _check(b.ombra.blocca_stop("alita", "work-hub") == [q["id"]], "la domanda blocca lo Stop")
+    _check(b.sveglia.blocca_stop("alita", "work-hub") == [q["id"]], "la domanda blocca lo Stop")
     b.onda("alita/work-hub", "idle")
     b.giro()
     _check(b.decisioni("alita/work-hub")[q["id"]][1] == "sveglia", "a fine turno la domanda sveglia")
@@ -341,10 +327,10 @@ def caso_delega_completa(b: Banco) -> None:
     b.onda("kai/onda", None)                       # l'esecutore muore
     b.avanza(300)
     b.onda("alita/work-hub", "idle")
-    late = b.scrivi_come_lib("kai/onda", _msg("msg-20261024T170000Z-tardivo1", "alita/work-hub", "kai/onda",
-                                               "response", tempo.iso(b.t), task_id=tid))
+    late = b.consegna("kai/onda", _msg("msg-20261024T170000Z-tardivo1", "alita/work-hub", "kai/onda",
+                                       "response", tempo.iso(b.t), task_id=tid))
     b.giro()
-    _check(b.decisioni("kai/onda")[late.stem][1:] == ("niente", "non_viva"), "sessione chiusa: nessuna sveglia")
+    _check(b.decisioni("kai/onda")[late][1:] == ("niente", "non_viva"), "sessione chiusa: nessuna sveglia")
     e = b.op("kai/onda", "send", to="alita/work-hub", intent="fatto", summary="fatto", message_type="response",
              task_id=tid, heartbeat=False)
     b.giro()
@@ -401,46 +387,8 @@ def caso_heartbeat_senza_canale(b: Banco) -> None:
     _check(not b.stato("alita/work-hub").viva, "due battiti persi: chiusa")
 
 
-def caso_ombra_pulita(b: Banco) -> None:
-    """Scritture di altri componenti importate senza differenze non attese."""
-    b.onda("kai/orbit", "idle")
-    m = b.scrivi_come_lib("kai/orbit", _msg("msg-20261024T160000Z-dallalib", "leo/pm", "kai/orbit", "brief",
-                                             tempo.iso(b.t), kind="comunicazione"))
-    b.op("alita/work-hub", "send", to="kai/orbit", intent="x", summary="x", message_type="brief",
-         kind="comunicazione")
-    b.ombra.importa()
-    rec = read_json(m)
-    rec["task_link"] = {"by": "agent", "at": tempo.iso(b.t)}            # riscrittura come wake.py
-    atomic_write(m, rec)
-    old = b.t
-    b.avanza(60)
-    for p in (b.home / "inboxes").rglob("msg-*.json"):                  # i file non sono più "recenti"
-        os.utime(p, (old.timestamp(), old.timestamp()))
-    res = b.ombra.confronta()
-    righe = b.c.store.read().execute("SELECT area, chiave, sqlite, file FROM shadow_diffs WHERE attesa IS NULL").fetchall()
-    _check(res["non_attese"] == 0, f"nessuna differenza non attesa: {[dict(r) for r in righe]}")
-    _check(json.loads(b.c.store.message(m.stem)["raw"]).get("task_link"), "la riscrittura è stata importata")
-
-
-def caso_log_sveglia(b: Banco) -> None:
-    """Il confronto legge sveglia.log e classifica le differenze con il motivo di oggi."""
-    b.onda("alita/work-hub", "idle")
-    out = b.op("kai/orbit", "send", to="alita/work-hub", intent="x", summary="x", message_type="response",
-               task_id=b.op("alita/work-hub", "expect", description="y")["task_id"])
-    b.giro()
-    log = b.home / "logs" / "sveglia.log"
-    log.parent.mkdir(parents=True, exist_ok=True)
-    log.write_text(f"{tempo.iso(b.t)} rimandata t-x alita/work-hub ({out['id']}): tetto_task\n", encoding="utf-8")
-    b.c.store.tx  # noqa: B018
-    b.c._write(lambda: b.c._conn().execute("INSERT OR REPLACE INTO meta (key, value) VALUES "
-                                            "('sveglia_log_offset', '0')"))
-    b.ombra.confronta()
-    r = b.c.store.read().execute("SELECT attesa FROM shadow_diffs WHERE area='sveglia'").fetchall()
-    _check([x["attesa"] for x in r] == ["sveglia:tetto_task"], f"differenza attesa per tetto_task: {list(map(dict, r))}")
-
-
 # ======================================================================
-# Scenari del modo attivo (fonte sqlite, sveglia attiva): F4.1, F4.2, F4.4, F5.1, F5.4
+# Scenari dell'uso reale: sveglia, hook, cloud, pulizia (F4.1, F4.2, F4.4, F5.1, F5.4)
 # ======================================================================
 
 def _nessun_file_in_casella(b: Banco) -> None:
@@ -594,31 +542,15 @@ def att_pulizia(b: Banco) -> None:
     _check(b.c.store.message(c["id"])["state"] == "read", "la comunicazione si archivia")
 
 
-def att_rete_di_sicurezza(b: Banco) -> None:
-    b.onda("kai/orbit", "idle")
-    m = b.scrivi_come_lib("kai/orbit", _msg("msg-20261024T190000Z-dallalib", "leo/pm", "kai/orbit", "request",
-                                             tempo.iso(b.t), kind="delega"))
-    b.ombra.importa(solo_nuovi=True)
-    _check(b.c.store.message(m.stem)["state"] == "pending", "un file scritto fuori entra una volta")
-    b.op("kai/orbit", "close", message_id=m.stem, esito="letto")
-    os.utime(m, None)
-    os.utime(m.parent, None)
-    b.ombra.importa(solo_nuovi=True)
-    _check(b.c.store.message(m.stem)["state"] == "read", "il file vecchio non riporta pending un messaggio gestito")
-
-
-SCENARI_ATTIVI = [att_delega_completa, att_stop, att_hook_start, att_scadenza, att_senza_canale, att_agente_nudo,
-                  att_cloud, att_pulizia, att_rete_di_sicurezza]
-
 SCENARI = [caso_irjocy, caso_orbit_non_viva, caso_xn9lv0, caso_attese_non_chiudibili, caso_passaggio_attesa,
-           caso_delega_completa,
-           caso_mini_irraggiungibile, caso_due_sessioni, caso_heartbeat_senza_canale, caso_ombra_pulita,
-           caso_log_sveglia]
+           caso_delega_completa, caso_mini_irraggiungibile, caso_due_sessioni, caso_heartbeat_senza_canale,
+           att_delega_completa, att_stop, att_hook_start, att_scadenza, att_senza_canale, att_agente_nudo,
+           att_cloud, att_pulizia]
 
 
 def esegui(scenario, base: Path | None = None) -> None:
     tmp = Path(tempfile.mkdtemp(prefix="centralino-sim-", dir=base))
-    b = Banco(tmp / "bus", attivo=scenario in SCENARI_ATTIVI)
+    b = Banco(tmp / "bus")
     try:
         scenario(b)
     finally:
@@ -628,7 +560,7 @@ def esegui(scenario, base: Path | None = None) -> None:
 
 def main(verbose: bool = False) -> int:
     falliti = 0
-    for s in SCENARI + SCENARI_ATTIVI:
+    for s in SCENARI:
         try:
             esegui(s)
             print(f"ok    {s.__name__}")
@@ -637,6 +569,6 @@ def main(verbose: bool = False) -> int:
             print(f"FALLITO {s.__name__}: {exc}")
             if verbose:
                 traceback.print_exc()
-    n = len(SCENARI) + len(SCENARI_ATTIVI)
+    n = len(SCENARI)
     print(f"\n{n - falliti}/{n} scenari ok")
     return 1 if falliti else 0

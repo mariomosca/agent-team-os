@@ -1,38 +1,108 @@
-"""SQLite fonte unica (BR24-F5.1): stesse operazioni di FileBus, stato solo nel database.
+"""Il bus in SQLite: caselle, attese, thread, registro delle sessioni (BR24-F5.5).
 
-Eredita da FileBus il trasporto (SSH verso il mini, coda ``outbox/<host>/`` letta dalla
-raccolta e da alita-memoria-sync), gli indirizzi e le regole d'invio; riscrive tutto ciò
-che legge o scrive lo stato: caselle, attese, thread, registro. Nessun file di casella,
-attesa o thread viene più scritto. L'unico file che resta è la vista di compatibilità
-``registry/<agente>.d/<slug>.json`` per Onda (``scrivi_registro``).
+SQLite è l'unica fonte. Nessun file di casella, attesa o thread viene scritto: l'unico file
+che resta è la vista di compatibilità ``registry/<agente>.d/<slug>.json`` per Onda
+(``scrivi_registro``). Il trasporto verso gli altri host sta in ``remoto.py``.
 
-Qui si registrano anche i ritorni di una delega quando arrivano (prima lo faceva il giro
-di wake.py, ``collect_returns``): un messaggio con il task_id di un'attesa aperta, diretto
-alla sessione che aspetta, entra in ``returns`` come pending.
+Qui si registrano anche i ritorni di una delega quando arrivano: un messaggio con il task_id
+di un'attesa aperta, diretto alla sessione che aspetta, entra in ``returns`` come pending.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from .db import Store
-from .files import (ESITI, OPEN_WAIT_STATES, TASK_ID_RE, BusError, FileBus, atomic_write, msg_id,
-                    new_task_id, thread_id, with_pending_wake)
-from .indirizzi import parse_addr
-from .tempo import iso_now, parse_iso
+from .indirizzi import AgentMap, ErroreIndirizzo, parse_addr
+from .remoto import Remoto, atomic_write, rand
+from .tempo import iso_now, now, parse_iso
 
 RITORNI = ("response", "question")
+DECLARED_TYPES = ("request", "brief", "handoff")
+KINDS = ("delega", "comunicazione")
+KIND_HELP = (
+    "say what this {type} is with kind: 'delega' if you want the outcome back (the bus "
+    "registers the wait and wakes you on every return), 'comunicazione' if nothing "
+    "has to come back. There is no default."
+)
+ESITI = ("chiuso", "riarma", "risposto", "letto")
+OPEN_WAIT_STATES = ("expected",)
+TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$")
+
+
+class BusError(RuntimeError):
+    """Rifiuto che tocca al chiamante correggere. ``code`` è il codice d'errore del contratto."""
+
+    def __init__(self, message: str, code: str = "bad_request"):
+        super().__init__(message)
+        self.code = code
+
+
+def msg_id() -> str:
+    return f"msg-{now().strftime('%Y%m%dT%H%M%SZ')}-{rand(8)}"
+
+
+def thread_id() -> str:
+    return f"thread-{now().strftime('%Y%m%d')}-{rand(6)}"
+
+
+def new_task_id() -> str:
+    return f"t-{now().strftime('%Y%m%d')}-{rand(6)}"
+
+
+def with_pending_wake(rec: dict) -> dict:
+    """Il motivo dell'ultima sveglia rinviata ancora aperta, solo su un'attesa aperta."""
+    why = [e["pending_wake"] for e in (rec.get("returns") or {}).values()
+           if isinstance(e, dict) and e.get("state") == "pending" and e.get("pending_wake")]
+    if why and rec.get("state") == "expected":
+        rec["pending_wake"] = max(why, key=lambda w: w.get("checked_at") or "")
+    else:
+        rec.pop("pending_wake", None)
+    return rec
 
 
 def _d(v) -> dict:
     return v if isinstance(v, dict) else {}
 
 
-class DbBus(FileBus):
-    def __init__(self, home: Path, amap, central):
-        super().__init__(home, amap)
+class DbBus:
+    def __init__(self, home: Path, amap: AgentMap, central):
+        self.home = Path(home)
+        self.amap = amap
         self.c = central
+        self.remoto = Remoto(self.home, amap, lambda agent, slug, mid, rec:
+                             self.accogli(rec, agent, slug, origin="mini", mid=mid))
+        # sessione viva secondo la regola unica (il centralino la imposta): serve al passaggio
+        # di un'attesa quando la sessione che ha delegato non c'è più
+        self.session_live = lambda agent, slug: False
+
+    # ---------- agenti e host ----------
+
+    def agents(self) -> dict:
+        return self.amap.agents()
+
+    def agent_exists(self, agent: str) -> bool:
+        return self.amap.agent_exists(agent)
+
+    def host_self(self) -> str | None:
+        return self.amap.host_self()
+
+    def hosts(self) -> dict:
+        return self.amap.hosts()
+
+    def resolve_host(self, agent: str, want: str | None = None) -> str | None:
+        try:
+            return self.amap.resolve_host(agent, want)
+        except ErroreIndirizzo as exc:
+            raise BusError(str(exc), exc.code) from None
+
+    def routing_denied(self, sender: str, recipient: str) -> str | None:
+        rules = (self.amap.data().get("routing_rules") or {}).get(sender, {})
+        if recipient in (rules.get("deny") or []):
+            return rules.get("reason", "isolation rule")
+        return None
 
     # ---------- transazioni ----------
 
@@ -63,9 +133,6 @@ class DbBus(FileBus):
             args.append(slug)
         return self._r().execute(q + " ORDER BY id", args).fetchall()
 
-    def list_inbox(self, agent, slug=None, all_sessions=False):
-        return [r["id"] for r in self._pending(agent, slug, all_sessions)]
-
     def count_inbox(self, agent, slug=None, all_sessions=False):
         return len(self._pending(agent, slug, all_sessions))
 
@@ -76,10 +143,6 @@ class DbBus(FileBus):
     def broadcast_pending(self, agent):
         return self._r().execute("SELECT COUNT(*) FROM messages WHERE to_agent=? AND to_slug IS NULL "
                                  "AND state='pending' AND to_host=?", (agent, self.host_self() or "")).fetchone()[0]
-
-    def resolve_message(self, agent, partial_id):
-        r = self._row(agent, partial_id)
-        return r["id"] if r else None
 
     def read_message(self, agent, partial_id):
         r = self._row(agent, partial_id)
@@ -117,16 +180,17 @@ class DbBus(FileBus):
         tid = data.get("task_id") or _d(data.get("payload")).get("task_id")
         return tid if isinstance(tid, str) else None
 
-    def wake_chain(self, agent, slug):
-        return None  # v2.6: non blocca più niente, nel v3 non si timbra
-
     def _deliver(self, record, sender, agent, slug, to_host, warning):
         mid, task_id = record["id"], record.get("task_id")
         if to_host:
-            outcome = self.deliver_remote(to_host, agent, slug, record)
-            self._tx(lambda c: Store.put_message(c, record, state="pending", to_slug=slug, to_host=to_host,
-                                                 path=None, origin="centralino",
-                                                 delivery="queued" if outcome == "queued" else "remote"))
+            outcome = self.remoto.deliver_remote(to_host, agent, slug, record)
+            def scrivi(c):
+                Store.put_message(c, record, state="pending", to_slug=slug, to_host=to_host, path=None,
+                                  origin="centralino", delivery="queued" if outcome == "queued" else "remote")
+                if outcome == "queued":  # la raccolta la toglie da qui quando la coda si svuota
+                    c.execute("INSERT OR REPLACE INTO remote_queue (msg_id, host, queued_at) VALUES (?,?,?)",
+                              (mid, to_host, iso_now()))
+            self._tx(scrivi)
             addr = f"{agent}@{to_host}" + (f"/{slug}" if slug else "")
             if outcome == "queued":
                 warning = (f"{to_host} unreachable now: queued in outbox/{to_host}/, delivered at the next collection."
@@ -152,9 +216,6 @@ class DbBus(FileBus):
             return True
         return self._tx(scrivi)
 
-    def _ricevi(self, agent, slug, mid, record):
-        return self.accogli(record, agent, slug, origin="mini", mid=mid)
-
     # ---------- agente nudo (decisione 2 di Alita) ----------
 
     def slug_nudo(self, agent: str) -> str | None:
@@ -169,21 +230,109 @@ class DbBus(FileBus):
             return casa
         return None
 
-    def send(self, sender, to, msg_type, intent, payload, **kw):
+    def send(self, sender: str, to: str, msg_type: str, intent: str, payload: dict,
+             priority: str = "normal", thread: str | None = None, in_reply_to: str | None = None,
+             context_refs: list[str] | None = None, requires_response: bool = False,
+             response_by: str | None = None, sender_session: str | None = None,
+             task_id: str | None = None, kind: str | None = None, target: dict | None = None,
+             live_slugs=None) -> dict:
+        """``live_slugs(agent) -> list[str] | None``: sessioni vive per la regola unica (None = ignoto)."""
         agent, slug, want_host = parse_addr(to)
         if not slug and not want_host and self.resolve_host(agent, None) is None and self.agent_exists(agent):
             if (nudo := self.slug_nudo(agent)):
-                to = f"{agent}/{nudo}"
-        return super().send(sender, to, msg_type, intent, payload, **kw)
+                slug, to = nudo, f"{agent}/{nudo}"
+        kind = self.check_kind(msg_type, kind)
+        if kind == "delega" and not sender_session:
+            raise BusError("a delegation needs the sender's session, to know whom to wake")
+        if task_id is None and in_reply_to and kind != "delega":
+            task_id = self.task_of(sender, in_reply_to)
+        if task_id is not None and not TASK_ID_RE.match(task_id):
+            raise BusError(f"invalid task_id {task_id!r}: 3-64 chars of [A-Za-z0-9._-]")
+        if not self.agent_exists(agent):
+            known = ", ".join(sorted(self.agents())) or "none configured"
+            raise BusError(f"unknown agent '{agent}'. Known: {known}", "unknown_agent")
+        if (reason := self.routing_denied(sender, agent)) is not None:
+            raise BusError(f"routing denied {sender} -> {agent} ({reason})")
+        to_host = self.resolve_host(agent, want_host)
+
+        warning = None
+        if slug and not to_host and live_slugs is not None:
+            live = live_slugs(agent)
+            if live is not None and slug not in live:
+                warning = (f"no live session '{agent}/{slug}' (live: {', '.join(live) or 'none'}). "
+                           "Delivered anyway; it will be read when that session starts.")
+
+        mid = msg_id()
+        thread = thread or thread_id()
+        wait = None
+        if kind == "delega":
+            wait = self.expect(sender, sender_session, f"{intent}: {payload.get('summary') or ''}",
+                               delegated_to=to, deadline=response_by, task_id=task_id,
+                               target=target, delegation={"msg_id": mid, "thread_id": thread})
+            task_id = wait["task_id"]
+            requires_response = True
+        record = {
+            "id": mid, "version": "1.0", "from": sender, "to": agent, "thread_id": thread,
+            "in_reply_to": in_reply_to, "type": msg_type, "intent": intent, "priority": priority,
+            "payload": payload, "context_refs": context_refs or [],
+            "requires_response": requires_response, "ts": iso_now(),
+        }
+        if response_by:
+            record["response_by"] = response_by
+        if sender_session:
+            record["from_session"] = f"{sender}/{sender_session}"
+        if task_id:
+            record["task_id"] = task_id
+        if kind:
+            record["kind"] = kind
+        if me := self.host_self():
+            record["context"] = {"host": me}
+
+        if sender_session and task_id:
+            if msg_type == "question":
+                dest = f"{agent}@{to_host}" if to_host else agent
+                self.set_waiting_agent(sender, sender_session, {
+                    "agent": agent, "address": dest + (f"/{slug}" if slug else ""),
+                    "task_id": task_id, "msg_id": mid, "since": record["ts"],
+                    "summary": " ".join(str(payload.get("summary") or "").split())[:160],
+                })
+            elif msg_type == "response":
+                self.clear_waiting_agent(sender, sender_session, task_id=task_id)
+
+        out = self._deliver(record, sender, agent, slug, to_host, warning)
+        if wait:
+            out["expecting"] = {"task_id": task_id, "deadline": wait["deadline"]}
+            out["note"] = (f"attesa registrata {task_id}: ogni ritorno di {to} su questo task "
+                           "ti sveglia se sei fermo")
+        return out
+
+    @staticmethod
+    def check_kind(msg_type: str, kind: str | None) -> str | None:
+        if kind is not None and kind not in KINDS:
+            raise BusError(f"kind must be 'delega' or 'comunicazione', not {kind!r}", "kind_required")
+        if msg_type in DECLARED_TYPES:
+            if kind is None:
+                raise BusError(KIND_HELP.format(type=msg_type), "kind_required")
+            return kind
+        if kind == "delega":
+            raise BusError(f"a {msg_type} cannot be a delegation: send a request, brief or "
+                           "handoff with kind='delega'", "kind_required")
+        return None
+
+    def reply_address(self, record: dict) -> str:
+        sender = record.get("from") or ""
+        fs = record.get("from_session") or ""
+        host = _d(record.get("context")).get("host")
+        slug = fs.partition("/")[2] if "/" in fs else ""
+        if host and host != self.host_self():
+            return f"{sender}@{host}" + (f"/{slug}" if slug else "")
+        return f"{sender}/{slug}" if slug else sender
 
     # ---------- attese ----------
 
     def _wait(self, task_id: str) -> dict | None:
         r = self._r().execute("SELECT raw FROM waits WHERE task_id=?", (task_id,)).fetchone()
         return json.loads(r["raw"]) if r else None
-
-    def find_wait(self, task_id):
-        return task_id if task_id and self._wait(task_id) is not None else None
 
     def wait_owner(self, task_id):
         w = self._wait(task_id) if task_id else None
@@ -394,16 +543,12 @@ class DbBus(FileBus):
                                      (agent, slug, host)))
         return True
 
-    def registry_sessions(self, agent):
-        return [dict(r) for r in self._r().execute(
-            "SELECT * FROM sessions WHERE agent=? AND host=? AND ended_at IS NULL", (agent, self.host_self() or ""))]
-
     def scrivi_registro(self, agent: str, slug: str) -> None:
         """Vista di compatibilità per Onda: ``registry/<agente>.d/<slug>.json`` col pid della
         sessione, che Onda usa per risalire allo slug dal terminale. Niente altro la legge."""
         r = self.c.store.read().execute("SELECT * FROM sessions WHERE agent=? AND slug=? AND host=?",
                                         (agent, slug, self.host_self() or "")).fetchone()
-        f = self.registry_dir(agent) / f"{slug}.json"
+        f = self.home / "registry" / f"{agent}.d" / f"{slug}.json"
         if r is None or r["ended_at"]:
             f.unlink(missing_ok=True)
             return
@@ -427,11 +572,5 @@ class DbBus(FileBus):
             out.setdefault(r["id"], json.loads(r["entry"]))
         return sorted(out.values(), key=lambda e: e.get("ts") or "")
 
-    def _append_thread(self, record):
-        pass  # il thread è la tabella messages
 
-    def _append_outbox(self, sender, record, slug):
-        pass  # l'audit è la tabella messages
-
-
-__all__ = ["DbBus", "msg_id", "thread_id", "parse_addr"]
+__all__ = ["DbBus", "BusError", "msg_id", "thread_id", "parse_addr"]

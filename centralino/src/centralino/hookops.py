@@ -4,7 +4,7 @@ Gli hook di Claude Code chiamano ``agent-team-os-centralino.py``, che passa qui 
 chiamante (cwd, pid della sessione, sessione Claude, pannello) e stampa quello che
 ricevono indietro: il banner a inizio sessione, l'avviso per gli urgenti a ogni prompt,
 la decisione di blocco dello Stop. Il registro delle sessioni è la tabella ``sessions``;
-in modo attivo il centralino scrive anche la vista di compatibilità per Onda.
+il centralino scrive anche la vista di compatibilità per Onda.
 """
 
 from __future__ import annotations
@@ -13,7 +13,8 @@ from typing import Any
 
 from . import regole
 from .db import Store
-from .files import BusError, TASK_ID_RE
+from .dbbus import TASK_ID_RE, BusError
+from .sveglia import attese_di
 from .tempo import iso_now
 
 STOP_CAP = 3
@@ -34,9 +35,8 @@ def _riga(mid: str, m: dict) -> str:
 
 
 class HookOps:
-    def __init__(self, central, ombra):
+    def __init__(self, central):
         self.c = central
-        self.ombra = ombra
 
     # ---------- eventi ----------
 
@@ -48,14 +48,13 @@ class HookOps:
         else:
             self.c._write(lambda: Store.heartbeat(self.c._conn(), me.agent, me.slug, me.host or "", now,
                                                   workspace=caller.get("cwd"), caller=caller, event=ev))
-        if self.c.modo.sqlite:
-            self.c.files.scrivi_registro(me.agent, me.slug)
+        self.c.bus.scrivi_registro(me.agent, me.slug)
         return me
 
     def op_start(self, caller: dict, a: dict, warnings: list) -> dict:
         me = self._evento(caller, "start")
         info = self.c.amap.agents().get(me.agent) or {}
-        items = self.c.files.inbox_items(me.agent, me.slug)
+        items = self.c.bus.inbox_items(me.agent, me.slug)
         alte = sum(1 for _, _, m in items if m.get("priority") in ("urgent", "high"))
         host = f"@{me.host}" if me.host else ""
         righe = ["=== Agent Team OS ===",
@@ -68,7 +67,7 @@ class HookOps:
             righe.append(f"Inbox: {len(items)} pending" + (f" ({alte} urgent/high)" if alte else ""))
             righe.append("")
             righe += [_riga(mid, m) for mid, _, m in items[-5:]]
-        mie = [w for w in self.c.files.list_waits(me.agent, me.slug) if w.get("state") == "expected"]
+        mie = [w for w in self.c.bus.list_waits(me.agent, me.slug) if w.get("state") == "expected"]
         if mie:
             righe += ["", f"Deleghe aperte: {len(mie)} ("
                       + ", ".join(f"{w['task_id']} a {w.get('delegated_to') or '?'}" for w in mie[:5]) + ")"]
@@ -85,7 +84,7 @@ class HookOps:
 
     def op_prompt(self, caller: dict, a: dict, warnings: list) -> dict:
         me = self._evento(caller, "prompt")
-        alte = [(mid, m) for mid, _, m in self.c.files.inbox_items(me.agent, me.slug)
+        alte = [(mid, m) for mid, _, m in self.c.bus.inbox_items(me.agent, me.slug)
                 if m.get("priority") in ("urgent", "high")]
         if not alte:
             return {"additionalContext": None}
@@ -103,9 +102,9 @@ class HookOps:
     def op_stop(self, caller: dict, a: dict, warnings: list) -> dict:
         me = self.c.amap.identify(caller)
         cap = int(a.get("cap") or STOP_CAP)
-        attese = self.ombra._attese()
+        attese = attese_di(self.c.store)
         bloccano = []
-        for mid, scope, m in self.c.files.inbox_items(me.agent, me.slug):
+        for mid, scope, m in self.c.bus.inbox_items(me.agent, me.slug):
             regola = regole.classifica(m, me.agent, me.slug, attese)
             if regole.blocca_stop(regola):
                 bloccano.append((mid, m))
@@ -123,12 +122,10 @@ class HookOps:
             self.c._write(f)
         if not bloccano or n >= cap:
             setta(0)
-            if self.c.modo.sqlite:
-                self.c.files.scrivi_registro(me.agent, me.slug)
+            self.c.bus.scrivi_registro(me.agent, me.slug)
             return {"block": False, "pending": len(bloccano), "allentato": bool(bloccano)}
         setta(n + 1)
-        if self.c.modo.sqlite:
-            self.c.files.scrivi_registro(me.agent, me.slug)
+        self.c.bus.scrivi_registro(me.agent, me.slug)
         lista = "\n".join(f"  {mid}  from={m.get('from_session') or m.get('from')}  intent={m.get('intent') or m.get('type')}"
                           for mid, m in bloccano[:5])
         reason = (f"{len(bloccano)} message(s) asking for an action not handled yet (block {n + 1}/{cap}). "
@@ -145,8 +142,6 @@ class HookOps:
     def op_consegna(self, caller: dict, a: dict, warnings: list) -> dict:
         """Un messaggio scritto fuori da questa macchina (alita-cloud via alita-memoria-sync).
         Stesse regole di tutti: è un ritorno solo se porta un task_id."""
-        if not self.c.modo.sqlite:
-            raise BusError("consegna: il centralino è in modo ombra, scrivi il file come oggi")
         rec = a.get("record")
         if not isinstance(rec, dict) or not str(rec.get("id") or "").startswith("msg-"):
             raise BusError("consegna: record senza id msg-…")
@@ -157,7 +152,7 @@ class HookOps:
         tid = rec.get("task_id")
         if tid is not None and not (isinstance(tid, str) and TASK_ID_RE.match(tid)):
             raise BusError(f"consegna: task_id non valido {tid!r}")
-        nuovo = self.c.files.accogli(rec, agent, slug, origin=a.get("origine") or "cloud")
+        nuovo = self.c.bus.accogli(rec, agent, slug, origin=a.get("origine") or "cloud")
         if nuovo:
             self.c.sveglia_ora.set()
         return {"id": rec["id"], "nuovo": nuovo, "to": f"{agent}/{slug}" if slug else agent}

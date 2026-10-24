@@ -54,10 +54,6 @@ def parse_addr(addr: str) -> tuple[str, str | None, str | None]:
     return head.strip(), (slug or None), ((host or "").strip() or None)
 
 
-def format_addr(agent: str, slug: str | None = None, host: str | None = None) -> str:
-    return agent + (f"@{host}" if host else "") + (f"/{slug}" if slug else "")
-
-
 def _under(path: str, prefix: str) -> bool:
     prefix = prefix.rstrip("/")
     return bool(prefix) and (path == prefix or path.startswith(prefix + "/"))

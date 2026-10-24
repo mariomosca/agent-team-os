@@ -2,7 +2,7 @@
 
 - messaggi archiviati (read/done) e righe di thread vecchie oltre 30 giorni: via;
 - attese chiuse, scadute o annullate da oltre 30 giorni: via, con i loro ritorni;
-- decisioni di sveglia e differenze dell'ombra oltre 30 giorni: via;
+- decisioni di sveglia oltre 30 giorni: via;
 - caselle di sessioni chiuse da più di 24 ore: i messaggi che chiedono un'azione passano
   all'indirizzo dell'agente nudo (unica sessione viva, poi casa, poi casella condivisa),
   gli altri si archiviano come letti; la sessione esce dal registro.
@@ -16,6 +16,7 @@ import json
 from datetime import timedelta
 
 from . import regole
+from .sveglia import attese_di
 from .tempo import iso, iso_now, now
 
 GIORNI = 30
@@ -31,9 +32,7 @@ class Pulizia:
         chiuse_da = iso(now() - timedelta(hours=SESSIONE_CHIUSA_H))
         host = self.c.amap.host_self() or ""
         out = {"messaggi": 0, "attese": 0, "spostati": 0, "archiviati": 0, "sessioni": 0}
-        attese = {}
-        from .ombra import Ombra
-        attese = Ombra(self.c)._attese()
+        attese = attese_di(self.c.store)
 
         sessioni = self.c.store.read().execute(
             "SELECT agent, slug FROM sessions WHERE host=? AND ended_at IS NOT NULL AND ended_at<=?",
@@ -57,9 +56,8 @@ class Pulizia:
                 c.execute("DELETE FROM waits WHERE task_id=?", (tid,))
             out["attese"] = len(vecchie)
             c.execute("DELETE FROM wake_decisions WHERE at<?", (da,))
-            c.execute("DELETE FROM shadow_diffs WHERE at<?", (da,))
             for agent, slug in morte:
-                dest = self.c.files.slug_nudo(agent)
+                dest = self.c.bus.slug_nudo(agent)
                 for r in c.execute("SELECT id, raw FROM messages WHERE to_agent=? AND to_slug=? AND state='pending' "
                                    "AND to_host=?", (agent, slug, host)).fetchall():
                     m = json.loads(r["raw"])

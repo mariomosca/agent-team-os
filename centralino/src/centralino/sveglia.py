@@ -4,26 +4,25 @@ Un giro ogni 10 s (e subito dopo un invio):
 
 1. scadenze: un'attesa aperta scade a ``deadline`` passata o dopo 72 h senza movimento,
    se non ha ritorni da gestire; chi aspetta riceve un avviso (riga 6: non sveglia);
-2. la tabella di §6 (``Ombra.giro_sveglia``) decide, e qui si esegue: un testo per
-   sessione con tutti i suoi messaggi del giro, scritto nel prompt via Onda o tmux;
+2. la tabella di §6 (``regole.py``) decide e si esegue: un testo per sessione con tutti i
+   suoi messaggi del giro, scritto nel prompt via Onda o tmux;
 3. il motivo di un rinvio finisce sul ritorno dell'attesa (``pending_wake``), così la
    band e ``bus_inbox`` lo mostrano;
 4. una sessione viva senza canale da più di 5 minuti: un avviso all'agente hub, una volta
    per messaggio.
-
-wake.py resta installato finché Mario non fa la prova: lo script di passaggio ferma il
-suo launchd e accende questa.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from collections import defaultdict
 from datetime import timedelta
 
-from . import canale
+from . import canale, regole
 from .canale import Rinvio
-from .files import msg_id
+from .db import Store
+from .dbbus import msg_id, with_pending_wake
 from .tempo import age_s, iso, iso_now, now, parse_iso
 
 WAIT_IDLE_H = 72
@@ -38,11 +37,104 @@ def _s(v, n: int) -> str:
     return re.sub(r"\s+", " ", str(v or "")).strip()[:n]
 
 
+def attese_di(store) -> dict[str, regole.Attesa]:
+    """Le attese per la tabella di sveglia, per task_id."""
+    rows = store.read().execute(
+        "SELECT task_id, owner_agent, owner_slug, executor_session, delegated_to, state FROM waits").fetchall()
+    return {r["task_id"]: regole.Attesa(r["task_id"], r["owner_agent"], r["owner_slug"],
+                                        r["executor_session"], r["delegated_to"], r["state"])
+            for r in rows}
+
+
 class Sveglia:
-    def __init__(self, central, ombra, onda_call=None):
+    def __init__(self, central, onda_call=None):
         self.c = central
-        self.ombra = ombra
         self.onda_call = onda_call or canale.onda_call
+        self.ultimo_giro: list = []
+
+    # ---------- la tabella: chi riceve cosa ----------
+
+    def _attese(self) -> dict[str, regole.Attesa]:
+        return attese_di(self.c.store)
+
+    def destinazioni(self, attese=None) -> dict[tuple[str, str], list[tuple[str, str, str | None]]]:
+        """(agente, slug) -> [(msg_id, regola, mittente)] per i messaggi pending di questa macchina."""
+        attese = attese if attese is not None else self._attese()
+        host = self.c.amap.host_self() or ""
+        vive_cache: dict[str, list[str]] = {}
+        out: dict[tuple[str, str], list] = defaultdict(list)
+        for r in self.c.store.read().execute(
+                "SELECT id, to_agent, to_slug, raw FROM messages WHERE state='pending' AND to_host=?", (host,)):
+            rec = json.loads(r["raw"])
+            agent = r["to_agent"]
+            if agent not in vive_cache:
+                vive_cache[agent] = self.c.vivo.slug_vivi(agent)
+            for slug in regole.destinatari(rec, agent, r["to_slug"], attese, vive_cache[agent]):
+                out[(agent, slug)].append((r["id"], regole.classifica(rec, agent, slug, attese),
+                                           rec.get("from_session") or rec.get("from")))
+        return out
+
+    def blocca_stop(self, agent: str, slug: str) -> list[str]:
+        """Messaggi che, secondo la tabella, bloccano lo Stop di agent/slug."""
+        dest = self.destinazioni()
+        return [m for m, regola, _ in dest.get((agent, slug), []) if regole.blocca_stop(regola)]
+
+    def giro_sveglia(self) -> list[regole.Decisione]:
+        """Un giro della tabella: decide per ogni messaggio pending e fa le sveglie. Un ``Rinvio``
+        le trasforma in coda col suo motivo."""
+        giro = int(now().timestamp() * 1000)
+        attese = self._attese()
+        r = self.c.store.read()
+        gia = {(x["msg_id"], x["agent"], x["slug"]) for x in r.execute(
+            "SELECT msg_id, agent, slug FROM wake_decisions WHERE decisione='sveglia'")}
+        ultime: dict[tuple, tuple] = {}
+        for x in r.execute("SELECT msg_id, agent, slug, decisione, motivo FROM wake_decisions ORDER BY id"):
+            ultime[(x["msg_id"], x["agent"], x["slug"])] = (x["decisione"], x["motivo"])
+        ora_fa = iso(now() - timedelta(hours=1))
+        quarto_fa = iso(now() - timedelta(seconds=regole.URGENTI_COPPIA_S))
+        tutte: list[tuple[str, str, regole.Decisione]] = []
+        for (agent, slug), items in self.destinazioni(attese).items():
+            items = [i for i in items if (i[0], agent, slug) not in gia]
+            if not items:
+                continue
+            stato = self.c.vivo.stato(agent, slug)
+            n_ora = r.execute(
+                "SELECT COUNT(DISTINCT giro) FROM wake_decisions WHERE agent=? AND slug=? "
+                "AND decisione='sveglia' AND regola!='esito' AND at>=?", (agent, slug, ora_fa)).fetchone()[0]
+            urg = {x[0] for x in r.execute(
+                "SELECT m.from_agent || '/' || COALESCE(m.from_slug, '') FROM wake_decisions w "
+                "JOIN messages m ON m.id=w.msg_id WHERE w.agent=? AND w.slug=? AND w.regola='urgente' "
+                "AND w.decisione='sveglia' AND w.at>=?", (agent, slug, quarto_fa))}
+            decs = regole.decidi(stato, items, n_ora, urg)
+            sveglie = [d for d in decs if d.decisione == "sveglia"]
+            if sveglie:
+                try:
+                    c = self.esegui(agent, slug, stato, sveglie)
+                    decs = [regole.Decisione(d.msg_id, d.regola, d.decisione, d.motivo, c)
+                            if d.decisione == "sveglia" else d for d in decs]
+                except Rinvio as exc:
+                    decs = [regole.Decisione(d.msg_id, d.regola, "coda", str(exc), None)
+                            if d.decisione == "sveglia" else d for d in decs]
+            for d in decs:
+                tutte.append((agent, slug, d))
+        nuove = [(a, s, d) for a, s, d in tutte if ultime.get((d.msg_id, a, s)) != (d.decisione, d.motivo)]
+        if nuove:
+            task_of = {}
+            for a, s, d in nuove:
+                row = self.c.store.message(d.msg_id)
+                task_of[d.msg_id] = row["task_id"] if row else None
+
+            def scrivi():
+                conn = self.c._conn()
+                at = iso_now()
+                for a, s, d in nuove:
+                    conn.execute("INSERT INTO wake_decisions (at, giro, agent, slug, msg_id, task_id, regola, "
+                                 "decisione, motivo, canale) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                 (at, giro, a, s, d.msg_id, task_of.get(d.msg_id), d.regola, d.decisione,
+                                  d.motivo, d.canale))
+            self.c._write(scrivi)
+        self.ultimo_giro = nuove
+        return [d for _, _, d in tutte]
 
     # ---------- testo ----------
 
@@ -147,7 +239,6 @@ class Sveglia:
         return scadute
 
     def _scade(self, rec: dict, motivo: str) -> None:
-        from .db import Store
         ts = iso_now()
         rec.update(state="expired", expired_at=ts, closed_by=f"scadenza:{motivo}")
         rec.pop("pending_wake", None)
@@ -162,8 +253,8 @@ class Sveglia:
 
         def scrivi(c):
             Store.put_wait(c, rec, origin="centralino")
-        self.c.files._tx(scrivi)
-        self.c.files.accogli(avviso, rec["agent"], rec["slug"], origin="centralino")
+        self.c.bus._tx(scrivi)
+        self.c.bus.accogli(avviso, rec["agent"], rec["slug"], origin="centralino")
         self.c.log("info", "attesa_scaduta", task_id=rec["task_id"], motivo=motivo)
 
     def _evento(self, to: str, frm: str, intent: str, priority: str, summary: str, extra: dict) -> dict:
@@ -180,7 +271,6 @@ class Sveglia:
 
     def _pending_wake(self, nuove) -> None:
         """Il motivo di un rinvio sul ritorno dell'attesa (per bus_inbox e la band)."""
-        from .db import Store
         per_task: dict[str, list] = {}
         for a, s, d in nuove:
             if d.regola in ("esito", "domanda") and d.decisione in ("coda", "sveglia"):
@@ -205,9 +295,8 @@ class Sveglia:
                     else:
                         prev = e.get("pending_wake") or {}
                         e["pending_wake"] = {"reason": d.motivo, "since": prev.get("since") or ts, "checked_at": ts}
-                from .files import with_pending_wake
                 Store.put_wait(c, with_pending_wake(rec), origin="centralino")
-            self.c.files._tx(scrivi)
+            self.c.bus._tx(scrivi)
 
     def avvisi_senza_canale(self) -> list[str]:
         r = self.c.store.read()
@@ -217,7 +306,7 @@ class Sveglia:
         righe = r.execute(
             "SELECT w.agent, w.slug, w.msg_id, MIN(w.at) AS dal FROM wake_decisions w "
             "JOIN messages m ON m.id=w.msg_id AND m.state='pending' "
-            "WHERE w.modo='attiva' AND w.motivo='nessun_canale' GROUP BY w.agent, w.slug, w.msg_id "
+            "WHERE w.motivo='nessun_canale' GROUP BY w.agent, w.slug, w.msg_id "
             "HAVING MIN(w.at) <= ?", (limite,)).fetchall()
         for x in righe:
             key = f"nochannel:{x['agent']}/{x['slug']}:{x['msg_id']}"
@@ -232,7 +321,7 @@ class Sveglia:
                               f"({x['msg_id']}) ma dal {x['dal']} non ha un pannello di Onda né tmux. "
                               "Va svegliata a mano o riaperta in Onda.",
                               {"session": f"{x['agent']}/{x['slug']}", "messages": [x["msg_id"]]})
-            self.c.files.accogli(ev, dest, None, origin="centralino")
+            self.c.bus.accogli(ev, dest, None, origin="centralino")
             self.c._write(lambda key=key: self.c._conn().execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, iso_now())))
             inviati.append(ev["id"])
@@ -242,7 +331,7 @@ class Sveglia:
 
     def giro(self) -> dict:
         scadute = self.scadenze()
-        decs = self.ombra.giro_sveglia(esegui=self.esegui)
-        self._pending_wake(getattr(self.ombra, "ultimo_giro", []))
+        decs = self.giro_sveglia()
+        self._pending_wake(self.ultimo_giro)
         avvisi = self.avvisi_senza_canale()
         return {"scadute": scadute, "decisioni": len(decs), "avvisi": avvisi}

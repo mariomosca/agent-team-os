@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-from centralino import config
 from centralino.client import call
 
 HOOKS = Path(__file__).resolve().parents[1] / "hooks"
@@ -28,7 +27,6 @@ def bus(monkeypatch):
     (home / "personas" / "kai.md").write_text("Sono Kai.\n")
     for a in ("kai", "alita"):
         (ws / a / "s1").mkdir(parents=True)
-    config.scrivi(home, config.Modo("sqlite", "attiva", False))
     cfg = home / "cfg"
     (cfg / "scripts").mkdir(parents=True)
     os.symlink(HOOKS / "agent-team-os-centralino.py", cfg / "scripts" / "agent-team-os-centralino.py")

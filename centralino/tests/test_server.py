@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 from centralino.client import CentralinoGiu, call
-from centralino.files import read_json
 
 
 @pytest.fixture
@@ -22,7 +21,6 @@ def bus(monkeypatch):
         "agents": {"kai": {}, "alita": {}}, "hosts": {"laptop": {"hub": True}}}))
     for a in ("kai", "alita"):
         (home / "ws" / a / "s1").mkdir(parents=True)
-    monkeypatch.setenv("AB_WAKE_SCRIPT", "/nonexistent")
     from centralino.server import Daemon
     d = Daemon(home, giri=False).avvia()
     t = threading.Thread(target=d.esegui, daemon=True)
@@ -46,7 +44,8 @@ def test_roundtrip_e_permessi(bus):
                       "kind": "delega"}, caller=_caller(bus, "kai"), sock=sock)
     assert r["ok"], r
     tid = r["result"]["task_id"]
-    assert read_json(bus / "waits" / "kai" / "@s1" / f"{tid}.json")["state"] == "expected"
+    waits = call("waits", {}, caller=_caller(bus, "kai"), sock=sock)["result"]["waits"]
+    assert [(w["task_id"], w["state"]) for w in waits] == [(tid, "expected")]
     inbox = call("inbox", {}, caller=_caller(bus, "alita"), sock=sock)["result"]
     assert inbox["count"] == 1 and inbox["messages"][0]["task_id"] == tid
 
@@ -79,11 +78,9 @@ def test_scrittori_concorrenti(bus):
     [t.start() for t in ts]
     [t.join() for t in ts]
     assert not errori
-    files = list((bus / "inboxes" / "kai" / "@s1").glob("msg-*.json"))
-    assert len(files) == 40
     st = call("admin.stats", sock=sock)["result"]
     assert st["messaggi"] == 40 and st["pending"] == 40
-    assert not list((bus / "inboxes").rglob("*.tmp"))
+    assert not list((bus / "inboxes").rglob("msg-*")) if (bus / "inboxes").is_dir() else True  # niente file di casella
 
 
 def test_centralino_giu(tmp_path):
@@ -96,7 +93,7 @@ def test_vista_globale(bus):
     call("send", {"to": "alita/s1", "intent": "x", "summary": "ciao", "message_type": "request", "kind": "delega"},
          caller=_caller(bus, "kai"), sock=sock)
     v = call("vista", sock=sock)["result"]
-    assert v["modo"]["fonte"] == "file"
+    assert "modo" not in v
     assert [m["raw"]["intent"] for m in v["messaggi"]] == ["x"]
     assert v["messaggi"][0]["agent"] == "alita" and v["messaggi"][0]["slug"] == "s1"
     assert len(v["attese"]) == 1 and v["attese"][0]["raw"]["state"] == "expected"
