@@ -140,6 +140,7 @@ class Daemon:
         self.ombra.importa(completo=True, solo_nuovi=modo.sqlite)
         self.server = Server(self.sock_path, self.central)
         os.chmod(self.sock_path, 0o600)
+        (self.home / "centralino.pid").write_text(f"{os.getpid()}\n")
         if self.giri:
             log = self.central.log
             if modo.sqlite:
@@ -166,10 +167,11 @@ class Daemon:
         finally:
             self.stop.set()
             self.server.server_close()
-            try:
-                self.sock_path.unlink()
-            except OSError:
-                pass
+            for f in (self.sock_path, self.home / "centralino.pid"):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
             self.central.log("info", "fine", pid=os.getpid(), uptime_s=round(time.time() - self.central.started))
             self.central.store.close()
 
