@@ -1,42 +1,32 @@
 #!/usr/bin/env bash
-# Agent Team OS — installer
+# Agent Team OS — installer (bus v3, BR24)
 #
-# Copies the helper library, hooks, slash commands and skill into your
-# ~/.claude/ folder, and creates ~/.agent-team-os/ runtime structure.
+# Copies the thin hooks, slash commands, skill and bus-band mod into your Claude
+# config folder, and creates the ~/.agent-team-os/ runtime folder. The bus itself is
+# the centralino (centralino/, docs/CENTRALINO.md): one daemon per machine, SQLite.
 #
 # Idempotent: re-running it overwrites the bundled files but leaves your
-# AGENT_MAP.json untouched if it already exists.
+# AGENT_MAP.json untouched if it already exists. It also removes what the file bus
+# (v1-v2.8) left installed: lib.sh, wake.py, the collector and their jobs.
 #
-# Options (v2.5, two machines — see README "Two machines"):
+# Options:
 #   --host <name>       this machine's name on the bus (writes $AB_HOME/HOST),
 #                       e.g. --host mini on the Mac mini. The hub needs none.
-#   --host-sync         install the launchd collector (every 60 s) for each host this
-#                       machine reaches over SSH (hosts.<h>.ssh in AGENT_MAP.json).
-#                       File bus only: with the v3 centralino the daemon collects by itself.
+#   --daemon            run the centralino of this machine: a launchd job when there is a
+#                       GUI login, otherwise (the headless Mac mini over SSH) a cron line
+#                       that starts it every minute if its pid is gone.
 #   --register-hooks    add the SessionStart, UserPromptSubmit and SessionEnd hooks and the
-#                       PreToolUse hook on onda_agent_prompt (v2.8: [delega] |
-#                       [comunicazione]) to $CLAUDE_HOME/settings.json (backup
-#                       first, idempotent). The Stop hook stays opt-in.
-#   --custode           install the custode (README "Il custode"): a launchd job at
-#                       7:00 that checks this host and warns on Telegram. Only on a
-#                       remote host: with --host <name>, or with $AB_HOME/HOST set
-#                       to a host that is not the hub.
+#                       PreToolUse hook on onda_agent_prompt ([delega] | [comunicazione]) to
+#                       $CLAUDE_HOME/settings.json (backup first, idempotent). The Stop hook
+#                       stays opt-in.
+#   --custode           install the custode (README "Il custode"): a job at 7:00 that checks
+#                       this host and warns on Telegram. Only on a remote host: with
+#                       --host <name>, or with $AB_HOME/HOST set to a host that is not the hub.
 #   --custode --uninstall   remove the custode (job + script). Nothing else.
-#   --file-bus          install the file-bus hooks from hooks/ (lib.sh based) instead of the
-#                       bus v3 hooks. For a host that has no centralino: today the Mac mini
-#                       (docs/CENTRALINO.md §15, "il nodo del mini"). The default, on the hub,
-#                       is bus v3 (BR24): the thin hooks and agent-team-os-centralino.py from
-#                       centralino/hooks/. The daemon itself is not installed by this script
-#                       (launchd model in centralino/launchd/).
-#   --centralino        accepted for old scripts: it is the default now.
-#   --sveglia           install the wake (README "La sveglia", bus v2.6): a launchd job
-#                       every 10 s that wakes an idle session when the result it waits
-#                       for arrives. File bus only (the Mac mini): the v3 centralino wakes
-#                       sessions itself.
 #
 # Env: CLAUDE_HOME (default ~/.claude, e.g. ~/.config/claude-mini), AB_HOME
 # (default ~/.agent-team-os), LAUNCH_AGENTS_DIR (default ~/Library/LaunchAgents),
-# AB_NO_LAUNCHCTL=1 to write the plist without loading it.
+# AB_NO_LAUNCHCTL=1 to write the plist without loading it, UV (default: uv on PATH).
 
 set -euo pipefail
 
@@ -45,24 +35,23 @@ CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
 BUS_HOME="${AB_HOME:-$HOME/.agent-team-os}"
 
 HOST_NAME=""
-HOST_SYNC=0
+DAEMON=0
 REGISTER_HOOKS=0
 CUSTODE=0
-FILE_BUS=0
-SVEGLIA=0
 UNINSTALL=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --host) HOST_NAME="${2:?--host needs a name}"; shift 2 ;;
     --host=*) HOST_NAME="${1#--host=}"; shift ;;
-    --host-sync) HOST_SYNC=1; shift ;;
+    --daemon) DAEMON=1; shift ;;
     --register-hooks) REGISTER_HOOKS=1; shift ;;
     --custode) CUSTODE=1; shift ;;
-    --file-bus) FILE_BUS=1; shift ;;
-    --centralino) FILE_BUS=0; shift ;;
-    --sveglia) SVEGLIA=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
-    -h|--help) sed -n '2,38p' "$0"; exit 0 ;;
+    --file-bus|--sveglia|--host-sync)
+      echo "ERROR: $1 belonged to the file bus, removed in BR24-F5.7: every machine runs a centralino (--daemon)."
+      exit 1 ;;
+    --centralino) shift ;;  # accepted for old scripts: v3 is the only bus
+    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
     *) echo "Unknown option: $1 (see --help)"; exit 1 ;;
   esac
 done
@@ -73,8 +62,6 @@ echo "  Claude home: $CLAUDE_HOME"
 echo "  Bus  home:   $BUS_HOME"
 echo ""
 
-# --- Dependency check ---
-
 if ! command -v jq >/dev/null 2>&1; then
   echo "ERROR: jq is required. Install with:"
   echo "  brew install jq         (macOS)"
@@ -82,25 +69,32 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
-# --- Custode: checks that need nothing installed ---
-
 LA_DIR="${LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 CUSTODE_LABEL="com.agent-team-os.custode"
 CUSTODE_PLIST="$LA_DIR/${CUSTODE_LABEL}.plist"
+UID_N=$(id -u)
+
+can_launchctl() { [[ "${AB_NO_LAUNCHCTL:-0}" != "1" ]] && command -v launchctl >/dev/null 2>&1; }
+# A GUI login loads LaunchAgents; the headless mini reached over SSH has none and uses cron.
+has_gui() { can_launchctl && launchctl print "gui/$UID_N" >/dev/null 2>&1; }
+cron_drop() { # remove the crontab lines matching $1
+  if crontab -l 2>/dev/null | grep -q -- "$1"; then
+    { crontab -l 2>/dev/null | grep -v -- "$1" || true; } | crontab -
+  fi
+}
+job_drop() { # unload and remove a LaunchAgent by label
+  can_launchctl && launchctl bootout "gui/$UID_N/$1" 2>/dev/null || true
+  rm -f "$LA_DIR/$1.plist"
+}
 
 if [[ "$UNINSTALL" -eq 1 ]]; then
   if [[ "$CUSTODE" -ne 1 ]]; then
     echo "ERROR: --uninstall works only together with --custode (it removes the custode, nothing else)."
     exit 1
   fi
-  if [[ "${AB_NO_LAUNCHCTL:-0}" != "1" ]] && command -v launchctl >/dev/null 2>&1; then
-    launchctl bootout "gui/$(id -u)/${CUSTODE_LABEL}" 2>/dev/null || true
-    launchctl bootout "gui/$(id -u)/${CUSTODE_LABEL}-registro" 2>/dev/null || true
-  fi
-  if crontab -l 2>/dev/null | grep -q 'agent-team-os-custode.sh'; then
-    { crontab -l 2>/dev/null | grep -v 'agent-team-os-custode.sh' || true; } | crontab -
-  fi
-  rm -f "$CUSTODE_PLIST" "$LA_DIR/${CUSTODE_LABEL}-registro.plist" "$CLAUDE_HOME/scripts/agent-team-os-custode.sh"
+  job_drop "$CUSTODE_LABEL"
+  cron_drop 'agent-team-os-custode.sh'
+  rm -f "$CLAUDE_HOME/scripts/agent-team-os-custode.sh"
   echo "Custode removed ($CUSTODE_PLIST, $CLAUDE_HOME/scripts/agent-team-os-custode.sh)."
   echo "Its last report stays in $BUS_HOME/hosts/self/custode.json."
   exit 0
@@ -117,56 +111,40 @@ if [[ "$CUSTODE" -eq 1 ]]; then
   fi
 fi
 
-# --- Layout target directories ---
+mkdir -p "$CLAUDE_HOME/scripts" "$CLAUDE_HOME/hooks" "$CLAUDE_HOME/commands" "$CLAUDE_HOME/skills" \
+         "$BUS_HOME/registry" "$BUS_HOME/outbox" "$BUS_HOME/logs"
 
-mkdir -p "$CLAUDE_HOME/scripts"
-mkdir -p "$CLAUDE_HOME/hooks"
-mkdir -p "$CLAUDE_HOME/commands"
-mkdir -p "$CLAUDE_HOME/skills"
-mkdir -p "$BUS_HOME/inboxes"
-mkdir -p "$BUS_HOME/registry"
-mkdir -p "$BUS_HOME/threads"
-mkdir -p "$BUS_HOME/outbox"
-mkdir -p "$BUS_HOME/locks"
+# --- What the file bus left installed (BR24-F5.7) ---
 
-# --- Copy bundled files ---
+for old in agent-team-os-lib.sh agent-team-os-wake.py agent-team-os-collect.sh \
+           agent-team-os-taskprovider.sh agent-team-os-harvest.sh; do
+  [[ -e "$CLAUDE_HOME/scripts/$old" ]] && echo "Removing old $CLAUDE_HOME/scripts/$old"
+  rm -f "$CLAUDE_HOME/scripts/$old"
+done
+for lb in com.agent-team-os.sveglia com.agent-team-os.custode-registro $(ls "$LA_DIR" 2>/dev/null \
+          | sed -n 's/^\(com\.agent-team-os\.raccolta-[A-Za-z0-9_-]*\)\.plist$/\1/p'); do
+  [[ -e "$LA_DIR/$lb.plist" ]] && echo "Removing old job $lb"
+  job_drop "$lb"
+done
+cron_drop 'agent-team-os-wake.py'
+cron_drop 'agent-team-os-custode.sh --registro'
 
-echo "Copying helper library → $CLAUDE_HOME/scripts/agent-team-os-lib.sh"
-cp "$REPO_DIR/scripts/agent-team-os-lib.sh" "$CLAUDE_HOME/scripts/agent-team-os-lib.sh"
-chmod +x "$CLAUDE_HOME/scripts/agent-team-os-lib.sh"
+# --- Bundled files ---
 
-echo "Copying bus modules → $CLAUDE_HOME/scripts/"
-# BR24-F5.2: taskprovider and harvest are gone; drop stale copies of an older install.
-rm -f "$CLAUDE_HOME/scripts/agent-team-os-taskprovider.sh" "$CLAUDE_HOME/scripts/agent-team-os-harvest.sh"
-cp "$REPO_DIR/scripts/agent-team-os-collect.sh"      "$CLAUDE_HOME/scripts/agent-team-os-collect.sh"
-cp "$REPO_DIR/scripts/agent-team-os-wake.py"         "$CLAUDE_HOME/scripts/agent-team-os-wake.py"
-# An installed custode (the mini) gets the new script on every install; its jobs
-# (cron, launchd) are only touched by --custode.
+echo "Copying hooks → $CLAUDE_HOME/hooks/ and agent-team-os-centralino.py → $CLAUDE_HOME/scripts/"
+cp "$REPO_DIR/hooks/agent-team-os-centralino.py" "$CLAUDE_HOME/scripts/agent-team-os-centralino.py"
+chmod +x "$CLAUDE_HOME/scripts/agent-team-os-centralino.py"
+for h in agent-team-os-load.sh agent-team-os-urgent.sh agent-team-os-stop.sh agent-team-os-end.sh \
+         agent-team-os-onda-prompt.py; do
+  cp "$REPO_DIR/hooks/$h" "$CLAUDE_HOME/hooks/$h"
+  chmod +x "$CLAUDE_HOME/hooks/$h"
+done
+# NOTE: the Stop hook is COPIED but NOT auto-registered in settings.json.
+# An installed custode gets the new script on every install; its job only with --custode.
 if [[ -f "$CLAUDE_HOME/scripts/agent-team-os-custode.sh" ]]; then
   cp "$REPO_DIR/scripts/agent-team-os-custode.sh" "$CLAUDE_HOME/scripts/agent-team-os-custode.sh"
   chmod +x "$CLAUDE_HOME/scripts/agent-team-os-custode.sh"
 fi
-chmod +x "$CLAUDE_HOME/scripts/agent-team-os-collect.sh" "$CLAUDE_HOME/scripts/agent-team-os-wake.py"
-
-HOOK_SRC="$REPO_DIR/centralino/hooks"
-if [[ "$FILE_BUS" -eq 1 ]]; then
-  HOOK_SRC="$REPO_DIR/hooks"
-  echo "File bus (--file-bus): hooks from $HOOK_SRC"
-else
-  echo "Bus v3: thin hooks from $HOOK_SRC and agent-team-os-centralino.py → $CLAUDE_HOME/scripts/"
-  cp "$HOOK_SRC/agent-team-os-centralino.py" "$CLAUDE_HOME/scripts/agent-team-os-centralino.py"
-  chmod +x "$CLAUDE_HOME/scripts/agent-team-os-centralino.py"
-fi
-echo "Copying hooks → $CLAUDE_HOME/hooks/"
-cp "$HOOK_SRC/agent-team-os-load.sh"   "$CLAUDE_HOME/hooks/agent-team-os-load.sh"
-cp "$HOOK_SRC/agent-team-os-urgent.sh" "$CLAUDE_HOME/hooks/agent-team-os-urgent.sh"
-cp "$HOOK_SRC/agent-team-os-stop.sh"   "$CLAUDE_HOME/hooks/agent-team-os-stop.sh"
-cp "$HOOK_SRC/agent-team-os-onda-prompt.py" "$CLAUDE_HOME/hooks/agent-team-os-onda-prompt.py"
-cp "$HOOK_SRC/agent-team-os-end.sh"    "$CLAUDE_HOME/hooks/agent-team-os-end.sh"
-chmod +x "$CLAUDE_HOME/hooks/agent-team-os-load.sh" "$CLAUDE_HOME/hooks/agent-team-os-urgent.sh" "$CLAUDE_HOME/hooks/agent-team-os-stop.sh" \
-         "$CLAUDE_HOME/hooks/agent-team-os-onda-prompt.py" "$CLAUDE_HOME/hooks/agent-team-os-end.sh"
-# NOTE: the Stop hook is COPIED but NOT auto-registered in settings.json.
-# Activate manually (gated) via skill update-config — see docs/agentic-v2/SETTINGS-DIFF.md
 
 echo "Copying slash commands → $CLAUDE_HOME/commands/"
 rm -f "$CLAUDE_HOME/commands/god.md"  # BR24-F5.2: GOD mode is gone
@@ -193,32 +171,23 @@ if [[ -f "$BUS_HOME/AGENT_MAP.json" ]]; then
 else
   echo "Creating starter AGENT_MAP.json at $BUS_HOME/AGENT_MAP.json"
   cp "$REPO_DIR/examples/AGENT_MAP.example.json" "$BUS_HOME/AGENT_MAP.json"
-  # Best-effort persona files (optional)
   if [[ -d "$REPO_DIR/examples/personas" ]]; then
     mkdir -p "$BUS_HOME/personas"
     cp "$REPO_DIR/examples/personas/"*.md "$BUS_HOME/personas/" 2>/dev/null || true
   fi
 fi
 
-# --- Per-agent inbox + registry bootstrap ---
-
-jq -r '.agents | keys[]' "$BUS_HOME/AGENT_MAP.json" 2>/dev/null | while IFS= read -r agent; do
-  [[ -z "$agent" ]] && continue
-  mkdir -p "$BUS_HOME/inboxes/$agent" "$BUS_HOME/registry/${agent}.d"
-done
-
-# --- v2.5: this machine's host name ---
+# --- This machine's host name ---
 
 if [[ -n "$HOST_NAME" ]]; then
   if ! jq -e --arg h "$HOST_NAME" '(.hosts // {}) | has($h)' "$BUS_HOME/AGENT_MAP.json" >/dev/null 2>&1; then
     echo "WARN: host '$HOST_NAME' is not in \"hosts\" of $BUS_HOME/AGENT_MAP.json."
-    echo "      Copy the hub's AGENT_MAP.json here (same file on every machine), then re-run."
   fi
   echo "$HOST_NAME" > "$BUS_HOME/HOST"
   echo "This machine is '$HOST_NAME' on the bus ($BUS_HOME/HOST)."
 fi
 
-# --- v2.5: register hooks in settings.json ---
+# --- Register hooks in settings.json ---
 
 if [[ "$REGISTER_HOOKS" -eq 1 ]]; then
   SETTINGS="$CLAUDE_HOME/settings.json"
@@ -259,109 +228,43 @@ if [[ "$REGISTER_HOOKS" -eq 1 ]]; then
   fi
 fi
 
-# --- v2.5: launchd collector on the machine that opens SSH (the laptop) ---
+# --- The centralino of this machine ---
 
-if [[ "$HOST_SYNC" -eq 1 ]]; then
-  SELF="${AB_HOST:-}"
-  [[ -z "$SELF" && -s "$BUS_HOME/HOST" ]] && SELF=$(head -1 "$BUS_HOME/HOST" | tr -d '[:space:]')
-  [[ -z "$SELF" ]] && SELF=$(jq -r '(.hosts // {}) | to_entries[] | select(.value.hub == true) | .key' "$BUS_HOME/AGENT_MAP.json" 2>/dev/null | head -1)
-  REMOTES=$(jq -r --arg self "$SELF" '(.hosts // {}) | to_entries[]
-    | select(.key != $self and ((.value.ssh // "") != "")) | .key' "$BUS_HOME/AGENT_MAP.json" 2>/dev/null || true)
-  if [[ -z "$REMOTES" ]]; then
-    echo "--host-sync: no host with \"ssh\" in AGENT_MAP.json other than '$SELF'. Nothing installed."
+if [[ "$DAEMON" -eq 1 ]]; then
+  UV_BIN="${UV:-$(command -v uv || true)}"
+  if [[ -z "$UV_BIN" ]]; then
+    echo "ERROR: --daemon needs uv (brew install uv)."
+    exit 1
   fi
-  LA_DIR="${LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
-  mkdir -p "$LA_DIR" "$BUS_HOME/logs"
-  for H in $REMOTES; do
-    LABEL="com.agent-team-os.raccolta-${H}"
-    PLIST="$LA_DIR/${LABEL}.plist"
-    cat > "$PLIST" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>${LABEL}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/bin/bash</string>
-    <string>${CLAUDE_HOME}/scripts/agent-team-os-collect.sh</string>
-    <string>${H}</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-    <key>AB_HOME</key><string>${BUS_HOME}</string>
-  </dict>
-  <key>StartInterval</key><integer>60</integer>
-  <key>RunAtLoad</key><true/>
-  <key>StandardOutPath</key><string>${BUS_HOME}/logs/raccolta-${H}.log</string>
-  <key>StandardErrorPath</key><string>${BUS_HOME}/logs/raccolta-${H}.log</string>
-</dict>
-</plist>
-PLIST
-    echo "Collector for '$H' → $PLIST (every 60 s, log $BUS_HOME/logs/raccolta-${H}.log)"
-    if [[ "${AB_NO_LAUNCHCTL:-0}" != "1" ]] && command -v launchctl >/dev/null 2>&1; then
-      launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
-      launchctl bootstrap "gui/$(id -u)" "$PLIST" && echo "  loaded ($LABEL)"
+  C_DIR="$REPO_DIR/centralino"
+  (cd "$C_DIR" && "$UV_BIN" sync --frozen --quiet) || { echo "ERROR: uv sync in $C_DIR failed."; exit 1; }
+  D_LABEL="com.agent-team-os.centralino"
+  if has_gui || [[ "${AB_NO_LAUNCHCTL:-0}" == "1" ]]; then
+    D_PLIST="$LA_DIR/${D_LABEL}.plist"
+    mkdir -p "$LA_DIR"
+    sed -e "s|__UV__|$UV_BIN|g" -e "s|__CENTRALINO_DIR__|$C_DIR|g" -e "s|__AB_HOME__|$BUS_HOME|g" \
+        -e '/^<!--$/,/^-->$/d' "$C_DIR/launchd/${D_LABEL}.plist" > "$D_PLIST"
+    echo "Centralino → $D_PLIST (launchd, KeepAlive)"
+    if can_launchctl; then
+      launchctl bootout "gui/$UID_N/$D_LABEL" 2>/dev/null || true  # launchd stops it: never pkill
+      launchctl bootstrap "gui/$UID_N" "$D_PLIST" && echo "  loaded ($D_LABEL)"
     fi
-  done
-fi
-
-# --- v2.6: the wake, every 10 s on each machine that runs sessions ---
-
-if [[ "$SVEGLIA" -eq 1 ]]; then
-  W_LABEL="com.agent-team-os.sveglia"
-  W_PLIST="$LA_DIR/${W_LABEL}.plist"
-  mkdir -p "$LA_DIR" "$BUS_HOME/logs" "$BUS_HOME/waits"
-  cat > "$W_PLIST" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>${W_LABEL}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/bin/python3</string>
-    <string>-I</string>
-    <string>${CLAUDE_HOME}/scripts/agent-team-os-wake.py</string>
-    <string>tick</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-    <key>AB_HOME</key><string>${BUS_HOME}</string>
-  </dict>
-  <key>StartInterval</key><integer>10</integer>
-  <key>RunAtLoad</key><true/>
-  <key>StandardOutPath</key><string>/dev/null</string>
-  <key>StandardErrorPath</key><string>${BUS_HOME}/logs/sveglia-errori.log</string>
-</dict>
-</plist>
-PLIST
-  echo "Wake → $W_PLIST (every 10 s, log $BUS_HOME/logs/sveglia.log)"
-  if [[ "${AB_NO_LAUNCHCTL:-0}" != "1" ]] && command -v launchctl >/dev/null 2>&1; then
-    if launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
-      launchctl bootout "gui/$(id -u)/${W_LABEL}" 2>/dev/null || true
-      launchctl bootstrap "gui/$(id -u)" "$W_PLIST" && echo "  loaded ($W_LABEL)"
-    else
-      # No GUI login (the headless Mac mini, reached over SSH): LaunchAgents do not
-      # load there, cron does. Six rounds a minute, 10 s apart; the wake lock keeps
-      # rounds from overlapping. Same line replaced on every install.
-      rm -f "$W_PLIST"
-      W_SCRIPT="$CLAUDE_HOME/scripts/agent-team-os-wake.py"
-      W_LINE="* * * * * AB_HOME=$BUS_HOME PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin; for i in 1 2 3 4 5 6; do /usr/bin/python3 -I $W_SCRIPT tick >/dev/null 2>>$BUS_HOME/logs/sveglia-errori.log; sleep 10; done"
-      { crontab -l 2>/dev/null | grep -v 'agent-team-os-wake.py' || true; echo "$W_LINE"; } | crontab -
-      echo "  no GUI session here: installed in crontab instead (every minute, 6 rounds)"
-    fi
+  else
+    # No GUI login: cron every minute starts it when the pid in centralino.pid is gone.
+    # serve itself refuses to start when a centralino already answers on the socket.
+    D_CMD="$UV_BIN run --frozen --project $C_DIR centralino serve"
+    D_LINE="* * * * * AB_HOME=$BUS_HOME PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin; kill -0 \$(cat $BUS_HOME/centralino.pid 2>/dev/null || echo 0) 2>/dev/null || nohup $D_CMD >/dev/null 2>>$BUS_HOME/logs/centralino-errori.log &"
+    { crontab -l 2>/dev/null | grep -v 'centralino serve' || true; echo "$D_LINE"; } | crontab -
+    echo "Centralino → crontab (no GUI session here: started within a minute if its pid is gone)"
   fi
 fi
 
-# --- Custode: launchd job at 7:00 on the remote host ---
+# --- Custode: job at 7:00 on the remote host ---
 
 if [[ "$CUSTODE" -eq 1 ]]; then
   cp "$REPO_DIR/scripts/agent-team-os-custode.sh" "$CLAUDE_HOME/scripts/agent-team-os-custode.sh"
   chmod +x "$CLAUDE_HOME/scripts/agent-team-os-custode.sh"
-  mkdir -p "$LA_DIR" "$BUS_HOME/logs"
+  mkdir -p "$LA_DIR"
   cat > "$CUSTODE_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -392,89 +295,29 @@ if [[ "$CUSTODE" -eq 1 ]]; then
 PLIST
   echo "Custode → $CUSTODE_PLIST (every day at 7:00, log $BUS_HOME/logs/custode.log)"
   echo "  by hand: $CLAUDE_HOME/scripts/agent-team-os-custode.sh [--no-telegram]"
-  # v2.7 (OR18-F3.3): the registry cleanup, every 10 min.
-  R_LABEL="com.agent-team-os.custode-registro"
-  R_PLIST="$LA_DIR/${R_LABEL}.plist"
-  sed -e "s|<string>${CUSTODE_LABEL}</string>|<string>${R_LABEL}</string>|" \
-      -e "s|<string>${CLAUDE_HOME}/scripts/agent-team-os-custode.sh</string>|&<string>--registro</string>|" \
-      -e '/<key>StartCalendarInterval<\/key>/,/<\/dict>/c\
-  <key>StartInterval</key><integer>600</integer>' "$CUSTODE_PLIST" > "$R_PLIST"
-  echo "Registry cleanup → $R_PLIST (every 10 min, log $BUS_HOME/logs/custode.log)"
-  if [[ "${AB_NO_LAUNCHCTL:-0}" != "1" ]] && command -v launchctl >/dev/null 2>&1; then
-    if launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
-      for pl in "$CUSTODE_PLIST" "$R_PLIST"; do
-        lb=$(basename "$pl" .plist)
-        launchctl bootout "gui/$(id -u)/${lb}" 2>/dev/null || true
-        launchctl bootstrap "gui/$(id -u)" "$pl" && echo "  loaded ($lb)"
-      done
-    else
-      # No GUI login (the headless mini over SSH): cron, like the wake. Both lines
-      # replaced on every install.
-      rm -f "$CUSTODE_PLIST" "$R_PLIST"
-      C_SCRIPT="$CLAUDE_HOME/scripts/agent-team-os-custode.sh"
-      C_ENV="AB_HOME=$BUS_HOME CLAUDE_CONFIG_DIR=$CLAUDE_HOME PATH=\$HOME/.local/bin:\$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-      { crontab -l 2>/dev/null | grep -v 'agent-team-os-custode.sh' || true
-        echo "0 7 * * * $C_ENV $C_SCRIPT >> $BUS_HOME/logs/custode.log 2>&1"
-        echo "*/10 * * * * $C_ENV $C_SCRIPT --registro >> $BUS_HOME/logs/custode.log 2>&1"
-      } | crontab -
-      echo "  no GUI session here: installed in crontab instead (7:00 and --registro every 10 min)"
-    fi
+  if has_gui; then
+    launchctl bootout "gui/$UID_N/${CUSTODE_LABEL}" 2>/dev/null || true
+    launchctl bootstrap "gui/$UID_N" "$CUSTODE_PLIST" && echo "  loaded ($CUSTODE_LABEL)"
+  elif can_launchctl; then
+    rm -f "$CUSTODE_PLIST"
+    C_ENV="AB_HOME=$BUS_HOME CLAUDE_CONFIG_DIR=$CLAUDE_HOME PATH=\$HOME/.local/bin:\$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+    { crontab -l 2>/dev/null | grep -v 'agent-team-os-custode.sh' || true
+      echo "0 7 * * * $C_ENV $CLAUDE_HOME/scripts/agent-team-os-custode.sh >> $BUS_HOME/logs/custode.log 2>&1"
+    } | crontab -
+    echo "  no GUI session here: installed in crontab instead (7:00)"
   fi
 fi
 
-# --- Settings.json hint ---
-
 echo ""
 echo "Install complete."
-# BS21-F3.3b: another Claude config dir on this machine (the second account,
-# ~/.claude-a, keeps its own scripts/) with an older lib runs the old wake through
-# its sessions. Say so: install there too with CLAUDE_HOME=<dir> ./install.sh.
-for other in "$HOME/.claude" "$HOME/.claude-a" "$HOME/.config/claude-mini"; do
-  [[ -d "$other" ]] || continue
-  [[ "$(cd "$other" && pwd -P)" == "$(cd "$CLAUDE_HOME" && pwd -P)" ]] && continue
-  o_lib="$other/scripts/agent-team-os-lib.sh"
-  [[ -f "$o_lib" ]] || continue
-  if ! cmp -s "$o_lib" "$REPO_DIR/scripts/agent-team-os-lib.sh"; then
-    echo "WARN: $other has a different agent-team-os lib: its sessions run the old bus."
-    echo "      Fix: CLAUDE_HOME=$other ./install.sh"
-  fi
-done
-
 echo ""
 echo "Next steps:"
-echo "  1. Edit $BUS_HOME/AGENT_MAP.json — map your workspaces to agent names."
-echo "  2. Register the hooks in $CLAUDE_HOME/settings.json (or re-run with --register-hooks):"
-echo ""
-cat <<JSON
-       {
-         "hooks": {
-           "SessionStart": [
-             { "hooks": [ { "type": "command", "command": "$CLAUDE_HOME/hooks/agent-team-os-load.sh" } ] }
-           ],
-           "UserPromptSubmit": [
-             { "hooks": [ { "type": "command", "command": "$CLAUDE_HOME/hooks/agent-team-os-urgent.sh" } ] }
-           ]
-         }
-       }
-JSON
-echo ""
-echo "  3. (Optional, v2) Enable the drain-on-Stop hook — blocks a session from"
-echo "     closing while its inbox has unhandled messages. NOT auto-registered."
-echo "     Add this to the \"hooks\" block above, then test per docs/agentic-v2/SETTINGS-DIFF.md:"
-echo ""
-cat <<JSON
-           "Stop": [
-             { "hooks": [ { "type": "command", "command": "$CLAUDE_HOME/hooks/agent-team-os-stop.sh" } ] }
-           ]
-JSON
-echo ""
-echo "  4. (Optional, Claude Code 2.1.287+) Load the bus-band mod in every session —"
-echo "     a band above the prompt with pending messages. Add to the \"env\" block:"
-echo ""
-cat <<JSON
-           "CLAUDE_CODE_PLUGIN_DIRS": "$CLAUDE_HOME/mods/bus-band"
-JSON
-echo ""
-echo "  5. Open a Claude Code session in a mapped workspace and try /inbox or /bus."
-echo "  6. (Optional, two machines) See README \"Two machines\": --host on the second"
-echo "     machine, --host-sync on the hub."
+echo "  1. Edit $BUS_HOME/AGENT_MAP.json — map your workspaces to agent names. A second machine"
+echo "     goes in \"hosts\" with \"ssh\" and \"centralino\" (the command that runs its centralino)."
+echo "  2. Start the centralino: re-run with --daemon. Register the hooks with --register-hooks."
+echo "  3. (Optional) The Stop hook ($CLAUDE_HOME/hooks/agent-team-os-stop.sh) is not registered:"
+echo "     add it under \"Stop\" in settings.json, see docs/agentic-v2/SETTINGS-DIFF.md."
+echo "  4. (Optional, Claude Code 2.1.287+) Load the bus-band mod: in the \"env\" block,"
+echo "     \"CLAUDE_CODE_PLUGIN_DIRS\": \"$CLAUDE_HOME/mods/bus-band\""
+echo "  5. Point the agent-bus MCP server at agent-bus-mcp, open a session in a mapped workspace"
+echo "     and try /inbox or /bus."

@@ -75,7 +75,8 @@ ck "status ok" "$(jq -r .status "$J")" "ok"
 ck "host nel json" "$(jq -r .host "$J")" "mini"
 ck "nessun Telegram" "$([[ -s $CURL_LOG ]] && echo inviato || echo silenzio)" "silenzio"
 ck "claude con la config del mini" "$(grep -c "^$CFG -p Rispondi solo: OK --model haiku" "$CLAUDE_LOG")" "1"
-ck "bus-mcp: 8 tool" "$(de bus-mcp)" "8 tool"
+ck "bus-mcp: 6 tool" "$(de bus-mcp)" "6 tool"
+ck "centralino ok" "$(de centralino)" "12 messaggi, 2 in casella, 1 sessioni vive"
 ck "python ok" "$(st python)" "ok"
 ck "fresh aggiornato" "$(head_of "$OK/01-Building/fresh")" "$(git -C "$U/fresh.git" rev-parse main)"
 ck "riga repo" "$(de repo | grep -c '01-Building/fresh aggiornato (2 commit)')" "1"
@@ -149,7 +150,10 @@ rc=$(custode FAKE_MCP_MODE=broken)
 ck "server rotto: fail" "$(st bus-mcp)" "fail"
 ck "con l'ultima riga di stderr" "$(de bus-mcp | grep -c 'beartype')" "1"
 rc=$(custode FAKE_MCP_MODE=few)
-ck "tool mancanti nominati" "$(de bus-mcp)" "4 tool, mancano: bus_archive bus_expect bus_thread bus_waits"
+ck "tool mancanti nominati" "$(de bus-mcp)" "4 tool, mancano: bus_reply bus_close"
+rc=$(custode FAKE_CENTRALINO=down)
+ck "centralino giu: fail" "$(st centralino)/$rc" "fail/2"
+ck "con il fix --daemon" "$(jq -r '.checks[] | select(.name=="centralino") | .fix' "$J" | grep -c -- '--daemon')" "1"
 rc=$(custode FAKE_UV_PYTHON=3.15.0)
 ck "Python 3.15: fail" "$(st python)" "fail"
 rm "$MCP/.python-version"
@@ -178,7 +182,6 @@ echo "── lunedi': una volta"
 : > "$CURL_LOG"
 rc=$(WD=1 custode)
 ck "riepilogo settimanale" "$(grep -c 'tutto a posto, 0 repo aggiornati' "$CURL_LOG")" "1"
-ck "con la misura della sveglia (BS21-F3.2)" "$(grep -c 'Sveglia del bus' "$CURL_LOG")" "1"
 rc=$(WD=1 custode)
 ck "non due volte lo stesso giorno" "$(grep -c -- '--- call' "$CURL_LOG")" "1"
 rc=$(WD=1 custode FAKE_CLAUDE_MODE=expired)
@@ -197,33 +200,6 @@ ck "esce 0" "$(echo "$out" | tail -1)" "rc=0"
 ck "nessun json" "$([[ -e $Lp/hosts/self/custode.json ]] && echo si || echo no)" "no"
 echo laptop > "$Lp/HOST"
 ck "HOST=laptop: idem" "$(AB_HOME="$Lp" bash "$R/scripts/agent-team-os-custode.sh" | grep -c 'non sono')" "1"
-
-echo "── --registro (OR18-F3.3)"
-RG="$M/registry"; mkdir -p "$RG/kai.d" "$RG/leo.d" "$RG/nico.d"
-sleep 300 & LIVE=$!
-reg(){ # agent slug pid last_seen [host]
-  jq -n --arg a "$1" --arg s "$2" --argjson p "$3" --arg t "$4" --arg h "${5:-mini}" \
-    '{name:$a, slug:$s, active:true, last_seen:$t, pid:$p, host:$h}' > "$RG/$1.d/$2.json"; }
-NOWI=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-reg kai crewmoor 999999 2026-10-14T10:00:00Z          # pid morto: via
-reg kai vivo "$LIVE" 2026-10-14T10:00:00Z             # pid vivo, anche se vecchio: resta
-reg kai senzapid 0 2026-10-14T10:00:00Z               # niente pid, vecchio: via
-reg kai fresco 0 "$NOWI"                              # niente pid, recente: resta
-reg kai altrohost 999999 2026-10-14T10:00:00Z laptop  # di un'altra macchina: non tocco
-reg leo vault 999999 2026-10-15T10:00:00Z             # unico di leo: via
-reg nico rotto 0 x; echo '' > "$RG/nico.d/rotto.json"  # vuoto: via
-dry=$(AB_HOME="$M" bash "$R/scripts/agent-team-os-custode.sh" --registro --dry-run)
-ck "dry-run: elenca" "$(grep -c 'tolgo' <<<"$dry")" "4"
-ck "dry-run: non tocca" "$(ls "$RG/kai.d" | wc -l | tr -d ' ')" "5"
-out=$(AB_HOME="$M" bash "$R/scripts/agent-team-os-custode.sh" --registro; echo "rc=$?")
-ck "rc 0" "$(tail -1 <<<"$out")" "rc=0"
-ck "restano vivo, fresco, altrohost" "$(ls "$RG/kai.d" | sort | tr '\n' ' ')" "altrohost.json fresco.json vivo.json "
-ck "messi da parte, non cancellati" "$(ls "$RG"/.stale-*/ | sort | tr '\n' ' ')" "kai.d_crewmoor.json kai.d_senzapid.json leo.d_vault.json nico.d_rotto.json "
-ck "pid morto nel log" "$(grep -c 'kai/crewmoor (pid 999999 morto)' <<<"$out")" "1"
-ck "riga con data" "$(grep -c '^20[0-9-]*T.* registro:' <<<"$out")" "4"
-again=$(AB_HOME="$M" bash "$R/scripts/agent-team-os-custode.sh" --registro)
-ck "secondo giro: niente" "$again" ""
-kill "$LIVE" 2>/dev/null; wait "$LIVE" 2>/dev/null
 
 echo "── install.sh --custode"
 IC="$T/inst-claude"; IB="$T/inst-bus"; ILA="$T/inst-la"; LC_LOG="$T/launchctl.log"
@@ -246,25 +222,16 @@ if command -v plutil >/dev/null 2>&1; then
   ck "log" "$(plutil -extract StandardOutPath raw "$PL")" "$IB/logs/custode.log"
 fi
 ck "bootout + bootstrap" "$(grep -v registro "$LC_LOG" | grep -c 'com.agent-team-os.custode')" "2"
-RPL="$ILA/com.agent-team-os.custode-registro.plist"
-if command -v plutil >/dev/null 2>&1; then
-  ck "plist registro valido" "$(plutil -lint "$RPL" >/dev/null && echo ok)" "ok"
-  ck "registro ogni 10 min" "$(plutil -extract StartInterval raw "$RPL")" "600"
-  ck "registro: --registro" "$(plutil -extract ProgramArguments.2 raw "$RPL")" "--registro"
-  ck "registro: label" "$(plutil -extract Label raw "$RPL")" "com.agent-team-os.custode-registro"
-fi
-ck "registro caricato" "$(grep -c 'com.agent-team-os.custode-registro' "$LC_LOG")" "2"
 ck "con GUI niente crontab" "$([[ -e $FAKE_CRONTAB ]] && echo si || echo no)" "no"
-# Mini senza login grafico: cron al posto di launchd, la riga della sveglia resta.
+# Mini senza login grafico: cron al posto di launchd; la riga della vecchia sveglia a file va via.
 echo '* * * * * altro; agent-team-os-wake.py tick' > "$FAKE_CRONTAB"
 : > "$GUI"
 ck "headless: install" "$(inst --custode)" "0"
-ck "headless: niente plist" "$([[ -e $PL || -e $RPL ]] && echo resta || echo via)" "via"
+ck "headless: niente plist" "$([[ -e $PL ]] && echo resta || echo via)" "via"
 ck "headless: riga delle 7" "$(grep -c '^0 7 .*agent-team-os-custode.sh >>' "$FAKE_CRONTAB")" "1"
-ck "headless: riga registro" "$(grep -c '^\*/10 .*agent-team-os-custode.sh --registro' "$FAKE_CRONTAB")" "1"
-ck "headless: sveglia intatta" "$(grep -c 'agent-team-os-wake.py' "$FAKE_CRONTAB")" "1"
+ck "headless: vecchia sveglia tolta" "$(grep -c 'agent-team-os-wake.py' "$FAKE_CRONTAB")" "0"
 inst --custode >/dev/null
-ck "headless: reinstall non duplica" "$(grep -c 'agent-team-os-custode.sh' "$FAKE_CRONTAB")" "2"
+ck "headless: reinstall non duplica" "$(grep -c 'agent-team-os-custode.sh' "$FAKE_CRONTAB")" "1"
 ck "headless: --uninstall" "$(inst --custode --uninstall)" "0"
 ck "headless: righe tolte" "$(grep -c 'agent-team-os-custode.sh' "$FAKE_CRONTAB")" "0"
 id -u > "$GUI"
@@ -276,5 +243,25 @@ ck "script tolto" "$([[ -e $IC/scripts/agent-team-os-custode.sh ]] && echo resta
 ck "--uninstall da solo rifiutato" "$(inst --uninstall)" "1"
 echo laptop > "$IB/HOST"
 ck "sull'hub rifiutato" "$(inst --custode)" "1"
+
+echo "── install.sh --daemon (BR24-F5.7)"
+rm -f "$IB/HOST"; : > "$LC_LOG"; rm -f "$FAKE_CRONTAB"
+id -u > "$GUI"
+ck "con GUI: install" "$(inst --daemon)" "0"
+DPL="$ILA/com.agent-team-os.centralino.plist"
+if command -v plutil >/dev/null 2>&1; then
+  ck "plist valido" "$(plutil -lint "$DPL" >/dev/null && echo ok)" "ok"
+  ck "progetto del repo" "$(plutil -extract ProgramArguments.4 raw "$DPL")" "$R/centralino"
+  ck "AB_HOME" "$(plutil -extract EnvironmentVariables.AB_HOME raw "$DPL")" "$IB"
+fi
+ck "segnaposti sostituiti" "$(grep -c '__' "$DPL")" "0"
+ck "caricato" "$(grep -c 'bootstrap.*com.agent-team-os.centralino' "$LC_LOG")" "1"
+: > "$GUI"
+echo '* * * * * altro' > "$FAKE_CRONTAB"
+ck "headless: install" "$(inst --daemon)" "0"
+ck "headless: riga cron" "$(grep -c 'kill -0 .*centralino.pid.*|| nohup .*centralino serve' "$FAKE_CRONTAB")" "1"
+inst --daemon >/dev/null
+ck "headless: reinstall non duplica" "$(grep -c 'centralino serve' "$FAKE_CRONTAB")/$(grep -c altro "$FAKE_CRONTAB")" "1/1"
+ck "opzioni del bus a file rifiutate" "$(inst --file-bus)" "1"
 
 echo; echo "PASS=$P FAIL=$F"; rm -rf "$T"; [[ $F -eq 0 ]]

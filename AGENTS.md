@@ -3,73 +3,61 @@
 > Entry point for an AI coding agent (Claude Code, etc.) reading this repo.
 > Humans: see [README.md](./README.md) and the [landing page](https://mariomosca.github.io/agent-team-os/).
 
-## Bus v3 (October 2026)
-
-On the laptop the bus is run by the **centralino**, a local daemon that is the only writer of the state (SQLite). Agents talk to it through six MCP tools: `bus_send`, `bus_reply`, `bus_close`, `bus_inbox`, `bus_read`, `bus_status`; the slash commands (`/send`, `/inbox`, ...) just tell the model which tool to call, with no Bash. Protocol: [docs/PROTOCOL-v3.md](./docs/PROTOCOL-v3.md). Daemon contract: [docs/CENTRALINO.md](./docs/CENTRALINO.md). Skill: `skills/agent-team-os/SKILL.md`.
-
-Everything below describes the file-based bus, which the Mac mini still runs (it has no centralino): `lib.sh`, `wake.py`, `collect.sh`, `custode.sh`.
-
 ## What this is
 
-A **file-based protocol** to coordinate multiple AI coding-agent sessions (one per project/role/repo) that otherwise can't talk to each other. No daemon, no server — just a folder, a JSON message schema, bash helpers, slash commands, and lifecycle hooks. Runtime lives in `~/.agent-team-os/`; the integration (hooks/commands/skill/scripts) is copied into `~/.claude/` by the installer.
+A protocol to coordinate multiple AI coding-agent sessions (one per project/role/repo) that otherwise can't talk to each other. Since bus v3 (BR24, October 2026) every machine runs a **centralino**: a local daemon that is the only writer of the bus state (SQLite in `~/.agent-team-os/centralino.db`), decides who to wake and how, and talks to the other machines over SSH. Agents reach it through the MCP server [agent-bus-mcp](https://github.com/mariomosca/agent-bus-mcp) and six tools: `bus_send`, `bus_reply`, `bus_close`, `bus_inbox`, `bus_read`, `bus_status`. Hooks and slash commands are thin: they pass the caller to the centralino and print its answer.
 
-## Install (one command)
+- Protocol: [docs/PROTOCOL-v3.md](./docs/PROTOCOL-v3.md)
+- Daemon contract: [docs/CENTRALINO.md](./docs/CENTRALINO.md)
+- Skill: `skills/agent-team-os/SKILL.md`
+
+## Install
 
 ```bash
-git clone https://github.com/mariomosca/agent-team-os && cd agent-team-os && ./install.sh
+git clone https://github.com/mariomosca/agent-team-os && cd agent-team-os
+./install.sh --daemon --register-hooks
 ```
 
-`install.sh` is idempotent: copies the lib + v2 modules + hooks + commands + skill into `~/.claude/`, creates `~/.agent-team-os/`, and drops a starter `AGENT_MAP.json` if none exists. It does **not** touch `settings.json` (you register hooks yourself — see below). Requires `jq`.
+`install.sh` is idempotent: copies hooks, commands, skill and the bus-band mod into `~/.claude/` (or `CLAUDE_HOME`), creates `~/.agent-team-os/`, drops a starter `AGENT_MAP.json` if none exists, and with `--daemon` starts the centralino (launchd with a GUI login, a cron line on a headless Mac). Requires `jq` and `uv`. A second machine: `--host <name>` there, and on the hub an entry in `hosts` with `ssh` and `centralino` (the command that runs that machine's centralino, used as `ssh <host> '<centralino> consegna'`).
 
-After install:
-1. Edit `~/.agent-team-os/AGENT_MAP.json` — map your workspace paths to agent names.
-2. Register hooks in `~/.claude/settings.json` (next section).
-3. Open a session in a mapped workspace; try `/inbox` or `/bus`.
-
-## Hooks — what to register in settings.json
+## Hooks
 
 | Hook | Required? | What it does |
 |------|-----------|--------------|
-| `SessionStart` → `agent-team-os-load.sh` | recommended | shows your inbox at session start |
+| `SessionStart` → `agent-team-os-load.sh` | recommended | registers the session, shows its inbox |
 | `UserPromptSubmit` → `agent-team-os-urgent.sh` | recommended | alerts on urgent/high messages |
-| `Stop` → `agent-team-os-stop.sh` | **opt-in (v2)** | **drain-on-Stop**: blocks session close if your inbox has unhandled messages. See [docs/agentic-v2/SETTINGS-DIFF.md](./docs/agentic-v2/SETTINGS-DIFF.md). Test isolated before enabling — it affects every session. |
+| `SessionEnd` → `agent-team-os-end.sh` | recommended | closes the session in the registry |
+| `PreToolUse` on `onda_agent_prompt` → `agent-team-os-onda-prompt.py` | recommended with Onda | `[delega]` / `[comunicazione]` on prompts sent to other sessions |
+| `Stop` → `agent-team-os-stop.sh` | **opt-in** | blocks the turn end while a message asks for an action. See [docs/agentic-v2/SETTINGS-DIFF.md](./docs/agentic-v2/SETTINGS-DIFF.md) |
 
-The `Stop` hook is copied by the installer but **NOT auto-registered** — it's a behavioral change that affects all sessions, so activation is explicit and gated.
+All of them `exec` `~/.claude/scripts/agent-team-os-centralino.py`, which calls the centralino socket; with the centralino down they stay silent and never block.
 
-## How an agent uses it (runtime contract)
+## How an agent uses it
 
-- **Read your inbox**: at session start, read every file in `~/.agent-team-os/inboxes/<you>/`. After handling a message, move its file to `inboxes/<you>/.done/`.
-- **Send a message**: use `/send <agent> <intent>`, or write a message JSON (schema below) — never write into another agent's folder directly; the protocol delivers it.
-- **Message schema (v1.1)**: `{ id, version, from, to, thread_id, in_reply_to, type, intent, priority, delivery, payload, context_refs, requires_response, ts }`.
-- **Reply in-thread**: `/reply <msg-id> <type>` (type = accept|decline|response|confirm).
-- **Two machines (v2.5)**: address `agent@host[/slug]` (e.g. `kai@mini/crewmoor`). Laptop → mini goes over SSH (queued in `outbox/<host>/` if down); mini → laptop waits in the mini's `outbox/laptop/` until the laptop collects. `/bus` shows both machines. See README "Two machines".
-- **Delegating with a result to wait for (v2.6)**: `bus_send(expect_result=true)` or `bus_expect` → `task_id`; the executor answers `type: response` with the same `task_id`; when it arrives and the waiting session is idle, `scripts/agent-team-os-wake.py` writes one line into its prompt (Onda or tmux), once. v2.7: a `question` with the same `task_id` also wakes the delegator, once per question, without consuming the wait; the asker carries `waiting_agent` in its registry entry. See README "La sveglia".
-- **Slash commands**: `/bus` (roster), `/inbox`, `/read <id>`, `/send`, `/reply`, `/handoff`, `/thread`, `/delegate`.
-
-## Optional layers
-
-- **drain-on-Stop hook**: keeps agents from closing with an unhandled inbox (opt-in, above).
+- **Delegating**: `bus_send(kind='delega')` registers the wait and returns a `task_id`; every return on it wakes you. `kind='comunicazione'` wakes nobody.
+- **Executing a delegation**: questions with `bus_reply(message_type='question')` on the delegation (it stays in your inbox and does not hold your Stop until the answer arrives), the outcome with `bus_reply` on the delegation.
+- **Consuming**: `bus_close` with `chiuso`, `riarma` (keep waiting) or `letto`.
+- **Two machines**: address `agent@host[/slug]` (e.g. `kai@mini/crewmoor`). Laptop → mini goes to the mini's centralino over SSH (queued in `outbox/<host>/` if down); mini → laptop waits in the mini's `outbox/laptop/` until the laptop collects.
+- **Slash commands**: `/bus`, `/inbox`, `/read <id>`, `/send`, `/reply`, `/handoff`, `/thread`, `/delegate`.
 
 ## Key files
 
 | Path | Purpose |
 |------|---------|
-| `scripts/agent-team-os-lib.sh` | core bash helpers (`ab_*`) |
-| `scripts/agent-team-os-collect.sh` | v2.5 one collection round with the other machines (launchd runs it) |
-| `scripts/agent-team-os-wake.py` | v2.6 the wake: expected results, one wake per expected message (v2.7: questions too) into an idle session (`install.sh --sveglia`) |
-| `schema/bus-wait.schema.json` | v2.6 expected-result file `waits/<agent>/@<slug>/<task_id>.json` |
-| `tests/test_wake.py` | wake tests, fake Onda socket and fake tmux (`python3 -I tests/test_wake.py`) |
+| `centralino/` | the daemon (Python 3.12, uv): `src/centralino/`, tests in `centralino/tests/`, `centralino sim` for the simulation bench |
+| `centralino/launchd/` | launchd model used by `install.sh --daemon` |
+| `hooks/agent-team-os-centralino.py` | the thin hooks' client of the centralino |
+| `hooks/agent-team-os-*.sh`, `hooks/agent-team-os-onda-prompt.py` | lifecycle hooks |
+| `hooks/onda-agent-event.mjs` | bridge from Claude Code hook events to the Onda terminal (separate from the bus) |
 | `scripts/agent-team-os-custode.sh` | the custode: daily health check of a remote host, report + Telegram (`install.sh --custode`) |
-| `schema/bus-message.schema.json` | message schema (incl. v2.5 `context.host`) |
-| `tests/test-hosts.sh` | v2.5 two-machine tests with a fake `ssh` (`tests/fake-ssh/`) |
-| `tests/test-custode.sh` | custode tests, fake `claude`/`uv`/`curl`/`launchctl`/`df` in `tests/fake-bin/`, real git on local remotes |
-| `hooks/agent-team-os-{load,urgent,stop}.sh` | lifecycle hooks |
+| `tests/test-custode.sh` | custode and installer tests, fake `claude`/`uv`/`curl`/`launchctl`/`df`/`tmux` in `tests/fake-bin/` |
+| `tests/fake-ssh/ssh` | fake ssh for the two-machine tests (`centralino/tests/test_remoto.py`) |
 | `commands/*.md` | slash commands |
-| `skills/agent-team-os/SKILL.md` | the skill (agent-invocable) |
-| `examples/AGENT_MAP.example.json` | starter config (v2 shape) |
-| `docs/PROTOCOL-v3.md`, `docs/CENTRALINO.md` | the v3 protocol and the centralino contract |
-| `docs/agentic-v2/` | settings diff for the Stop hook |
+| `skills/agent-team-os/SKILL.md` | the skill |
+| `mods/bus-band/` | the band above the prompt, reads the centralino's view |
+| `examples/AGENT_MAP.example.json` | starter config |
+| `schema/` | message and event schemas |
 
 ## Source of truth
 
-The authoritative protocol is [docs/PROTOCOL-v3.md](./docs/PROTOCOL-v3.md). The older file-based spec (`PLAN-AGENT-TEAM-OS.md`, symlinked at `~/.agent-team-os/PROTOCOL.md`) stays valid only for the mini.
+The authoritative protocol is [docs/PROTOCOL-v3.md](./docs/PROTOCOL-v3.md). The file bus (v1-v2.8: `lib.sh`, `wake.py`, files as state) was removed in BR24-F5.5 and F5.7; its history is in git (tag `br24-pre-rimozione`).
