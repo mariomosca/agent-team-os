@@ -355,26 +355,36 @@ class FileBus:
                     continue
                 if not isinstance(record, dict) or not self.agent_exists(parts[0]):
                     continue
-                dest = self.home / "inboxes" / rel
-                if any(p.exists() for p in (dest, dest.parent / ".read" / dest.name, dest.parent / ".done" / dest.name)):
-                    done.append("./" + rel)
+                agent = parts[0]
+                slug = parts[1][1:] if len(parts) == 3 and parts[1].startswith("@") else None
+                if len(parts) == 3 and slug is None:
                     continue
-                if dest.parent.name.startswith("@"):
-                    (dest.parent / ".read").mkdir(parents=True, exist_ok=True)
-                    (dest.parent / ".done").mkdir(parents=True, exist_ok=True)
-                atomic_write(dest, record)
-                if read_json(dest) is None:
-                    continue
+                esito = self._ricevi(agent, slug, Path(parts[-1]).stem, record)
+                if esito is None:
+                    continue  # non scritto: resta sull'host e si riprova
                 done.append("./" + rel)
-                pulled += 1
-                self._append_thread(record)
-                loc = location_of(dest, self.home)
-                self.osservatore.message(record, path=dest, state="pending",
-                                         to_slug=loc[1] if loc else None,
-                                         to_host=self.host_self() or "", delivery="local")
+                if esito:
+                    pulled += 1
         if done:
             self.ssh(host, f"cd {q} && xargs rm -f", ("\n".join(done) + "\n").encode())
         return pulled
+
+    def _ricevi(self, agent: str, slug: str | None, mid: str, record: dict) -> bool | None:
+        """Un messaggio arrivato da un altro host. True = scritto, False = c'era già,
+        None = non scritto (resta sull'host)."""
+        dest = self.home / "inboxes" / agent / (f"@{slug}" if slug else "") / f"{mid}.json"
+        if any(p.exists() for p in (dest, dest.parent / ".read" / dest.name, dest.parent / ".done" / dest.name)):
+            return False
+        if slug:
+            (dest.parent / ".read").mkdir(parents=True, exist_ok=True)
+            (dest.parent / ".done").mkdir(parents=True, exist_ok=True)
+        atomic_write(dest, record)
+        if read_json(dest) is None:
+            return None
+        self._append_thread(record)
+        self.osservatore.message(record, path=dest, state="pending", to_slug=slug,
+                                 to_host=self.host_self() or "", delivery="local")
+        return True
 
     def remote_status(self, host: str, force: bool = False) -> dict:
         cache = self._host_state(host) / "status.json"
@@ -502,6 +512,25 @@ class FileBus:
 
     def count_inbox(self, agent: str, slug: str | None = None, all_sessions: bool = False) -> int:
         return len(self.list_inbox(agent, slug, all_sessions))
+
+    def inbox_items(self, agent: str, slug: str | None = None, all_sessions: bool = False) -> list[tuple[str, str, dict]]:
+        """(id, scope, record) dei messaggi pending: scope = slug della casella o 'all-sessions'."""
+        out = []
+        for p in self.list_inbox(agent, slug, all_sessions):
+            data = read_json(p)
+            if data is None:
+                continue
+            loc = location_of(p, self.home)
+            out.append((p.stem, loc[1] if loc and loc[1] else "all-sessions", data))
+        return out
+
+    def broadcast_pending(self, agent: str) -> int:
+        root = self.inbox_root(agent)
+        return len(list(root.glob("msg-*.json"))) if root.is_dir() else 0
+
+    def wait_owner(self, task_id: str) -> tuple[str, str] | None:
+        p = self.find_wait(task_id) if task_id else None
+        return (p.parent.parent.name, p.parent.name[1:]) if p else None
 
     def resolve_message(self, agent: str, partial_id: str) -> Path | None:
         root = self.inbox_root(agent)
@@ -769,7 +798,8 @@ class FileBus:
         return (p, rec) if rec else None
 
     def handle(self, agent: str, slug: str, message_id: str, esito: str,
-               task_id: str | None = None, reply: str | None = None, live_slugs=None) -> dict:
+               task_id: str | None = None, reply: str | None = None, live_slugs=None,
+               reply_type: str = "response", details: dict | None = None) -> dict:
         if esito not in ESITI:
             raise BusError(f"esito must be one of {', '.join(ESITI)}, not {esito!r}")
         path = self.resolve_message(agent, message_id)
@@ -808,8 +838,9 @@ class FileBus:
 
         out: dict = {"message": mid, "esito": esito, "task_id": tid}
         if esito == "risposto":
-            sent = self.send(sender=agent, to=self.reply_address(data), msg_type="response",
-                             intent=f"re-{data.get('intent') or 'risposta'}", payload={"summary": reply.strip()},
+            sent = self.send(sender=agent, to=self.reply_address(data), msg_type=reply_type,
+                             intent=f"re-{data.get('intent') or 'risposta'}",
+                             payload={"summary": reply.strip(), **(details or {})},
                              thread=data.get("thread_id"), in_reply_to=mid, sender_session=slug, task_id=tid,
                              live_slugs=live_slugs)
             out["sent"] = {"id": sent["id"], "to": sent["delivered_to"], "queued": sent.get("queued")}

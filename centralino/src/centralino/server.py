@@ -17,13 +17,18 @@ import threading
 import time
 from pathlib import Path
 
+from .hookops import HookOps
 from .ombra import Ombra
 from .ops import Centralino
+from .pulizia import Pulizia
+from .sveglia import Sveglia
 
 MAX_REQ = 1024 * 1024
 IMPORT_S = 5
 SVEGLIA_S = 10
 CONFRONTO_S = 600
+RACCOLTA_S = 60
+PULIZIA_S = 6 * 3600
 
 
 def _peer_uid(sock: socket.socket) -> int | None:
@@ -87,6 +92,19 @@ def _socket_in_uso(path: Path) -> bool:
         s.close()
 
 
+def _ciclo_sveglia(stop: threading.Event, ora: threading.Event, fn, log) -> None:
+    """Un giro ogni 10 s, o subito quando un invio lo chiede (sveglia_ora)."""
+    while not stop.is_set():
+        ora.wait(SVEGLIA_S)
+        ora.clear()
+        if stop.is_set():
+            return
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001
+            log("error", "giro_sveglia", error=repr(exc))
+
+
 def _ciclo(stop: threading.Event, every: float, fn, log, nome: str) -> None:
     while not stop.wait(every):
         try:
@@ -115,16 +133,31 @@ class Daemon:
         self.central = Centralino(self.home, log_path=self.home / "logs" / "centralino.jsonl")
         self.ombra = Ombra(self.central)
         self.ombra.registra()
-        self.central.log("info", "avvio", home=str(self.home), socket=str(self.sock_path), pid=os.getpid())
-        self.ombra.importa(completo=True)
+        HookOps(self.central, self.ombra).registra()
+        modo = self.central.modo
+        self.central.log("info", "avvio", home=str(self.home), socket=str(self.sock_path), pid=os.getpid(),
+                         modo=modo.as_dict())
+        self.ombra.importa(completo=True, solo_nuovi=modo.sqlite)
         self.server = Server(self.sock_path, self.central)
         os.chmod(self.sock_path, 0o600)
         if self.giri:
-            for every, fn, nome in ((IMPORT_S, self.ombra.importa, "import"),
-                                    (SVEGLIA_S, self.ombra.giro_sveglia, "sveglia"),
-                                    (CONFRONTO_S, self.ombra.confronta, "confronto")):
-                threading.Thread(target=_ciclo, args=(self.stop, every, fn, self.central.log, nome),
+            log = self.central.log
+            if modo.sqlite:
+                giri = [(IMPORT_S, lambda: self.ombra.importa(solo_nuovi=True), "rete"),
+                        (PULIZIA_S, Pulizia(self.central).giro, "pulizia")]
+            else:
+                giri = [(IMPORT_S, self.ombra.importa, "import"),
+                        (CONFRONTO_S, self.ombra.confronta, "confronto")]
+            if modo.attiva:
+                sveglia = Sveglia(self.central, self.ombra)
+                threading.Thread(target=_ciclo_sveglia, args=(self.stop, self.central.sveglia_ora, sveglia.giro, log),
                                  daemon=True).start()
+            else:
+                giri.append((SVEGLIA_S, self.ombra.giro_sveglia, "sveglia"))
+            if modo.raccolta:
+                giri.append((RACCOLTA_S, self.central.raccolta, "raccolta"))
+            for every, fn, nome in giri:
+                threading.Thread(target=_ciclo, args=(self.stop, every, fn, log, nome), daemon=True).start()
         return self
 
     def esegui(self) -> None:

@@ -1,9 +1,11 @@
-"""Le operazioni del centralino (contratto §3): stesse risposte delle 9 tool di oggi.
+"""Le operazioni del centralino (contratto §3 e §13).
 
-Nel passo 1 i file restano la fonte per tutti i lettori, quindi le letture (inbox, read,
-waits, thread) leggono i file; ogni scrittura passa da ``Store.tx()`` e da ``FileBus``,
-che la notifica a ``_Specchio`` dentro la stessa transazione: se i file falliscono la
-transazione si annulla, e SQLite non è mai avanti ai file.
+Modo ombra (``fonte: file``): i file restano la fonte per tutti i lettori, quindi le letture
+leggono i file; ogni scrittura passa da ``Store.tx()`` e da ``FileBus``, che la notifica a
+``_Specchio`` dentro la stessa transazione: SQLite non è mai avanti ai file.
+
+Modo attivo (``fonte: sqlite``): ``DbBus`` al posto di ``FileBus``, stesse operazioni,
+stato solo nel database. Le risposte hanno la stessa forma nei due modi.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -59,14 +62,25 @@ class Centralino:
         self.modo = config.leggi(self.home)
         self.amap = AgentMap(self.home)
         self.store = Store(db_path or self.home / "centralino.db")
-        self.files = FileBus(self.home, self.amap)
-        self.files.osservatore = _Specchio(self)
+        self._tx_conn = None
+        if self.modo.sqlite:
+            from .dbbus import DbBus
+            self.files: FileBus = DbBus(self.home, self.amap, self)
+        else:
+            self.files = FileBus(self.home, self.amap)
+            self.files.osservatore = _Specchio(self)
         self.onda = OndaView(self.home, pid_alive) if pid_alive else OndaView(self.home)
         self.vivo = Vivacita(self.onda, self.store, self.amap.host_self())
         self.files.session_live = lambda agent, slug: self.vivo.stato(agent, slug).viva
         self.log = Log(log_path)
-        self._kick = kick_wake if kick_wake is not None else _kick_wake
-        self._tx_conn = None
+        # chi invia sveglia subito: in ombra un giro di wake.py, in attivo il giro del centralino
+        self.sveglia_ora = threading.Event()
+        if kick_wake is not None:
+            self._kick = kick_wake
+        elif self.modo.attiva:
+            self._kick = lambda caller: self.sveglia_ora.set()
+        else:
+            self._kick = _kick_wake
         self._pendenti: list[dict] = []
         self.started = time.time()
 
@@ -149,20 +163,33 @@ class Centralino:
         return out
 
     def op_reply(self, caller: dict, a: dict, warnings: list) -> dict:
+        """v3 bus_reply: risponde a un messaggio e lo archivia con esito risposto. Se il messaggio
+        è già archiviato, la risposta parte lo stesso (stesso thread e task_id)."""
         me = self._who(caller)
-        orig = self.files.read_message(me.agent, a.get("in_reply_to") or "")
+        mid = a.get("message_id") or a.get("in_reply_to") or ""
         typ = a.get("message_type") or "response"
         if typ not in ("response", "question"):
-            raise BusError("reply: message_type 'response' o 'question'")
-        payload: dict[str, Any] = {"summary": a.get("summary") or ""}
-        if a.get("details"):
-            payload.update(a["details"])
-        out = self._write(lambda: self.files.send(
-            sender=me.agent, to=self.files.reply_address(orig), msg_type=typ,
-            intent=a.get("intent") or f"re-{orig.get('intent') or 'risposta'}", payload=payload,
-            priority=a.get("priority") or "normal", thread=orig.get("thread_id"), in_reply_to=orig["id"],
-            sender_session=me.slug, task_id=orig.get("task_id"), live_slugs=self._live))
+            raise BusError("bus_reply: message_type 'response' (default) o 'question'")
+        summary = (a.get("summary") or "").strip()
+        if not summary:
+            raise BusError("bus_reply: summary vuoto")
+        orig = self.files.read_message(me.agent, mid)
+        if orig["_location"]["state"] == "pending":
+            out = self._write(lambda: self.files.handle(me.agent, me.slug, orig["id"], "risposto", reply=summary,
+                                                        live_slugs=self._live, reply_type=typ,
+                                                        details=a.get("details")))
+        else:
+            payload: dict[str, Any] = {"summary": summary, **(a.get("details") or {})}
+            sent = self._write(lambda: self.files.send(
+                sender=me.agent, to=self.files.reply_address(orig), msg_type=typ,
+                intent=f"re-{orig.get('intent') or 'risposta'}", payload=payload,
+                thread=orig.get("thread_id"), in_reply_to=orig["id"], sender_session=me.slug,
+                task_id=orig.get("task_id"), live_slugs=self._live))
+            out = {"message": orig["id"], "esito": None, "task_id": orig.get("task_id"),
+                   "sent": {"id": sent["id"], "to": sent["delivered_to"], "queued": sent.get("queued"),
+                            "warning": sent.get("warning")}}
         self._kick(caller)
+        out["remaining"] = self.files.count_inbox(me.agent, me.slug)
         return out
 
     def op_expect(self, caller: dict, a: dict, warnings: list) -> dict:
@@ -197,8 +224,21 @@ class Centralino:
         return out
 
     def op_close(self, caller: dict, a: dict, warnings: list) -> dict:
+        """v3 bus_close: consuma un messaggio (chiuso, riarma, letto) o, con solo task_id,
+        chiude l'attesa di una delega."""
         me = self._who(caller)
-        out = self._write(lambda: self.files.close_wait(me.agent, me.slug, a.get("task_id") or "", a.get("note")))
+        esito = a.get("esito") or "chiuso"
+        if a.get("message_id"):
+            if esito not in ("chiuso", "riarma", "letto"):
+                raise BusError("bus_close: esito chiuso, riarma o letto (per rispondere usa bus_reply)")
+            out = self._write(lambda: self.files.handle(me.agent, me.slug, a["message_id"], esito,
+                                                        task_id=a.get("task_id"), live_slugs=self._live))
+        elif a.get("task_id"):
+            if esito != "chiuso":
+                raise BusError("bus_close con solo task_id: esito chiuso")
+            out = self._write(lambda: self.files.close_wait(me.agent, me.slug, a["task_id"], a.get("note")))
+        else:
+            raise BusError("bus_close: serve message_id oppure task_id")
         out["remaining"] = self.files.count_inbox(me.agent, me.slug)
         return out
 
@@ -213,19 +253,31 @@ class Centralino:
         me = self._who(caller)
         self._collect()
         items = []
-        for path in self.files.list_inbox(me.agent, me.slug, all_sessions=bool(a.get("all_sessions"))):
-            try:
-                data = self.files.read_message(me.agent, path.stem)
-            except BusError:
-                continue
-            row = self._summarize(path, data, me.slug)
+        for mid, scope, data in self.files.inbox_items(me.agent, me.slug, all_sessions=bool(a.get("all_sessions"))):
+            row = self._summarize(mid, scope, data, me.slug)
             if a.get("unread_only") and not row["requires_response"]:
                 continue
             items.append(row)
         items.sort(key=lambda r: (PRIORITA.get(r["priority"], 2), r["ts"] or ""))
-        return {"agent": me.agent, "slug": me.slug, "count": len(items), "messages": items}
+        out: dict[str, Any] = {"agent": me.agent, "slug": me.slug, "count": len(items), "messages": items}
+        mie = []
+        for w in self.files.list_waits(me.agent, me.slug):
+            if w.get("state") != "expected":
+                continue
+            rets = [{"msg_id": k, "type": e.get("type"), "from": e.get("from"), "summary": e.get("summary"),
+                     "pending_wake": (e.get("pending_wake") or {}).get("reason")}
+                    for k, e in (w.get("returns") or {}).items()
+                    if isinstance(e, dict) and e.get("state") not in ("handled", "seen")]
+            mie.append({"task_id": w["task_id"], "delegated_to": w.get("delegated_to"),
+                        "description": w.get("description"), "created_at": w.get("created_at"),
+                        "deadline": w.get("deadline"), "da_gestire": rets})
+        if mie:
+            out["mie_attese"] = mie
+        return out
 
     def op_read(self, caller: dict, a: dict, warnings: list) -> dict:
+        if a.get("thread_id") and not a.get("message_id"):
+            return self.op_thread(caller, a, warnings)
         me = self._who(caller)
         data = self.files.read_message(me.agent, a.get("message_id") or "")
         data["_reply_to"] = self.files.reply_address(data)
@@ -243,10 +295,10 @@ class Centralino:
             what = "Domanda" if data.get("type") == "question" else "Ritorno"
             data["_task_hint"] = (f"{what} sul task {tid} che hai delegato a {data['_reply_to']}. "
                                   f"Gestiscilo con {gest}.")
-        elif tid and (other := self.files.find_wait(tid)) is not None and other.parent.parent.name == me.agent:
+        elif tid and (other := self.files.wait_owner(tid)) is not None and other[0] == me.agent:
             # BR24-F2.6: delegato da un'altra sessione viva di questo agente, non da questa
             data["_task_hint"] = (f"Messaggio sul task {tid}, delegato da un'altra sessione ({me.agent}/"
-                                  f"{other.parent.name[1:]}), non da te: non chiuderlo per lei. Se non ti "
+                                  f"{other[1]}), non da te: non chiuderlo per lei. Se non ti "
                                   f"riguarda, bus_gestisci(message_id='{data['id']}', esito='letto').")
         elif tid and data.get("type") == "response":
             data["_task_hint"] = (f"Risposta di chi ti ha delegato il task {tid}: prosegui il lavoro; "
@@ -319,10 +371,8 @@ class Centralino:
                           "workspace": s.get("workspace_path"), "pending": s.get("pending", 0),
                           "last_seen": s.get("last_seen"), "stato": f"viva su {h} (registro remoto)"}
                          for s in rs if s.get("name") == name]
-            root = self.files.inbox_root(name)
             roster.append({"agent": name, "role": info.get("role", ""), "domain": info.get("domain"),
-                           "live_sessions": live,
-                           "broadcast_pending": len(list(root.glob("msg-*.json"))) if root.is_dir() else 0})
+                           "live_sessions": live, "broadcast_pending": self.files.broadcast_pending(name)})
         out: dict[str, Any] = {"me": me, "roster": roster}
         if self.amap.hosts():
             hosts = {}
@@ -452,6 +502,25 @@ class Centralino:
 
     # ---------- utilità ----------
 
+    def raccolta(self) -> list[dict]:
+        """Giro periodico verso gli altri host (modo attivo, F4.4): consegna la coda, tira giù
+        quello che hanno lasciato per noi e aggiorna lo stato delle loro sessioni (F2.5)."""
+        out = self.files.collect(force=True)
+        for h in self.amap.remote_hosts():
+            self.files.remote_status(h, force=True)
+        if self.modo.sqlite:
+            q = self.home / "outbox"
+            def scrivi():
+                c = self._conn()
+                for r in c.execute("SELECT msg_id, host FROM remote_queue").fetchall():
+                    if not any((q / r["host"]).rglob(f"{r['msg_id']}.json")):
+                        c.execute("DELETE FROM remote_queue WHERE msg_id=?", (r["msg_id"],))
+                        c.execute("UPDATE messages SET delivery='remote' WHERE id=?", (r["msg_id"],))
+            self._write(scrivi)
+        if any(x.get("pulled") for x in out):
+            self.sveglia_ora.set()
+        return out
+
     def _collect(self) -> list[dict]:
         """Raccolta dagli altri host FUORI dal lock di scrittura: l'SSH può durare secondi e non
         deve fermare gli altri scrittori. Quello che arriva si registra dopo, in una transazione breve."""
@@ -467,10 +536,8 @@ class Centralino:
             self._write(scrivi)
         return out
 
-    def _summarize(self, path: Path, data: dict, own_slug: str) -> dict:
-        loc = location_of(path, self.home)
-        scope = loc[1] if loc and loc[1] else "all-sessions"
-        return {"id": path.stem, "from": data.get("from"), "from_session": data.get("from_session"),
+    def _summarize(self, mid: str, scope: str, data: dict, own_slug: str) -> dict:
+        return {"id": mid, "from": data.get("from"), "from_session": data.get("from_session"),
                 "from_host": (data.get("context") or {}).get("host"),
                 "reply_to": self.files.reply_address(data), "type": data.get("type"),
                 "intent": data.get("intent"), "priority": data.get("priority", "normal"),

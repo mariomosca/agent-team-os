@@ -43,7 +43,10 @@ class Ombra:
 
     # ---------- import ----------
 
-    def importa(self, completo: bool = False) -> dict:
+    def importa(self, completo: bool = False, solo_nuovi: bool = False) -> dict:
+        """``solo_nuovi`` (modo attivo, rete di sicurezza): entra solo un messaggio o
+        un'attesa che SQLite non conosce, scritto da qualcosa fuori dal centralino; i file
+        vecchi non toccano mai lo stato del database."""
         n_msg = n_wait = 0
         host = self.c.amap.host_self() or ""
         cambiati: list[tuple[Path, dict, tuple]] = []
@@ -90,7 +93,18 @@ class Ombra:
         def scrivi():
             nonlocal n_msg, n_wait
             conn = self.c._conn()
+            noti = set()
+            if solo_nuovi:
+                ids = [p.stem for p, _, _ in cambiati]
+                for i in range(0, len(ids), 500):
+                    chunk = ids[i:i + 500]
+                    noti |= {r[0] for r in conn.execute(
+                        f"SELECT id FROM messages WHERE id IN ({','.join('?' * len(chunk))})", chunk)}
             for p, rec, (agent, slug, state) in cambiati:
+                if p.stem in noti:
+                    continue
+                if solo_nuovi:
+                    self.c.log("warn", "scritto_fuori_dal_centralino", path=str(p))
                 try:
                     Store.put_message(conn, rec, state=state, to_slug=slug, to_host=host, path=str(p),
                                       origin="ingest", mid=p.stem)
@@ -99,6 +113,8 @@ class Ombra:
                     scartati.append(str(p))
                     self.c.log("warn", "import_scartato", path=str(p), error=repr(exc))
             for rec in attese:
+                if solo_nuovi and conn.execute("SELECT 1 FROM waits WHERE task_id=?", (rec["task_id"],)).fetchone():
+                    continue
                 try:
                     Store.put_wait(conn, rec, origin="ingest")
                     n_wait += 1
@@ -134,15 +150,21 @@ class Ombra:
                                            rec.get("from_session") or rec.get("from")))
         return out
 
-    def giro_sveglia(self) -> list[regole.Decisione]:
+    def giro_sveglia(self, esegui=None) -> list[regole.Decisione]:
+        """Un giro della tabella di sveglia. Senza ``esegui`` (modo ombra) le decisioni si
+        scrivono e basta. Con ``esegui(agent, slug, stato, decisioni) -> canale`` (modo attivo)
+        le sveglie si fanno davvero: un ``Rinvio`` le trasforma in coda col suo motivo."""
+        from .canale import Rinvio
+        modo = "attiva" if esegui else "ombra"
         self._giro += 1
         giro = int(now().timestamp() * 1000)
         attese = self._attese()
         r = self.c.store.read()
         gia = {(x["msg_id"], x["agent"], x["slug"]) for x in r.execute(
-            "SELECT msg_id, agent, slug FROM wake_decisions WHERE decisione='sveglia'")}
+            "SELECT msg_id, agent, slug FROM wake_decisions WHERE decisione='sveglia' AND modo=?", (modo,))}
         ultime: dict[tuple, tuple] = {}
-        for x in r.execute("SELECT msg_id, agent, slug, decisione, motivo FROM wake_decisions ORDER BY id"):
+        for x in r.execute("SELECT msg_id, agent, slug, decisione, motivo FROM wake_decisions WHERE modo=? ORDER BY id",
+                           (modo,)):
             ultime[(x["msg_id"], x["agent"], x["slug"])] = (x["decisione"], x["motivo"])
         ora_fa = iso(now() - timedelta(hours=1))
         quarto_fa = iso(now() - timedelta(seconds=regole.URGENTI_COPPIA_S))
@@ -153,13 +175,23 @@ class Ombra:
                 continue
             stato = self.c.vivo.stato(agent, slug)
             n_ora = r.execute(
-                "SELECT COUNT(DISTINCT giro) FROM wake_decisions WHERE agent=? AND slug=? "
-                "AND decisione='sveglia' AND regola!='esito' AND at>=?", (agent, slug, ora_fa)).fetchone()[0]
+                "SELECT COUNT(DISTINCT giro) FROM wake_decisions WHERE agent=? AND slug=? AND modo=? "
+                "AND decisione='sveglia' AND regola!='esito' AND at>=?", (agent, slug, modo, ora_fa)).fetchone()[0]
             urg = {x[0] for x in r.execute(
                 "SELECT m.from_agent || '/' || COALESCE(m.from_slug, '') FROM wake_decisions w "
                 "JOIN messages m ON m.id=w.msg_id WHERE w.agent=? AND w.slug=? AND w.regola='urgente' "
-                "AND w.decisione='sveglia' AND w.at>=?", (agent, slug, quarto_fa))}
-            for d in regole.decidi(stato, items, n_ora, urg):
+                "AND w.decisione='sveglia' AND w.modo=? AND w.at>=?", (agent, slug, modo, quarto_fa))}
+            decs = regole.decidi(stato, items, n_ora, urg)
+            sveglie = [d for d in decs if d.decisione == "sveglia"]
+            if esegui and sveglie:
+                try:
+                    canale = esegui(agent, slug, stato, sveglie)
+                    decs = [regole.Decisione(d.msg_id, d.regola, d.decisione, d.motivo, canale)
+                            if d.decisione == "sveglia" else d for d in decs]
+                except Rinvio as exc:
+                    decs = [regole.Decisione(d.msg_id, d.regola, "coda", str(exc), None)
+                            if d.decisione == "sveglia" else d for d in decs]
+            for d in decs:
                 tutte.append((agent, slug, d))
         task_of = {}
         nuove = [(a, s, d) for a, s, d in tutte if ultime.get((d.msg_id, a, s)) != (d.decisione, d.motivo)]
@@ -173,10 +205,11 @@ class Ombra:
                 at = iso_now()
                 for a, s, d in nuove:
                     conn.execute("INSERT INTO wake_decisions (at, giro, agent, slug, msg_id, task_id, regola, "
-                                 "decisione, motivo, canale) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                 "decisione, motivo, canale, modo) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                                  (at, giro, a, s, d.msg_id, task_of.get(d.msg_id), d.regola, d.decisione,
-                                  d.motivo, d.canale))
+                                  d.motivo, d.canale, modo))
             self.c._write(scrivi)
+        self.ultimo_giro = nuove
         return [d for _, _, d in tutte]
 
     def blocca_stop(self, agent: str, slug: str) -> list[str]:

@@ -34,6 +34,7 @@ class Banco:
     home: Path
     t: datetime = field(default_factory=lambda: datetime(2026, 10, 24, 16, 0, tzinfo=timezone.utc))
     onda_sessions: dict = field(default_factory=dict)
+    attivo: bool = False
 
     def __post_init__(self):
         self.root = self.home / "ws"
@@ -53,16 +54,36 @@ class Banco:
                 "leo": {"role": "it", "domain": "brandart",
                         "workspace_root": str(self.root / "Projects" / "00-Brandart-PM-OS")},
             },
-            "hosts": {"laptop": {"hub": True}, "mini": {"ssh": "mini", "bus_home": "/nessuno"}},
+            "hosts": {"laptop": {"hub": True}, "mini": {"ssh": "mini", "bus_home": "/nessuno"},
+                      "cloud": {"note": "alita-cloud via repo, nessun ssh"}},
             "cc_awareness": {"hub": "alita"},
         }
         self.home.mkdir(parents=True, exist_ok=True)
         (self.home / "AGENT_MAP.json").write_text(json.dumps(amap), encoding="utf-8")
         for a in amap["agents"]:
             (self.home / "inboxes" / a).mkdir(parents=True, exist_ok=True)
+        amap["agents"]["kai"]["persona_file"] = "personas/kai.md"
+        (self.home / "AGENT_MAP.json").write_text(json.dumps(amap), encoding="utf-8")
+        (self.home / "personas").mkdir(exist_ok=True)
+        (self.home / "personas" / "kai.md").write_text("# Kai\n", encoding="utf-8")
+        if self.attivo:
+            from . import config
+            config.scrivi(self.home, config.Modo("sqlite", "attiva", False))
         self.c = Centralino(self.home, kick_wake=lambda caller: None, pid_alive=lambda pid: True)
         self.ombra = Ombra(self.c)
         self.ombra.registra()
+        from .hookops import HookOps
+        HookOps(self.c, self.ombra).registra()
+        self.prompt: list[tuple[str, str]] = []   # (terminalId, testo) scritti dal finto Onda
+        self.onda_rifiuta: str | None = None
+
+        def finta_onda(method, params):
+            if self.onda_rifiuta:
+                return {"errorCode": "not_idle", "reason": self.onda_rifiuta}
+            self.prompt.append((params["terminalId"], params["prompt"]))
+            return {"submitted": True}
+        from .sveglia import Sveglia
+        self.sveglia = Sveglia(self.c, self.ombra, onda_call=finta_onda)
         self._scrivi_onda()
 
     # ---------- tempo e Onda ----------
@@ -130,8 +151,16 @@ class Banco:
         return out
 
     def giro(self) -> None:
-        self.ombra.importa()
-        self.ombra.giro_sveglia()
+        if self.attivo:
+            self.ombra.importa(solo_nuovi=True)
+            self.sveglia.giro()
+        else:
+            self.ombra.importa()
+            self.ombra.giro_sveglia()
+
+    def prompt_a(self, addr: str) -> list[str]:
+        agent, _, slug = addr.partition("/")
+        return [t for term, t in self.prompt if term == f"pane-{agent}-{slug}"]
 
     def scrivi_come_lib(self, to: str, record: dict) -> Path:
         """Un messaggio scritto da un altro componente (lib, wake.py, sync): fuori dal centralino."""
@@ -410,6 +439,177 @@ def caso_log_sveglia(b: Banco) -> None:
     _check([x["attesa"] for x in r] == ["sveglia:tetto_task"], f"differenza attesa per tetto_task: {list(map(dict, r))}")
 
 
+# ======================================================================
+# Scenari del modo attivo (fonte sqlite, sveglia attiva): F4.1, F4.2, F4.4, F5.1, F5.4
+# ======================================================================
+
+def _nessun_file_in_casella(b: Banco) -> None:
+    files = [p for p in (b.home / "inboxes").rglob("msg-*.json")]
+    _check(not files, f"in modo attivo nessun file di casella: {files[:3]}")
+
+
+def att_delega_completa(b: Banco) -> None:
+    b.onda("alita/work-hub", "idle")
+    b.onda("kai/onda", "idle")
+    d = b.op("alita/work-hub", "send", to="kai/onda", intent="build", summary="fai la build",
+             message_type="request", kind="delega")
+    tid = d["task_id"]
+    b.giro()
+    _check(len(b.prompt_a("kai/onda")) == 1 and "nuova delega" in b.prompt_a("kai/onda")[0].lower(),
+           f"la delega sveglia l'esecutore: {b.prompt}")
+    q = b.op("kai/onda", "reply", message_id=d["id"], summary="A o B?", message_type="question")
+    _check(q["sent"]["to"] == "alita/work-hub", f"la domanda va a chi ha delegato: {q}")
+    b.onda("alita/work-hub", "working")
+    b.giro()
+    _check(not b.prompt_a("alita/work-hub"), "alita lavora: nessuna sveglia")
+    inbox = b.op("alita/work-hub", "inbox")
+    _check(inbox["mie_attese"][0]["da_gestire"][0]["pending_wake"] == "al_lavoro:working",
+           f"il motivo del rinvio si vede in bus_inbox: {inbox.get('mie_attese')}")
+    b.onda("alita/work-hub", "idle")
+    b.giro()
+    _check(len(b.prompt_a("alita/work-hub")) == 1 and "domanda sul task" in b.prompt_a("alita/work-hub")[0].lower(),
+           f"a fine turno la domanda sveglia alita: {b.prompt}")
+    qid = inbox["messages"][0]["id"]
+    r = b.op("alita/work-hub", "reply", message_id=qid, summary="B")
+    b.giro()
+    _check(len(b.prompt_a("kai/onda")) == 2 and "risposta sul task" in b.prompt_a("kai/onda")[1].lower(),
+           "la risposta sveglia l'esecutore")
+    _check(b.op("alita/work-hub", "inbox")["count"] == 0, "la domanda risposta lascia la casella")
+    e = b.op("kai/onda", "reply", message_id=r["sent"]["id"], summary="fatto, build verde")
+    _check(e["sent"]["to"] == "alita/work-hub", "l'esito torna al delegante")
+    b.giro()
+    _check("ritorno sul task" in b.prompt_a("alita/work-hub")[-1].lower(), "l'esito sveglia il delegante")
+    eid = b.op("alita/work-hub", "inbox")["messages"][0]["id"]
+    c = b.op("alita/work-hub", "close", message_id=eid, esito="chiuso")
+    _check(c["wait"]["state"] == "closed" and c["remaining"] == 0, f"chiuso: {c}")
+    th = b.op("alita/work-hub", "read", thread_id=b.op("alita/work-hub", "read", message_id=eid)["thread_id"])
+    _check(th["count"] == 4, f"il thread ha delega, domanda, risposta, esito: {th['count']}")
+    _nessun_file_in_casella(b)
+
+
+def att_stop(b: Banco) -> None:
+    b.onda("kai/orbit", "idle")
+    b.op("alita/work-hub", "send", to="kai/orbit", intent="x", summary="x", message_type="brief", kind="comunicazione")
+    s = b.op("kai/orbit", "hook.stop")
+    _check(s["block"] is False, f"una comunicazione non blocca lo Stop: {s}")
+    b.op("alita/work-hub", "send", to="kai/orbit", intent="y", summary="y", message_type="request", kind="delega")
+    blocchi = [b.op("kai/orbit", "hook.stop")["block"] for _ in range(4)]
+    _check(blocchi == [True, True, True, False], f"blocca 3 volte, poi allenta: {blocchi}")
+    _check(b.op("kai/orbit", "hook.stop")["block"] is True, "il contatore riparte dopo aver allentato")
+
+
+def att_hook_start(b: Banco) -> None:
+    b.op("alita/work-hub", "send", to="kai/orbit", intent="ciao", summary="benvenuto", message_type="brief",
+         kind="comunicazione", priority="high")
+    st = b.op("kai/orbit", "hook.start")
+    _check("Inbox: 1 pending (1 urgent/high)" in st["banner"] and st["persona"] == "# Kai\n", st["banner"])
+    reg = read_json(b.home / "registry" / "kai.d" / "orbit.json")
+    _check(reg and reg["pid"] == 1 and reg["active"], f"vista di compatibilità per Onda: {reg}")
+    p = b.op("kai/orbit", "hook.prompt")
+    _check(p["additionalContext"] and "1 urgent/high" in p["additionalContext"], "avviso degli urgenti")
+    b.op("kai/orbit", "hook.end")
+    _check(not (b.home / "registry" / "kai.d" / "orbit.json").exists(), "fine sessione: fuori dal registro di Onda")
+
+
+def att_scadenza(b: Banco) -> None:
+    b.onda("alita/work-hub", "idle")
+    dl = tempo.iso(b.t + timedelta(minutes=30))
+    d = b.op("alita/work-hub", "send", to="kai/orbit", intent="x", summary="x", message_type="request",
+             kind="delega", response_by=dl)
+    b.avanza(3600)
+    b.onda("alita/work-hub", "idle")
+    b.giro()
+    w = b.c.store.wait(d["task_id"])
+    _check(w["state"] == "expired", f"deadline passata senza ritorni: scaduta ({w['state']})")
+    ib = b.op("alita/work-hub", "inbox")["messages"]
+    _check([m["intent"] for m in ib] == ["task-scaduto"], f"avviso a chi aspetta: {ib}")
+    _check(not b.prompt_a("alita/work-hub"), "l'avviso non sveglia")
+
+
+def att_senza_canale(b: Banco) -> None:
+    b.op("alita/work-hub", "session.heartbeat")
+    out = b.op("kai/orbit", "send", to="alita/work-hub", intent="x", summary="x", message_type="request",
+               kind="delega")
+    b.giro()
+    b.avanza(301)
+    b.op("alita/work-hub", "session.heartbeat")
+    b.giro()
+    hub = [m for m in b.op("alita/work-hub", "inbox")["messages"] if m["intent"] == "sveglia-senza-canale"]
+    _check(len(hub) == 1, f"un avviso all'hub dopo 5 minuti senza canale: {hub}")
+    b.avanza(60)
+    b.op("alita/work-hub", "session.heartbeat")
+    b.giro()
+    hub = [m for m in b.op("alita/work-hub", "inbox")["messages"] if m["intent"] == "sveglia-senza-canale"]
+    _check(len(hub) == 1, "uno solo per messaggio")
+    _check(out["id"], "")
+
+
+def att_agente_nudo(b: Banco) -> None:
+    b.onda("kai/orbit", "idle")
+    out = b.op("alita/work-hub", "send", to="kai", intent="x", summary="x", message_type="brief", kind="comunicazione")
+    _check(out["delivered_to"] == "kai/orbit", f"una sola sessione viva: va a lei ({out['delivered_to']})")
+    b.onda("kai/onda", "idle")
+    out = b.op("alita/work-hub", "send", to="kai", intent="x", summary="x", message_type="brief", kind="comunicazione")
+    _check(out["delivered_to"] == "kai", f"due vive e nessuna di casa: casella condivisa ({out['delivered_to']})")
+
+
+def att_cloud(b: Banco) -> None:
+    b.onda("kai/orbit", "idle")
+    d = b.op("kai/orbit", "send", to="alita@cloud", intent="analisi", summary="analizza", message_type="request",
+             kind="delega")
+    _check(d["queued"] is True, "verso il cloud: coda in outbox/cloud")
+    senza = _msg("msg-20261024T200000Z-cloudnot", "alita/cloud", "kai", "response", tempo.iso(b.t),
+                 context={"host": "cloud"})
+    con = _msg("msg-20261024T200100Z-cloudtid", "alita/cloud", "kai", "response", tempo.iso(b.t),
+               context={"host": "cloud"}, task_id=d["task_id"])
+    r1 = b.op(None, "consegna", record=senza, agent="kai")
+    r2 = b.op(None, "consegna", record=con, agent="kai", slug="orbit")
+    _check(r1["nuovo"] and r2["nuovo"], "consegnati")
+    _check(not b.op(None, "consegna", record=con, agent="kai", slug="orbit")["nuovo"], "una seconda consegna non duplica")
+    b.giro()
+    dec = b.decisioni("kai/orbit")
+    _check(dec[senza["id"]][0] == "nessuna", f"senza task_id non è un ritorno: {dec[senza['id']]}")
+    _check(dec[con["id"]][:2] == ("esito", "sveglia"), f"con task_id è l'esito: {dec[con['id']]}")
+    w = b.c.store.wait(d["task_id"])
+    _check(con["id"] in json.loads(w["raw"])["returns"], "ritorno registrato sull'attesa")
+
+
+def att_pulizia(b: Banco) -> None:
+    from .pulizia import Pulizia
+    b.onda("kai/vecchia", "idle")
+    b.op("kai/vecchia", "hook.start")
+    d = b.op("alita/work-hub", "send", to="kai/vecchia", intent="x", summary="x", message_type="request",
+             kind="delega")
+    c = b.op("alita/work-hub", "send", to="kai/vecchia", intent="y", summary="y", message_type="brief",
+             kind="comunicazione")
+    b.op("kai/vecchia", "hook.end")
+    b.onda("kai/vecchia", None)
+    b.onda("kai/orbit", "idle")
+    b.avanza(25 * 3600)
+    b.onda("kai/orbit", "idle")
+    out = Pulizia(b.c).giro()
+    # due sessioni escono: kai/vecchia (chiusa) e alita/work-hub (nessun segno di vita da 25 ore)
+    _check(out["spostati"] == 1 and out["archiviati"] == 1 and out["sessioni"] == 2, f"pulizia: {out}")
+    _check(b.c.store.message(d["id"])["to_slug"] == "orbit", "la delega passa all'unica sessione viva")
+    _check(b.c.store.message(c["id"])["state"] == "read", "la comunicazione si archivia")
+
+
+def att_rete_di_sicurezza(b: Banco) -> None:
+    b.onda("kai/orbit", "idle")
+    m = b.scrivi_come_lib("kai/orbit", _msg("msg-20261024T190000Z-dallalib", "leo/pm", "kai/orbit", "request",
+                                             tempo.iso(b.t), kind="delega"))
+    b.ombra.importa(solo_nuovi=True)
+    _check(b.c.store.message(m.stem)["state"] == "pending", "un file scritto fuori entra una volta")
+    b.op("kai/orbit", "close", message_id=m.stem, esito="letto")
+    os.utime(m, None)
+    os.utime(m.parent, None)
+    b.ombra.importa(solo_nuovi=True)
+    _check(b.c.store.message(m.stem)["state"] == "read", "il file vecchio non riporta pending un messaggio gestito")
+
+
+SCENARI_ATTIVI = [att_delega_completa, att_stop, att_hook_start, att_scadenza, att_senza_canale, att_agente_nudo,
+                  att_cloud, att_pulizia, att_rete_di_sicurezza]
+
 SCENARI = [caso_irjocy, caso_orbit_non_viva, caso_xn9lv0, caso_attese_non_chiudibili, caso_passaggio_attesa,
            caso_delega_completa,
            caso_mini_irraggiungibile, caso_due_sessioni, caso_heartbeat_senza_canale, caso_ombra_pulita,
@@ -418,7 +618,7 @@ SCENARI = [caso_irjocy, caso_orbit_non_viva, caso_xn9lv0, caso_attese_non_chiudi
 
 def esegui(scenario, base: Path | None = None) -> None:
     tmp = Path(tempfile.mkdtemp(prefix="centralino-sim-", dir=base))
-    b = Banco(tmp / "bus")
+    b = Banco(tmp / "bus", attivo=scenario in SCENARI_ATTIVI)
     try:
         scenario(b)
     finally:
@@ -428,7 +628,7 @@ def esegui(scenario, base: Path | None = None) -> None:
 
 def main(verbose: bool = False) -> int:
     falliti = 0
-    for s in SCENARI:
+    for s in SCENARI + SCENARI_ATTIVI:
         try:
             esegui(s)
             print(f"ok    {s.__name__}")
@@ -437,5 +637,6 @@ def main(verbose: bool = False) -> int:
             print(f"FALLITO {s.__name__}: {exc}")
             if verbose:
                 traceback.print_exc()
-    print(f"\n{len(SCENARI) - falliti}/{len(SCENARI)} scenari ok")
+    n = len(SCENARI) + len(SCENARI_ATTIVI)
+    print(f"\n{n - falliti}/{n} scenari ok")
     return 1 if falliti else 0
