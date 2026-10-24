@@ -89,3 +89,16 @@ def test_scrittori_concorrenti(bus):
 def test_centralino_giu(tmp_path):
     with pytest.raises(CentralinoGiu, match="non risponde"):
         call("admin.ping", sock=tmp_path / "nessuno.sock")
+
+
+def test_vista_globale(bus):
+    sock = bus / "centralino.sock"
+    call("send", {"to": "alita/s1", "intent": "x", "summary": "ciao", "message_type": "request", "kind": "delega"},
+         caller=_caller(bus, "kai"), sock=sock)
+    v = call("vista", sock=sock)["result"]
+    assert v["modo"]["fonte"] == "file"
+    assert [m["raw"]["intent"] for m in v["messaggi"]] == ["x"]
+    assert v["messaggi"][0]["agent"] == "alita" and v["messaggi"][0]["slug"] == "s1"
+    assert len(v["attese"]) == 1 and v["attese"][0]["raw"]["state"] == "expected"
+    assert {x["agent"] for x in v["agenti"]} == {"kai", "alita"}
+    assert {s["slug"] for s in v["sessioni"]} == {"s1"}  # vive per heartbeat

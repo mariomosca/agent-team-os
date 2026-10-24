@@ -8,6 +8,7 @@ transazione si annulla, e SQLite non è mai avanti ai file.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -15,7 +16,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__
+from . import __version__, config
 from .db import Store
 from .files import BusError, FileBus, location_of
 from .indirizzi import AgentMap, ErroreIndirizzo
@@ -55,6 +56,7 @@ class Centralino:
     def __init__(self, home: Path, db_path: Path | None = None, log_path: Path | None = None,
                  kick_wake: Callable[[dict], None] | None = None, pid_alive=None):
         self.home = Path(home)
+        self.modo = config.leggi(self.home)
         self.amap = AgentMap(self.home)
         self.store = Store(db_path or self.home / "centralino.db")
         self.files = FileBus(self.home, self.amap)
@@ -365,6 +367,61 @@ class Centralino:
                                                 workspace=caller.get("cwd"), caller=caller, event=ev))
         return {"address": me.address, "event": ev}
 
+    # ---------- vista globale per Orbit e bus-band (BR24-F4.3) ----------
+
+    def op_vista(self, caller: dict, a: dict, warnings: list) -> dict:
+        """Sola lettura, senza chiamante e senza heartbeat: i record nel formato dei file di
+        oggi (``raw``), così i parser di Orbit e della band cambiano solo la fonte. Legge
+        SQLite (in modo ombra è lo specchio dei file, al più 5 s indietro)."""
+        from datetime import timedelta
+        from .tempo import iso, now
+        adesso = now()
+        cut = lambda k, d: iso(adesso - timedelta(seconds=float(a.get(k) or d)))  # noqa: E731
+        host = self.amap.host_self() or ""
+        r = self.store.read()
+        sessioni = []
+        for st in self.vivo.vive():
+            row = r.execute("SELECT * FROM sessions WHERE agent=? AND slug=? AND host=?",
+                            (st.agent, st.slug, host)).fetchone()
+            onda = self.onda.find(st.agent, st.slug, host, row["claude_session_id"] if row else None)
+            waiting = None
+            if row is not None and row["waiting_agent"]:
+                waiting = json.loads(row["waiting_agent"])
+            elif not self.modo.sqlite:
+                from .files import read_json
+                waiting = (read_json(self.home / "registry" / f"{st.agent}.d" / f"{st.slug}.json") or {}).get(
+                    "waiting_agent")
+            sessioni.append({**st.as_dict(),
+                             "claude_session_id": (onda or {}).get("sessionId") or (row["claude_session_id"] if row else None),
+                             "onda_terminal_id": (onda or {}).get("terminalId") or (row["onda_terminal_id"] if row else None),
+                             "started_at": row["started_at"] if row else None,
+                             "last_heartbeat": row["last_heartbeat"] if row else None,
+                             "waiting_agent": waiting, "onda": onda if onda and onda.get("state") != "exited" else onda})
+        remoti = {}
+        for h in self.amap.remote_hosts():
+            from .files import read_json
+            snap = read_json(self.home / "hosts" / h / "status.json") or {}
+            remoti[h] = {"ok": bool(snap.get("ok")), "fetched_at": snap.get("fetched_at"),
+                         "sessioni": snap.get("sessions") or []}
+        messaggi = [{"agent": x["to_agent"], "slug": x["to_slug"], "letto": x["state"] != "pending",
+                     "state": x["state"], "raw": json.loads(x["raw"])}
+                    for x in r.execute(
+                        "SELECT to_agent, to_slug, state, raw FROM messages WHERE to_host=? AND "
+                        "((state='pending' AND ts>=?) OR (state!='pending' AND ts>=?)) ORDER BY ts",
+                        (host, cut("pending_s", 7 * 86400), cut("letti_s", 86400)))]
+        attese = [{"agent": x["owner_agent"], "slug": x["owner_slug"], "raw": json.loads(x["raw"])}
+                  for x in r.execute("SELECT owner_agent, owner_slug, raw FROM waits WHERE "
+                                     "state IN ('expected','expired') OR created_at>=? ORDER BY created_at",
+                                     (cut("attese_s", 86400),))]
+        agenti = [{"agent": k, **{f: (v or {}).get(f) for f in ("display_name", "role", "domain", "workspace_root",
+                                                               "voice_id", "avatar_path", "host")}}
+                  for k, v in sorted(self.amap.agents().items())]
+        workspaces = {f"{x['agent']}/{x['slug']}": x["workspace"] for x in sessioni if x.get("workspace")}
+        workspaces.update({x["agent"]: x["workspace_root"] for x in agenti if x.get("workspace_root")})
+        return {"host": host, "generato_at": iso(adesso), "modo": self.modo.as_dict(), "agenti": agenti,
+                "sessioni": sessioni, "remoti": remoti, "messaggi": messaggi, "attese": attese,
+                "workspaces": workspaces}
+
     # ---------- servizio ----------
 
     def op_ping(self, caller: dict, a: dict, warnings: list) -> dict:
@@ -388,7 +445,7 @@ class Centralino:
         "close": op_close, "archive": op_archive, "inbox": op_inbox, "read": op_read,
         "thread": op_thread, "waits": op_waits, "status": op_status,
         "session.heartbeat": op_heartbeat, "session.event": op_event,
-        "admin.ping": op_ping, "admin.stats": op_stats,
+        "admin.ping": op_ping, "admin.stats": op_stats, "vista": op_vista,
     }
 
     # ---------- utilità ----------

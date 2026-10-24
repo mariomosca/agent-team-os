@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -135,7 +135,21 @@ CREATE TABLE IF NOT EXISTS shadow_diffs (
   file   TEXT
 );
 CREATE INDEX IF NOT EXISTS diffs_at ON shadow_diffs(at, area);
+
+CREATE TABLE IF NOT EXISTS thread_legacy (
+  thread_id TEXT NOT NULL,
+  id        TEXT NOT NULL,
+  entry     TEXT NOT NULL,
+  PRIMARY KEY (thread_id, id)
+);
 """
+
+# Colonne aggiunte dopo la v1: (tabella, colonna, definizione). Si aggiungono se mancano.
+MIGRAZIONI = [
+    ("sessions", "waiting_agent", "TEXT"),          # v2: domanda in attesa di risposta (era nel registro)
+    ("sessions", "drain_blocks", "INTEGER NOT NULL DEFAULT 0"),  # v2: blocchi consecutivi dello Stop
+    ("wake_decisions", "modo", "TEXT NOT NULL DEFAULT 'ombra'"),  # v2: ombra = solo decisa, attiva = eseguita
+]
 
 
 def _d(v) -> dict:
@@ -160,6 +174,10 @@ class Store:
         self._local = threading.local()
         with self._wlock:
             self._w.executescript(SCHEMA)
+            for table, col, decl in MIGRAZIONI:
+                cols = {r["name"] for r in self._w.execute(f"PRAGMA table_info({table})")}
+                if col not in cols:
+                    self._w.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
             self._w.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
                             (str(SCHEMA_VERSION),))
 

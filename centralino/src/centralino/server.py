@@ -105,6 +105,9 @@ class Daemon:
         self.stop = threading.Event()
 
     def avvia(self) -> "Daemon":
+        os.umask(0o077)  # database, log e socket contengono i messaggi: solo l'utente
+        for f in self.home.glob("centralino.db*"):
+            os.chmod(f, 0o600)
         if self.sock_path.exists():
             if _socket_in_uso(self.sock_path):
                 raise SystemExit(f"un centralino risponde già su {self.sock_path}")
@@ -114,11 +117,7 @@ class Daemon:
         self.ombra.registra()
         self.central.log("info", "avvio", home=str(self.home), socket=str(self.sock_path), pid=os.getpid())
         self.ombra.importa(completo=True)
-        old_umask = os.umask(0o177)
-        try:
-            self.server = Server(self.sock_path, self.central)
-        finally:
-            os.umask(old_umask)
+        self.server = Server(self.sock_path, self.central)
         os.chmod(self.sock_path, 0o600)
         if self.giri:
             for every, fn, nome in ((IMPORT_S, self.ombra.importa, "import"),
