@@ -64,7 +64,7 @@ Priorità: `urgent` blocca chi aspetta (avviso al prossimo prompt del destinatar
 
 Un messaggio senza `task_id` non è mai il ritorno di una delega: niente aggancio indovinato. Un'attesa scade alla `response_by`, o dopo 72 ore senza attività, con un avviso nella casella di chi aspettava.
 
-**Delega tramite un pannello di Onda** (`onda_agent_prompt` invece del bus): comincia il prompt con `[delega]` (oppure `[comunicazione]`). L'hook registra l'attesa e aggiunge la riga col `task_id`. Un prompt lungo senza marcatore viene rifiutato con la spiegazione.
+**Delega tramite un pannello di Onda** (`onda_agent_prompt` invece del bus): comincia il prompt con `[delega]` (oppure `[comunicazione]`). L'hook registra l'attesa e aggiunge la riga col `task_id`. Un prompt lungo senza marcatore viene rifiutato con la spiegazione. Chi esegue una delega arrivata così non ha un messaggio a cui rispondere: segue la riga, cioè `bus_send(to=..., message_type='response' o 'question', task_id=...)`.
 
 ## Quando il bus ti sveglia
 
