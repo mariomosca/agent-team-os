@@ -58,6 +58,9 @@ class _Specchio:
 class Centralino:
     def __init__(self, home: Path, db_path: Path | None = None, log_path: Path | None = None,
                  kick_wake: Callable[[dict], None] | None = None, pid_alive=None):
+        # La transazione aperta è del thread che l'ha aperta: un altro thread (giro della
+        # sveglia, raccolta, un'altra richiesta) non deve mai vederla né scriverci dentro.
+        self._tl = threading.local()
         self.home = Path(home)
         self.modo = config.leggi(self.home)
         self.amap = AgentMap(self.home)
@@ -84,7 +87,15 @@ class Centralino:
         self._pendenti: list[dict] = []
         self.started = time.time()
 
-    # ---------- transazione corrente ----------
+    # ---------- transazione corrente (per thread) ----------
+
+    @property
+    def _tx_conn(self):
+        return getattr(self._tl, "conn", None)
+
+    @_tx_conn.setter
+    def _tx_conn(self, conn) -> None:
+        self._tl.conn = conn
 
     def _conn(self):
         if self._tx_conn is None:

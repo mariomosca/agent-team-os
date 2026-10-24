@@ -124,9 +124,13 @@ class DbBus(FileBus):
         mid, task_id = record["id"], record.get("task_id")
         if to_host:
             outcome = self.deliver_remote(to_host, agent, slug, record)
-            self._tx(lambda c: Store.put_message(c, record, state="pending", to_slug=slug, to_host=to_host,
-                                                 path=None, origin="centralino",
-                                                 delivery="queued" if outcome == "queued" else "remote"))
+            def scrivi(c):
+                Store.put_message(c, record, state="pending", to_slug=slug, to_host=to_host, path=None,
+                                  origin="centralino", delivery="queued" if outcome == "queued" else "remote")
+                if outcome == "queued":
+                    c.execute("INSERT OR REPLACE INTO remote_queue (msg_id, host, queued_at) VALUES (?,?,?)",
+                              (mid, to_host, iso_now()))
+            self._tx(scrivi)
             addr = f"{agent}@{to_host}" + (f"/{slug}" if slug else "")
             if outcome == "queued":
                 warning = (f"{to_host} unreachable now: queued in outbox/{to_host}/, delivered at the next collection."

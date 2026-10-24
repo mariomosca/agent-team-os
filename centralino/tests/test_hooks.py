@@ -91,3 +91,34 @@ def test_onda_prompt_delega(bus):
     r = subprocess.run(["/usr/bin/python3", "-I", str(HOOKS / "agent-team-os-onda-prompt.py")], input=json.dumps(lungo),
                        capture_output=True, text=True, env=env, timeout=15)
     assert json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_concorrenza_modo_attivo(bus):
+    """Richieste in parallelo mentre il giro della sveglia scrive: nessuna transazione condivisa."""
+    home, cfg = bus
+    from centralino.server import Daemon  # noqa: F401
+    sock = home / "centralino.sock"
+    errori = []
+    fermo = threading.Event()
+
+    def giri():
+        while not fermo.is_set():
+            r = call("hook.prompt", caller={"cwd": str(home / "ws" / "kai" / "s1")}, sock=sock)
+            if not r["ok"]:
+                errori.append(r)
+
+    def manda(i):
+        r = call("send", {"to": "kai/s1", "intent": f"m{i}", "summary": "x", "message_type": "request",
+                          "kind": "delega"}, caller={"cwd": str(home / "ws" / "alita" / "s1")}, sock=sock)
+        if not r["ok"]:
+            errori.append(r)
+    t = threading.Thread(target=giri)
+    t.start()
+    ts = [threading.Thread(target=manda, args=(i,)) for i in range(30)]
+    [x.start() for x in ts]
+    [x.join() for x in ts]
+    fermo.set()
+    t.join()
+    assert not errori, errori[:2]
+    st = call("admin.stats", sock=sock)["result"]
+    assert st["messaggi"] == 30 and st["attese_aperte"] == 30
