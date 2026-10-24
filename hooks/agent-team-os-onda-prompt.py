@@ -9,7 +9,8 @@ stessa scelta esplicita di bus_send:
                            chi esegue = la sessione del pane di destinazione) e
                            aggiunge in coda la riga su come rispondere col task_id
   [comunicazione] <testo>  nessuna attesa: il marcatore si toglie e basta
-  prompt gia' con task_id  passa (bus_expect fatto a mano, prompt_line in coda)
+  prompt gia' con task_id  passa (bus_expect fatto a mano, prompt_line in coda);
+                           con [delega] davanti: niente seconda attesa ne' seconda riga
   prompt corto             passa (risposte a menu, "sì", /exit, ...)
   prompt lungo senza scelta: rifiutato con la spiegazione, come bus_send senza kind
 
@@ -29,7 +30,7 @@ from pathlib import Path
 # Sotto questa lunghezza un prompt e' una risposta, non un incarico.
 DECLARE_MIN_CHARS = int(os.environ.get("AB_ONDA_DECLARE_MIN", "200"))
 MARK_RE = re.compile(r"^\s*\[(delega|comunicazione)\]\s*", re.I)
-TASK_RE = re.compile(r"task_id\s*=\s*['\"]?[A-Za-z0-9][A-Za-z0-9._-]{2,63}")
+TASK_RE = re.compile(r"task_id\s*=\s*['\"]?([A-Za-z0-9][A-Za-z0-9._-]{2,63})")
 SLUG_SAFE = re.compile(r"[^a-z0-9._-]")
 
 DENY_REASON = (
@@ -129,6 +130,21 @@ def handle(event: dict) -> None:
         return
     slug = slug_for(cwd)
     to = target_session(wake, tool_input.get("terminalId"))
+    # BR24-F2.8: [delega] su un prompt che ha gia' la sua riga col task_id (bus_expect
+    # fatto prima, prompt_line in coda): una seconda attesa e una seconda riga
+    # dividevano i ritorni fra due task (24/10: c80xi9 e c6hmvh). Si tiene la sua; se
+    # nessuno la aspetta ancora, l'attesa si registra con quel task_id.
+    if (tm := TASK_RE.search(body)) is not None:
+        tid = tm.group(1)
+        if wake.find_wait(tid) is None:
+            wake.expect(agent, slug, re.sub(r"\s+", " ", body).strip()[:120], to, task_id=tid,
+                        target={"onda_terminal_id": os.environ.get("ONDA_TERMINAL_ID"),
+                                "claude_session_id": os.environ.get("CLAUDE_CODE_SESSION_ID")
+                                or event.get("session_id"),
+                                "tmux_pane": os.environ.get("TMUX_PANE")})
+            wake.log(f"onda delega {tid} {agent}/{slug} -> {to or tool_input.get('terminalId')} (task_id del prompt)")
+        answer("allow", f"attesa {tid} gia' nel prompt", {**tool_input, "prompt": body})
+        return
     desc = re.sub(r"\s+", " ", body).strip()[:120]
     target = {"onda_terminal_id": os.environ.get("ONDA_TERMINAL_ID"),
               "claude_session_id": os.environ.get("CLAUDE_CODE_SESSION_ID") or event.get("session_id"),

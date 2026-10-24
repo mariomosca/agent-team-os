@@ -94,6 +94,26 @@ class OndaPromptTest(unittest.TestCase):
                            text=True, env=env, timeout=20)
         self.assertEqual((r.returncode, r.stdout), (0, ""))
 
+    def test_br24_delega_with_its_own_task_line_registers_no_second_wait(self):
+        # 24/10: bus_expect fatto prima (t-20261024-v305xr) + [delega] davanti = due attese, due righe
+        (self.home / "waits" / "alita" / "@work-hub").mkdir(parents=True)
+        (self.home / "waits" / "alita" / "@work-hub" / "t-20261024-v305xr.json").write_text(json.dumps(
+            {"task_id": "t-20261024-v305xr", "agent": "alita", "slug": "work-hub", "state": "expected"}))
+        line = ("Quando hai finito, manda l'esito con bus_send a alita@laptop/work-hub, "
+                "message_type='response', task_id='t-20261024-v305xr'.")
+        out = self.run_hook("[delega] " + LONG + "\n\n" + line)
+        self.assertEqual(out["permissionDecision"], "allow")
+        p = out["updatedInput"]["prompt"]
+        self.assertEqual(p, LONG + "\n\n" + line)
+        self.assertEqual(p.count("task_id="), 1)
+        self.assertEqual([w["task_id"] for w in self.waits()], ["t-20261024-v305xr"])
+
+    def test_br24_delega_with_an_unregistered_task_id_registers_that_one(self):
+        out = self.run_hook("[delega] " + LONG + " ... task_id='t-20261024-nuovo1'.")
+        self.assertEqual(out["updatedInput"]["prompt"].count("task_id="), 1)
+        [w] = self.waits()
+        self.assertEqual((w["task_id"], w["agent"], w["delegated_to"]), ("t-20261024-nuovo1", "alita", "kai/agent-team-os"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
