@@ -715,6 +715,10 @@ def item_text(it: dict) -> str:
     if kind == "delegation":
         what = f": {it['summary']}" if it.get("summary") else ""
         return f"nuova delega {tid} da {who}{what} (bus_read {mid})"
+    if kind == "remote":
+        what = f" ({it['intent']})" if it.get("intent") else ""
+        what += f": {it['summary']}" if it.get("summary") else ""
+        return f"messaggio da {who}{what} (bus_read {mid})"
     if kind == "urgent":
         prio = "URGENTE" if it.get("priority") == "urgent" else "priorita' alta"
         return f"messaggio {prio} da {who} che chiede risposta (bus_read {mid})"
@@ -726,10 +730,11 @@ def item_text(it: dict) -> str:
 
 def batch_text(items: list[dict]) -> str:
     """Una riga sola: una sveglia, N messaggi."""
-    ups = [i for i in items if i["kind"] not in ("answer", "urgent", "delegation")]
+    ups = [i for i in items if i["kind"] not in ("answer", "urgent", "delegation", "remote")]
     downs = [i for i in items if i["kind"] == "answer"]
     urg = [i for i in items if i["kind"] == "urgent"]
     dels = [i for i in items if i["kind"] == "delegation"]
+    rem = [i for i in items if i["kind"] == "remote"]
     parts = []
     if len(ups) == 1:
         parts.append(item_text(ups[0])[0].upper() + item_text(ups[0])[1:] + f": leggilo e {GESTISCI.replace('ognuno', 'il messaggio')}.")
@@ -748,6 +753,9 @@ def batch_text(items: list[dict]) -> str:
     if urg:
         lead = item_text(urg[0]) if len(urg) == 1 else f"{len(urg)} messaggi urgenti: " + "; ".join(item_text(i) for i in urg)
         parts.append(lead[0].upper() + lead[1:] + ": leggi e gestisci con bus_gestisci.")
+    if rem:
+        lead = item_text(rem[0]) if len(rem) == 1 else f"{len(rem)} messaggi da un'altra macchina: " + "; ".join(item_text(i) for i in rem)
+        parts.append(lead[0].upper() + lead[1:] + ": leggi, rispondi se chiede risposta e gestisci con bus_gestisci.")
     return " ".join(parts)
 
 
@@ -1161,6 +1169,103 @@ def collect_delegations() -> tuple[list[dict], dict]:
     return out, states
 
 
+# Messaggio da un altro host (AM18-F9.6, richiesta di Mario del 24/10): un request o
+# un brief scritto altrove (alita@cloud, kai@mini) arriva qui solo col sync, e nessuno
+# e' sul prompt a dirlo. Sveglia la sessione ferma che lo riceve, come una delega:
+#   - context.host diverso da questa macchina, tipo request o brief, priorita' non low;
+#   - non le deleghe (collect_delegations), non gli urgenti che chiedono risposta
+#     (collect_urgent), non i ritorni su un'attesa del destinatario (collect_returns);
+#   - niente catene: un messaggio con wake_chain non sveglia;
+#   - all'agente intero: l'unica sessione viva, oppure con piu' sessioni quella
+#     nella cartella di casa dell'agente (workspace_root in AGENT_MAP.json);
+#   - .no-wake, guardia del canale e tetti come per le deleghe.
+
+REMOTE_TYPES = ("request", "brief")
+
+
+def remote_path(agent: str, slug: str) -> Path:
+    return wait_dir(agent, slug) / ".remote.json"
+
+
+def home_slug(agent: str) -> str | None:
+    """La sessione a cui va un messaggio per l'agente intero: quella di casa, se c'e', anche
+    ritirata da Onda per silenzio (BS21-F3.3b: e' proprio quella ferma, e se e' finita davvero
+    lo dice la guardia); senza sessione di casa, l'unica viva."""
+    live = live_slugs(agent)
+    if not live:
+        return None
+    conf = ((read_json(bus_home() / "AGENT_MAP.json") or {}).get("agents") or {}).get(agent) or {}
+    root = conf.get("workspace_root")
+    if root:
+        root = os.path.realpath(os.path.expanduser(root))
+        doc = read_json(bus_home() / "onda" / "sessions.json") or {}
+        home = [s for s in doc.get("sessions") or []
+                if isinstance(s, dict) and s.get("agent") == agent and s.get("slug")
+                and s.get("cwd") and os.path.realpath(s["cwd"]) == root]
+        alive = {s["slug"] for s in home if s.get("state") != "exited"}
+        if len(alive) == 1:
+            return alive.pop()
+        if not alive and home:
+            return max(home, key=lambda s: s.get("stateSince") or "")["slug"]
+    return live[0] if len(live) == 1 else None
+
+
+def collect_remote() -> tuple[list[dict], dict]:
+    out, states = [], {}
+    root = bus_home() / "inboxes"
+    me = host_self()
+    if not root.is_dir() or not me:
+        return out, states
+    now = time.time()
+    for adir in sorted(root.iterdir()):
+        if not adir.is_dir():
+            continue
+        agent = adir.name
+        dirs = [(d, d.name[1:]) for d in adir.iterdir() if d.is_dir() and d.name.startswith("@")]
+        dirs.append((adir, None))
+        for d, slug in dirs:
+            for p in sorted(d.glob("msg-*.json")):
+                try:
+                    if now - p.stat().st_mtime > ANSWER_WINDOW_S:
+                        continue
+                except OSError:
+                    continue
+                msg = read_json(p)
+                if not msg or msg.get("type") not in REMOTE_TYPES or msg.get("priority") == "low":
+                    continue
+                host = (msg.get("context") or {}).get("host")
+                if not host or host == me or not msg.get("from") or msg.get("wake_chain"):
+                    continue
+                if msg.get("kind") == "delega" or msg.get("task_link"):
+                    continue
+                if msg.get("priority") in URGENT_PRIORITIES and msg.get("requires_response") is True:
+                    continue
+                tid = _msg_task_id(msg)
+                w = find_wait(tid) if tid else None
+                if w is not None and w.parent.parent.name == agent:
+                    continue
+                target = slug or home_slug(agent)
+                if target is None or (wait_dir(agent, target) / ".no-wake").exists():
+                    continue
+                st = states.setdefault((agent, target), read_json(remote_path(agent, target)) or {})
+                mid = msg.get("id")
+                e = st.setdefault(mid, {"from": msg.get("from_session") or msg["from"], "host": host,
+                                        "at": msg.get("ts") or now_iso(), "state": "pending"})
+                if e.get("state") != "pending":
+                    continue
+                out.append({"kind": "remote", "agent": agent, "slug": target, "task_id": tid or "",
+                            "mid": mid, "entry": e, "sender": _sender(msg, me), "peer": msg["from"],
+                            "intent": msg.get("intent") or "",
+                            "summary": re.sub(r"\s+", " ", str((msg.get("payload") or {}).get("summary") or ""))[:80]})
+    for (agent, slug), st in states.items():
+        for mid, e in st.items():
+            if e.get("state") == "pending" and not any(
+                    (bus_home() / "inboxes" / agent / sub / f"{mid}.json").exists() for sub in (f"@{slug}", "")):
+                e["state"] = "seen"
+                e.pop("pending_wake", None)
+    return out, states
+
+
 def session_target(agent: str, slug: str, recs: list[dict]) -> dict:
     """Come raggiungere il prompt di una sessione: l'attesa piu' recente con un target,
     oppure la voce di registro (waiting_agent.target, v2.8), oppure solo agente/slug."""
@@ -1231,6 +1336,8 @@ def wake_sessions(items: list[dict], recs_by_session: dict) -> dict[str, list[st
                 out.setdefault("urgent", []).append(it["mid"])
             elif it["kind"] == "delegation":
                 out.setdefault("delegation", []).append(it["task_id"] or it["mid"])
+            elif it["kind"] == "remote":
+                out.setdefault("remote", []).append(it["mid"])
             else:
                 out.setdefault("woken", []).append(it["task_id"])
     return out
@@ -1248,9 +1355,9 @@ def persist(items: list[dict]) -> None:
                 it["entry"].pop("woken_via", None)
             it["msg"]["task_link"] = it["entry"]
             _rewrite_message(it["msg_path"], it["msg"])
-        elif it["kind"] in ("answer", "urgent", "delegation"):
-            f = {"answer": answers_path, "urgent": urgent_path,
-                 "delegation": delegations_path}[it["kind"]](it["agent"], it["slug"])
+        elif it["kind"] in ("answer", "urgent", "delegation", "remote"):
+            f = {"answer": answers_path, "urgent": urgent_path, "delegation": delegations_path,
+                 "remote": remote_path}[it["kind"]](it["agent"], it["slug"])
             st = read_json(f) or {}
             st[it["mid"]] = it["entry"]
             write_json(f, st)
@@ -1299,6 +1406,10 @@ def wake_round() -> dict[str, list[str]]:
     items += dels
     for (agent, slug), st in dstates.items():
         write_json(delegations_path(agent, slug), st)
+    rems, rstates = collect_remote()
+    items += rems
+    for (agent, slug), st in rstates.items():
+        write_json(remote_path(agent, slug), st)
     for k, v in wake_sessions(items, recs_by_session).items():
         out.setdefault(k, []).extend(v)
     # i rimandi si scrivono anche senza sveglia (pending_wake, per il pannello)

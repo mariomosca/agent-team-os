@@ -844,6 +844,76 @@ class WakeTest(unittest.TestCase):
         self.assertEqual(out, {"delegation": ["t-20261017-abc123"]})
         self.assertEqual(len(self.onda.calls), 1)
 
+    # -- un messaggio da un altro host sveglia chi lo riceve se e' fermo (AM18-F9.6)
+
+    def from_cloud(self, where="..", **extra) -> str:
+        n = len(list(self.home.rglob("msg-*.json")))
+        mid = f"msg-20261024T122646Z-c{n:07d}"
+        d = self.home / "inboxes" / "alita" / "@work-hub"
+        if where:
+            d = d / where
+        d.mkdir(parents=True, exist_ok=True)
+        msg = {"id": mid, "from": "alita", "from_session": "alita/cloud", "to": "alita", "type": "request",
+               "intent": "da-alita-mobile", "priority": "normal", "requires_response": True,
+               "ts": iso(datetime.now(timezone.utc)), "payload": {"summary": "guarda la mail di Massimo"},
+               "context": {"host": "cloud"}}
+        msg.update(extra)
+        (d / f"{mid}.json").write_text(json.dumps(msg))
+        return mid
+
+    def test_message_from_another_host_wakes_the_idle_session(self):
+        os.environ["AB_HOST"] = "laptop"
+        self.sessions([self.alita()])
+        mid = self.from_cloud()
+        self.assertEqual(wake.tick(), {"remote": [mid]})
+        [call] = self.onda.calls
+        self.assertEqual(call["params"]["terminalId"], "pane-alita")
+        p = call["params"]["prompt"]
+        self.assertIn("Messaggio da alita/cloud@cloud (da-alita-mobile): guarda la mail di Massimo", p)
+        self.assertIn(f"bus_read {mid}", p)
+        self.assertNotIn("\n", p)
+        self.assertEqual(wake.tick(), {})  # una volta per messaggio
+
+    def test_remote_message_waits_while_the_session_works(self):
+        os.environ["AB_HOST"] = "laptop"
+        self.sessions([self.alita(state="working")])
+        mid = self.from_cloud()
+        self.assertEqual(wake.tick(), {"postponed": [mid]})
+        self.sessions([self.alita()])
+        self.assertEqual(wake.tick(), {"remote": [mid]})
+
+    def test_remote_to_the_bare_agent_goes_to_the_home_session(self):
+        os.environ["AB_HOST"] = "laptop"
+        (self.home / "AGENT_MAP.json").write_text(json.dumps(
+            {"agents": {"alita": {"workspace_root": "/w/work-hub"}, "kai": {}}, "rules": []}))
+        other = dict(self.alita(term="pane-a2"), slug="reports", sessionId="s-a2", cwd="/w/work-hub/reports")
+        self.sessions([self.alita(), other])
+        mid = self.from_cloud()
+        self.assertEqual(wake.tick(), {"remote": [mid]})
+        [call] = self.onda.calls
+        self.assertEqual(call["params"]["terminalId"], "pane-alita")
+        # la sessione di casa ritirata da Onda per silenzio vince sull'altra viva (prova del 24/10)
+        self.sessions([self.alita(state="exited"), other])
+        self.from_cloud()
+        self.assertIn("remote", wake.tick())
+        self.assertEqual(self.onda.calls[-1]["params"]["terminalId"], "pane-alita")
+
+    def test_remote_rules(self):
+        os.environ["AB_HOST"] = "laptop"
+        self.sessions([self.alita()])
+        self.from_cloud(context={"host": "laptop"})  # stessa macchina
+        self.from_cloud(priority="low")
+        self.from_cloud(type="response")
+        self.from_cloud(wake_chain={"task_id": "t-x"})
+        self.assertEqual(wake.tick(), {})
+        # un ritorno su un'attesa del destinatario lo sveglia collect_returns, una volta
+        self.expect(to="alita@cloud")
+        self.from_cloud(task_id="t-20261017-abc123")
+        out = wake.tick()
+        self.assertNotIn("remote", out)
+        self.assertEqual(len(self.onda.calls), 1)
+        os.environ.pop("AB_HOST")
+
     # -- aggancio (BS21-F1.3): i ritorni scritti come messaggi nuovi
 
     def msg(self, mid: str) -> dict:
