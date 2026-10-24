@@ -440,3 +440,50 @@ attese di §7.3 allineate a quel comportamento. Il doppio `expect` dell'hook ond
 3. Dopo qualche ora pulita: `AB_CENTRALINO=1` in `servers.yaml` (Kai, `mcp_sync.py`) e plist launchd.
 4. 48 h: `centralino ombra report --ore 48` deve dire `passa: true` (0 differenze non attese su
    messaggi e attese). Rollback in ogni momento: togliere `AB_CENTRALINO` e fermare il daemon.
+
+## 13. Bus v3 dopo il passaggio (F4-F5)
+
+Modo attivo (`centralino.json`: `fonte: sqlite`, `sveglia: attiva`, `raccolta: true`): SQLite è la fonte
+unica, il centralino sveglia con la tabella di §6, raccoglie dal mini e riceve dal cloud. I file di
+oggi restano come archivio in sola lettura; l'unico file che il centralino continua a scrivere è
+`registry/<agente>.d/<slug>.json`, che Onda legge per risalire allo slug dal pid (Onda non si tocca).
+
+### 13.1 MCP: sei azioni
+
+| Tool | Parametri | Cosa fa |
+|---|---|---|
+| `bus_send` | `to, intent, summary, message_type (request\|brief\|handoff\|event), kind (delega\|comunicazione, obbligatorio per request/brief/handoff), priority, details, context_refs, thread_id, response_by` | messaggio nuovo; `kind=delega` registra l'attesa e restituisce il `task_id` |
+| `bus_reply` | `message_id, summary, message_type (response\|question, default response), details` | risponde a un messaggio: va al suo `reply_to`, eredita thread e `task_id`, e archivia il messaggio con esito `risposto`. L'esito di una delega è `bus_reply` sulla delega; una domanda è `bus_reply(message_type='question')` |
+| `bus_close` | `message_id` **oppure** `task_id`, `esito (chiuso\|riarma\|letto, default chiuso)` | consuma un messaggio (`chiuso`: fatto, e chiude l'attesa se è un ritorno della tua delega; `riarma`: continui ad aspettare; `letto`: solo letto). Con solo `task_id`: chiude l'attesa di quella delega |
+| `bus_inbox` | `all_sessions, unread_only` | messaggi pending della sessione + `mie_attese` (deleghe aperte con i ritorni non gestiti) |
+| `bus_read` | `message_id` **oppure** `thread_id` | il messaggio intero con il suggerimento sul task, oppure il thread in ordine |
+| `bus_status` | `agent` | sessioni vive (regola unica) e host |
+
+Alias fino al **31 ottobre 2026**, con descrizione "alias, usa X": `bus_gestisci` (→ `bus_close`, o
+`bus_reply` con `risposto`), `bus_archive` (→ `bus_close`), `bus_waits` (→ `bus_inbox.mie_attese`),
+`bus_expect` (deleghe via Onda: le registra l'hook onda-prompt), `bus_thread` (→ `bus_read(thread_id)`).
+
+### 13.2 Hook
+
+Gli hook diventano sottili e chiamano `~/.claude/scripts/agent-team-os-centralino.py` (stdlib, `-I`):
+
+| Hook | Chiamata | Effetto |
+|---|---|---|
+| SessionStart | `evento start` | sessione registrata (pid, sessione Claude, pannello), banner con gli ultimi messaggi, persona |
+| UserPromptSubmit | `evento prompt` | heartbeat + avviso per urgent/high (massimo 3) |
+| Stop | `stop` | blocca solo con messaggi della tabella §6 colonna Stop, massimo 3 blocchi di fila |
+| SessionEnd | `evento end` | sessione chiusa |
+| PreToolUse onda_agent_prompt | (onda-prompt.py) | l'attesa si registra con `expect` sul centralino |
+
+Se il centralino non risponde, gli hook non bloccano nulla e non stampano errori nel prompt.
+
+### 13.3 Comandi slash
+
+`/bus`, `/inbox`, `/read`, `/send`, `/reply`, `/handoff`, `/thread`, `/delegate` diventano istruzioni al
+modello per usare le tool MCP (nessun Bash). `/god` sparisce.
+
+### 13.4 Cosa resta per il mini
+
+Il mini non ha un centralino: tiene il bus a file (lib, `wake.py` con tmux, custode). Il laptop gli
+consegna via SSH e raccoglie dal suo `outbox/laptop/` come oggi, ma dentro il centralino. Per questo
+`lib.sh`, `wake.py`, `collect.sh` e `custode.sh` restano nel repo; dal laptop non si usano più.
