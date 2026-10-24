@@ -141,6 +141,10 @@ ck "con from_session torna alla sessione" "$(on_laptop ab_reply_address "$T/fs.j
 echo "── stato del mini visto dal laptop"
 on_mini ab_update_session_registry kai true /x/Projects/crewmoor
 ck "registry del mini con host" "$(jq -r .host "$M/registry/kai.d/crewmoor.json")" "mini"
+# BR24-F2.5: lo stato del mini lo aggiorna la raccolta periodica, non chi lo legge
+before=$(jq -r '.sessions | length' "$L/hosts/mini/status.json" 2>/dev/null)
+on_laptop ab_collect_outbox --force >/dev/null
+ck "la raccolta aggiorna status.json" "$before $(jq -r '[.ok, (.sessions | map(.slug) | join(","))] | @tsv' "$L/hosts/mini/status.json")" "0 true	crewmoor"
 row=$(on_laptop ab_list_remote_sessions mini)
 ck "sessione del mini elencata" "$(echo "$row" | cut -f1,2)" "kai	crewmoor"
 ck "pending = suoi + broadcast" "$(echo "$row" | cut -f4)" "$(( $(n "$M/inboxes/kai/@crewmoor") + $(find "$M/inboxes/kai" -maxdepth 1 -name 'msg-*.json' | wc -l | tr -d ' ') ))"
@@ -149,6 +153,9 @@ ck "cache 20 s: nessuna chiamata" "$(on_laptop ab_list_remote_sessions mini | cu
 cache=$(on_laptop ab_remote_status mini --force)
 ck "mini giù: ok=false" "$(jq -r .ok "$cache")" "false"
 ck "ma le sessioni restano" "$(jq -r '.sessions[0].slug' "$cache")" "crewmoor"
+rm -f "$L/hosts/mini/status.json"
+touch "$FAKE_SSH_DOWN"; on_laptop ab_collect_outbox --force >/dev/null
+ck "raccolta col mini giù: status ok=false" "$(jq -r '[.ok, .error] | @tsv' "$L/hosts/mini/status.json")" "false	unreachable"
 rm -f "$FAKE_SSH_DOWN"
 
 echo "── report del custode del mini (OR18-F4.8)"
