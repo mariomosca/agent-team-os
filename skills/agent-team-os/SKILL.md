@@ -1,227 +1,108 @@
 ---
 name: agent-team-os
-description: File-based communication bus between multiple Claude Code sessions. Use when the user says "send to <agent>", "tell <agent>", "hand off to <agent>", "check inbox", "reply to brief", "delegate to <agent>", or asks "who is active", "list agents", "open threads".
-allowed-tools: Bash, Read, Write, Edit
+description: Bus between multiple Claude Code sessions (v3, centralino + MCP agent-bus). Use when the user says "send to <agent>", "tell <agent>", "hand off to <agent>", "check inbox", "reply to brief", "delegate to <agent>", "manda a <agente>", "controlla la casella", or asks "who is active", "list agents", "open threads".
+allowed-tools: Read
 ---
 
-# Agent Team OS — How to Operate
+# Agent Team OS v3: come si usa
 
-File-based communication between separate Claude Code sessions. Replaces manual copy-paste between terminals.
+Il bus fa parlare sessioni Claude Code separate. Dal passaggio al v3 lo gestisce il centralino (un daemon locale, unico scrittore dello stato in SQLite). Tu lo usi solo con le sei tool MCP di `agent-bus`: niente Bash, niente file da scrivere a mano. I comandi slash (`/send`, `/inbox`, ...) sono scorciatoie che dicono al modello quale tool chiamare.
 
-## Activate the skill when
+## Quando attivare la skill
 
-- "send / tell / pass to <agent>"
-- "delegate this to..."
-- "hand off to..."
-- "check inbox" / "do I have messages?"
-- "reply to the brief from..."
-- "who is active on the bus?"
-- "what threads are open?"
+- "manda / dì / passa a <agente>", "delega a...", "passa il lavoro a..."
+- "controlla la casella", "ho messaggi?", "rispondi al brief di..."
+- "chi è attivo sul bus?", "quali thread sono aperti?"
 
-**Do NOT activate for**:
-- Local sub-agents (Explore, code-reviewer, Plan) — those are the `Agent` tool, not the bus.
-- Generic chat between user and you in the same session.
+Non attivarla per i sub-agent locali (Explore, Plan, code-reviewer): quelli sono la tool `Agent`, non il bus. Né per la chat normale tra Mario e te nella stessa sessione.
 
-## Step-by-step
+## Le sei azioni
 
-### Step 1 — Determine sender
+| Tool | Cosa fa |
+|---|---|
+| `bus_send` | messaggio nuovo. Con `kind='delega'` registra l'attesa e restituisce il `task_id` |
+| `bus_reply` | risponde a un messaggio (`response` o `question`): va a chi ha scritto, eredita thread e `task_id`, archivia il messaggio con esito `risposto` |
+| `bus_close` | consuma un messaggio (`chiuso`, `riarma`, `letto`) oppure, con solo `task_id`, chiude l'attesa di una delega |
+| `bus_inbox` | i messaggi pending di questa sessione e `mie_attese` (le tue deleghe aperte, con i ritorni non gestiti) |
+| `bus_read` | un messaggio intero con il suggerimento sul task, oppure un thread intero (`thread_id`) |
+| `bus_status` | sessioni vive e host |
 
-```bash
-source "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/agent-team-os-lib.sh"
-FROM=$(ab_detect_agent "$PWD")
-```
+Alias fino al 31 ottobre 2026 (la descrizione dice "alias, usa X"): `bus_gestisci` (usa `bus_close`, o `bus_reply` per `risposto`), `bus_archive` (`bus_close`), `bus_waits` (`bus_inbox`, campo `mie_attese`), `bus_thread` (`bus_read(thread_id)`), `bus_expect` (solo per le deleghe via Onda, vedi sotto). Nel lavoro nuovo usa i nomi nuovi.
 
-If `FROM` is empty → "this workspace is outside AGENT_MAP, cannot send". Stop.
+## Indirizzi e sessioni
 
-**Addresses**: `kai` (every session), `kai/crewmoor` (one session), and with two machines `kai@mini` / `kai@mini/crewmoor`. Without `@host` the message goes to the agent's own host or stays here. A message to an unreachable host is queued, not lost: say so to the user (stderr `queued`), do not retry. To answer a message use `ab_reply_address <file>` (or the MCP `reply_to`), never the bare `.from`: it brings the reply back to the right session and machine. `/bus` lists who is live on each machine.
+Un agente può avere più sessioni vive, una per cartella di lavoro. Ognuna ha una casella propria.
 
-### Step 2 — Check routing before proposing
+- `kai/crewmoor`: la sessione `crewmoor` di Kai. Lo slug è il nome della cartella, o `AB_SESSION_SLUG`.
+- `kai@mini/crewmoor`: un'altra macchina. Senza `@host` vale l'host dell'agente, o questa macchina.
+- `kai` nudo: l'unica sessione viva di Kai; se sono più di una, la sua sessione di casa (la cartella `workspace_root`) se è viva; altrimenti la casella condivisa, che le sessioni di Kai vedono tutte.
+- Per rispondere usa `bus_reply`: l'indirizzo giusto (sessione e macchina) lo mette il bus. Non scrivere a mano il campo `from`.
+- Un host irraggiungibile non fa fallire l'invio: `queued=true`, il messaggio parte alla prossima raccolta. Dillo a Mario, non ritentare.
+- Se non sai chi è vivo, `bus_status`. Indirizzare uno slug non vivo consegna comunque, ma nessuno lo legge finché quella sessione non parte.
 
-Read `~/.agent-team-os/AGENT_MAP.json` field `.routing_rules.<from>.deny`. If `to` is in the deny list, do NOT propose a direct send. Suggest:
-- "Routing blocks {from}→{to} ({reason}). Want me to route via a hub agent if one is configured?"
+## Tipo e `kind`
 
-### Step 3 — Compose payload for the intent
+`message_type`: `request`, `brief`, `handoff`, `event` per `bus_send`; `response` e `question` per `bus_reply`.
 
-Check `~/.agent-team-os/AGENT_MAP.json` field `.agents.<to>.capabilities` to see if the intent is supported. Add an intent only if documented.
+Regola del `kind`: ogni `request`, `brief` e `handoff` dichiara cosa vuole, e senza `kind` il bus rifiuta l'invio.
 
-**Payload schema for common intents**:
+- `delega`: rivuoi l'esito. Il bus registra l'attesa sulla tua sessione e restituisce il `task_id`.
+- `comunicazione`: non deve tornare niente, nessuno viene svegliato.
 
-| Intent | Required fields | Recommended |
-|--------|-----------------|-------------|
-| `bug-fix` | `project`, `summary` | `project_path`, `deadline`, `acceptance_criteria` |
-| `feature-spec` | `project`, `summary` | `deliverable`, `user_story`, `deadline` |
-| `generate-screenshots` | `project`, `deliverable` | `spec_ref`, `count`, `dimensions` |
-| `code-review` | `target` | `focus_areas`, `deadline` |
-| `draft-post` | `topic`, `channel` | `audience`, `voice_refs`, `length`, `deadline` |
-| `review-copy` | `target` | `voice_check`, `tone` |
-| `plan-campaign` | `product`, `goal` | `timeline`, `channels`, `budget` |
-| `handoff` | `state_summary`, `next_steps` | `blockers`, `files_touched`, `tests_status` |
-| `question` | `question` | `context`, `deadline` |
-| `architecture-review` | `target`, `decision_at_stake` | `options`, `constraints` |
+Niente default e niente deduzioni dall'intento: se le parole di Mario non chiariscono, chiedi. `response`, `question` ed `event` non hanno `kind`.
 
-**Don't invent** fields. If you're unsure what's needed, ask the user or just use `summary`.
+Priorità: `urgent` blocca chi aspetta (avviso al prossimo prompt del destinatario), `high` entro 24 ore, `normal` di default, `low` senza fretta. Prima di inviare mostra sempre un'anteprima a Mario (a chi, tipo, `kind`, priorità, oggetto, scadenza) e invia dopo il sì. Il materiale pesante va in `context_refs` (`file://`, `wiki://`, `graphiti://`, `gh://`, `artifact://`), non nel testo. Mai segreti nei messaggi.
 
-### Step 4 — Fill `context_refs`
+## Una delega, dall'inizio alla fine
 
-Messages should stay small. For heavy context use refs instead of embedding:
+1. **Delegante**: `bus_send(kind='delega', response_by=...)`. L'attesa nasce con il messaggio, sulla sessione del delegante; il `task_id` viaggia sul messaggio. Poi può andare a riposo.
+2. **Esecutore**: la delega lo sveglia se è fermo. La legge con `bus_read` (il suggerimento dice "stai eseguendo").
+3. **Domanda**: se gli manca qualcosa, `bus_reply(message_type='question')` sulla delega. Sveglia il delegante e non chiude l'attesa.
+4. **Risposta**: il delegante risponde con `bus_reply` alla domanda. Sveglia l'esecutore, che riprende.
+5. **Esito**: finito il lavoro, l'esecutore manda `bus_reply(message_type='response')` sulla delega, con un risultato verificabile.
+6. **Chiusura**: l'esito sveglia il delegante, che lo legge e lo consuma con `bus_close`: `chiuso` se è davvero finita (chiude anche l'attesa), `riarma` se è un ritorno intermedio e aspetta ancora. Per chiudere una delega senza messaggi in casella: `bus_close(task_id=..., esito='chiuso')`.
 
-| URI scheme | When to use |
-|------------|-------------|
-| `file:///abs/path` | Local file (both sessions on same machine) |
-| `graphiti://node/<uuid>` or `graphiti://search/<query>` | Decisions/history in a knowledge graph |
-| `artifact://shared/<id>` | HTML/deck/PDF on shared storage |
-| `wiki://<slug>` | Wiki/memory documents |
-| `gh://<owner>/<repo>/issues/<n>` | GitHub issue/PR |
-| `todoist://task/<id>` | Todoist task |
+Un messaggio senza `task_id` non è mai il ritorno di una delega: niente aggancio indovinato. Un'attesa scade alla `response_by`, o dopo 72 ore senza attività, con un avviso nella casella di chi aspettava.
 
-### Step 4b — Kind: delega or comunicazione (mandatory, BS21)
+**Delega tramite un pannello di Onda** (`onda_agent_prompt` invece del bus): comincia il prompt con `[delega]` (oppure `[comunicazione]`). L'hook registra l'attesa e aggiunge la riga col `task_id`. Un prompt lungo senza marcatore viene rifiutato con la spiegazione.
 
-Every `request`, `brief` and `handoff` declares what it is, and the bus refuses the send without it:
+## Quando il bus ti sveglia
 
-- **delega** — the sender wants the outcome back. The bus registers the wait on the sending session at send time (`attesa registrata t-...`), the message carries that `task_id`, and every return on it wakes the sender when idle. Any two agents, no roles: Nico→Kai, Kai→Vera, Leo→Alita all work the same way.
-- **comunicazione** — nothing has to come back; nobody gets woken.
+Il bus scrive una riga nel prompt della sessione, ma solo se è ferma (Onda dice idle, niente testo nella casella di Mario, da almeno 5 secondi). Se lavora, il messaggio si accoda e arriva a fine turno; più messaggi nello stesso giro fanno una sola sveglia.
 
-No default, no guessing from `requires_response` or the intent: if the user's words do not make it clear, ask. `response`, `question` and `event` take no kind. Show it in the preview.
+| Arriva | Ti sveglia | Blocca lo Stop |
+|---|---|---|
+| esito di una tua delega | sempre, fuori da ogni tetto | sì |
+| domanda su una tua delega | sì | sì |
+| risposta del delegante a te esecutore | sì | sì |
+| delega nuova (`kind=delega`) | sì | sì |
+| messaggio `urgent` | sì, al massimo uno ogni 15 minuti per coppia di sessioni | sì |
+| domanda fuori da una delega | no | sì |
+| comunicazione, evento, notifica, risposta senza `task_id` o su attesa chiusa | no | no |
 
-### Step 5 — Priority
+Tetto: 10 sveglie all'ora per sessione (l'esito non conta). Una sessione viva ma senza canale di sveglia (nessun pannello Onda) legge `canale: nessuno` in `bus_status`.
 
-- `urgent` → blocker, "can't proceed without", deadline passed. The UserPromptSubmit hook interrupts the recipient on their next turn.
-- `high` → within 24h, important but not blocking.
-- `normal` (default) → async, deadline in days.
-- `low` → fire-and-forget, low priority.
+## La regola dello Stop
 
-Default to `normal` if the user doesn't specify.
+A fine turno il bus ti ferma solo se in casella c'è qualcosa della colonna "Blocca lo Stop", al massimo 3 volte di fila: poi ti lascia chiudere. Non è un errore: leggi (`bus_read`) e consuma ogni messaggio con un esito esplicito, `bus_close` (`chiuso`, `riarma`, `letto`) o `bus_reply`. Non usare `letto` per togliere di mezzo un lavoro non fatto: se aspetti ancora, `riarma`.
 
-### Step 6 — Preview required before sending
+## Sessione viva
 
-ALWAYS show a compact preview to the user BEFORE writing:
+Una sessione è viva se Onda la dà viva (voce in `sessions.json` non `exited`), oppure se ha mandato un heartbeat negli ultimi 120 secondi. Altrimenti è chiusa. Una casella di sessione chiusa da più di 24 ore si svuota: i messaggi che chiedono un'azione passano alla sessione di casa dell'agente, gli altri si archiviano come letti.
 
-```
-Draft message:
-  ops → dev
-  type: request | kind: delega | intent: bug-fix | priority: normal
-  summary: scroll home stutters on Macbook M1
-  deadline: 2026-05-20T18:00
-  context_refs: 1 (file <project>/CLAUDE.md)
-Confirm? (y to send)
-```
+## Anti-pattern
 
-Do NOT send without explicit confirmation.
+- Payload da più di 10 KB nel testo: usa `context_refs`.
+- Segreti o credenziali nei messaggi.
+- Invio senza anteprima a Mario.
+- Rispondere "fatto" senza un risultato verificabile.
+- Cambiare `thread_id` rispondendo: usa `bus_reply`, che lo eredita.
+- Un broadcast per un compito specifico: indirizza la sessione.
+- Consumare un messaggio con `letto` per liberare lo Stop.
+- Scrivere a mano nelle cartelle di `~/.agent-team-os/`: il centralino è l'unico scrittore.
 
-### Step 7 — Write via helper
+## Dove sta il resto
 
-```bash
-AB_FROM="$FROM" \
-AB_TO="<to>" \
-AB_TYPE="request" \
-AB_KIND="delega" \
-AB_INTENT="<intent>" \
-AB_PRIORITY="normal" \
-AB_PAYLOAD_JSON='{...valid JSON...}' \
-AB_CONTEXT_REFS_JSON='["file://...", "..."]' \
-AB_REQUIRES_RESPONSE=true \
-AB_RESPONSE_BY="2026-05-20T18:00:00Z" \
-MSG_ID=$(ab_write_message)
-```
-
-Exit codes:
-- 0 = OK, `$MSG_ID` contains the new id
-- 1 = recipient agent unknown
-- 2 = routing denied
-- 3 = lock failed (retry in a few seconds)
-- 4 = malformed JSON
-- 5 = missing or wrong `AB_KIND` (the message explains the choice)
-- 6 = the wait of a delegation could not be registered (e.g. the task_id already has a waiter)
-
-Delegating (v2.8): `AB_KIND=delega` (MCP: `bus_send(..., kind="delega")`) is all it takes — the wait is registered on its own and stderr (MCP: `note`) says `attesa registrata t-...`. `AB_TASK_ID` reuses a given id. Delegating outside the bus (a prompt via `onda_agent_prompt`): `bus_expect` / `ab_expect "<what>" "<to>"` and append the returned prompt line.
-
-Executing a delegated task that carries a `task_id`: answer with `type: response` and the same `task_id` (`AB_IN_REPLY_TO=<msg-id>` carries it). A return written as a new message is hooked to the open delegation anyway (same session, then same thread, then same agent when only one delegation is open); with several open delegations from the same agent it is marked "da agganciare" and the delegator decides.
-
-Questions during a delegated task (v2.7): send them with `type: question` and **the same `task_id`** (`AB_IN_REPLY_TO=<delegation msg-id>` carries it; MCP: `bus_send(message_type='question', in_reply_to=...)` or `task_id=...`). Each such question wakes the delegator once, if idle, and the result still wakes it later; your session shows as "waiting for <agent>" until you read the answer. A question without the `task_id` wakes nobody. Delegator, woken by a question: read it, answer in the thread (`in_reply_to` the question) or straight in the executor's pane.
-
-### Step 8 — Confirm and suggest next
-
-After a successful send:
-
-```
-✓ Message sent: msg-... (thread: thread-...)
-The recipient will see this in their inbox on next SessionStart.
-View full history: /thread <thread-id>
-```
-
-## Reply patterns
-
-For `/reply`:
-- **accept**: I'm taking it on. `{status: "accepted", eta: "<iso>", notes: "..."}`
-- **decline**: refused with reason. `{reason: "...", alternative: "<agent or approach>"}`
-- **response**: deliverable complete. `{status: "done|partial", artifact_refs: [...], summary: "..."}`
-- **confirm**: silent ack for event/info.
-
-For `/handoff`: see `/handoff.md` command — pass full `state_summary` + explicit `next_steps`.
-
-## Anti-patterns
-
-- Payload >10KB inline — use `context_refs`.
-- Secrets or credentials in messages — never.
-- Sending without preview to the user.
-- Inventing intents outside AGENT_MAP capabilities.
-- Replying "done" without real output (no `artifact_refs`).
-- Changing `thread_id` when replying (breaks the conversation).
-- Broadcasts for specific tasks — only for global status/events.
-- Force-sending if routing is denied — route via a hub agent.
-
-## Example flow
-
-```
-User (in ops workspace): "Tell dev to look at the home scroll bug on MyApp, by Wednesday"
-Skill:
-  1. detect_agent → ops
-  2. routing ops→dev OK
-  3. compose preview:
-     ops → dev (request, bug-fix, normal)
-     summary: home scroll stutters on MyApp
-     deadline: 2026-05-20
-  4. User: "y"
-  5. ab_write_message → msg-... sent
-  6. "Sent. When you open the dev session, the brief will be in the inbox."
-```
-
-## GOD Dispatch playbook (Onda) — open & drive work sessions fast
-
-When in GOD mode and dispatching agents inside Onda (see GOD-CONTRACT.md §Dispatch & Monitor), follow these guidelines — learned from real runs — to spawn fast and cheap:
-
-**Before spawning:**
-- Write the brief to the agent's inbox FIRST. The agent reads it via `/inbox` at boot and starts immediately — no long manual prompt needed.
-- Keep the launch prompt minimal: `"You are <agent>. Run /inbox, /read <msg-id>, do the task, print ===DONE=== then /reply."`
-
-**Spawning (per agent):**
-- **Reuse the workspace's default pane.** Creating a workspace already spawns one terminal. Call `onda_workspace_layout` → use `activePaneId`. Do NOT `add_terminal` unless you need an extra pane — otherwise you get an empty stray pane.
-- Spawn with `claude --dangerously-skip-permissions` for trusted repos/sandboxes → no Bash permission prompts mid-task (the #1 thing that stalls an agent).
-- Handle the trust-folder prompt automatically: `wait_for("trust|Welcome")` → if trust, `send_keys(["Enter"])`.
-- **Path gotcha (macOS):** `/tmp` resolves to `/private/tmp`; symlinked paths break `ab_detect_agent` (agent shows as `[Anon]`). Spawn on real, mapped paths (`~/Projects/...`); the detect normalizes symlinks (realpath) so canonical paths match.
-- Submit the prompt: `terminal_run(prompt)` then ALWAYS `send_keys(["Enter"])` — `terminal_run` alone does NOT submit in the Claude TUI.
-
-**Layout by agent count:**
-- 1 agent → the workspace's default pane.
-- 2 → `add_terminal direction:right` (side-by-side).
-- 3–4 → `workspace_tile` quad (2×2 grid, all visible).
-- >4 → separate tabs (avoid infinite rightward growth).
-
-**Monitoring — cheap, not live:**
-- NEVER `subscribe`+`poll` a Claude TUI continuously (100+ chunks/sec of spinner = token burn).
-- Use `wait_for(/===DONE===/)` (blocks, costs nothing until match) + the agent's `/reply` on the bus (passive, lands in your inbox).
-- `terminal_read`/`screenshot` only at intervals or on demand for visual checks.
-- On completion: collect `/reply`, sign off, optionally `agent-team-os-harvest.sh <cwd>` for token+cost. Unmount workspaces you created (not Mario's existing ones).
-
-**Fallback (no Onda):** if `mcp__onda__*` tools are absent, queue briefs and hand Mario `cd <ws> && claude` commands. Don't pretend to spawn.
-
-## Where things live
-
-- Authoritative spec: `~/agent-team-os/README.md` and `~/agent-team-os/scripts/agent-team-os-lib.sh`
-- Runtime: `~/.agent-team-os/` (inboxes, registry, threads, outbox, locks)
-- Bash helper: `~/.claude/scripts/agent-team-os-lib.sh`
-- SessionStart hook: `~/.claude/hooks/agent-team-os-load.sh`
-- UserPromptSubmit hook (urgent): `~/.claude/hooks/agent-team-os-urgent.sh`
-- Slash commands: `~/.claude/commands/{bus,inbox,read,send,reply,handoff,thread}.md`
-
-Everything is JSON, inspectable with `jq`, `ls`, `cat`.
+- Protocollo: `docs/PROTOCOL-v3.md` e `docs/CENTRALINO.md` nel repo `agent-team-os`.
+- Il bus a file (`lib.sh`, `wake.py`, custode) resta solo sul Mac mini, che non ha il centralino.
+- Comandi: `/bus`, `/inbox`, `/read`, `/send`, `/reply`, `/handoff`, `/thread`, `/delegate`.

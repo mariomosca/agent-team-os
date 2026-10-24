@@ -44,6 +44,10 @@ Let the conductor open workspaces and spawn teammates instead of pasting command
 - Adapter contract: open workspace, split pane, run command, list active sessions, focus session, send keystrokes
 - Conductor stays terminal-agnostic — bring your own driver for tmux/zellij/Warp/etc.
 
+## v3 — Centralino (24 ott 2026, piano BR24)
+
+Un daemon locale, unico scrittore dello stato in SQLite; sei tool MCP; una regola di sessione viva, una tabella di sveglia, una regola dello Stop; pulizia automatica. Il mini resta sul bus a file. Protocollo: `docs/PROTOCOL-v3.md`, contratto del daemon: `docs/CENTRALINO.md`.
+
 ## v2.0 — Hive-GOD-Agentic (SHIPPED 2026-06-06)
 
 Dual-GOD orchestration + TaskProvider layer + drain-on-Stop + harvest. Dual GOD, TaskProvider e harvest sono stati tolti il 24 ott 2026 (BR24-F5.2: nessun lettore, nessun uso recente); resta la drain-on-Stop.

@@ -3,6 +3,12 @@
 > Entry point for an AI coding agent (Claude Code, etc.) reading this repo.
 > Humans: see [README.md](./README.md) and the [landing page](https://mariomosca.github.io/agent-team-os/).
 
+## Bus v3 (October 2026)
+
+On the laptop the bus is run by the **centralino**, a local daemon that is the only writer of the state (SQLite). Agents talk to it through six MCP tools: `bus_send`, `bus_reply`, `bus_close`, `bus_inbox`, `bus_read`, `bus_status`; the slash commands (`/send`, `/inbox`, ...) just tell the model which tool to call, with no Bash. Protocol: [docs/PROTOCOL-v3.md](./docs/PROTOCOL-v3.md). Daemon contract: [docs/CENTRALINO.md](./docs/CENTRALINO.md). Skill: `skills/agent-team-os/SKILL.md`.
+
+Everything below describes the file-based bus, which the Mac mini still runs (it has no centralino): `lib.sh`, `wake.py`, `collect.sh`, `custode.sh`.
+
 ## What this is
 
 A **file-based protocol** to coordinate multiple AI coding-agent sessions (one per project/role/repo) that otherwise can't talk to each other. No daemon, no server — just a folder, a JSON message schema, bash helpers, slash commands, and lifecycle hooks. Runtime lives in `~/.agent-team-os/`; the integration (hooks/commands/skill/scripts) is copied into `~/.claude/` by the installer.
@@ -38,7 +44,7 @@ The `Stop` hook is copied by the installer but **NOT auto-registered** — it's 
 - **Reply in-thread**: `/reply <msg-id> <type>` (type = accept|decline|response|confirm).
 - **Two machines (v2.5)**: address `agent@host[/slug]` (e.g. `kai@mini/crewmoor`). Laptop → mini goes over SSH (queued in `outbox/<host>/` if down); mini → laptop waits in the mini's `outbox/laptop/` until the laptop collects. `/bus` shows both machines. See README "Two machines".
 - **Delegating with a result to wait for (v2.6)**: `bus_send(expect_result=true)` or `bus_expect` → `task_id`; the executor answers `type: response` with the same `task_id`; when it arrives and the waiting session is idle, `scripts/agent-team-os-wake.py` writes one line into its prompt (Onda or tmux), once. v2.7: a `question` with the same `task_id` also wakes the delegator, once per question, without consuming the wait; the asker carries `waiting_agent` in its registry entry. See README "La sveglia".
-- **Slash commands**: `/bus` (roster), `/inbox`, `/read <id>`, `/send`, `/reply`, `/handoff`, `/thread`.
+- **Slash commands**: `/bus` (roster), `/inbox`, `/read <id>`, `/send`, `/reply`, `/handoff`, `/thread`, `/delegate`.
 
 ## Optional layers
 
@@ -61,8 +67,9 @@ The `Stop` hook is copied by the installer but **NOT auto-registered** — it's 
 | `commands/*.md` | slash commands |
 | `skills/agent-team-os/SKILL.md` | the skill (agent-invocable) |
 | `examples/AGENT_MAP.example.json` | starter config (v2 shape) |
+| `docs/PROTOCOL-v3.md`, `docs/CENTRALINO.md` | the v3 protocol and the centralino contract |
 | `docs/agentic-v2/` | settings diff for the Stop hook |
 
 ## Source of truth
 
-The authoritative protocol spec lives in the consumer's `PLAN-AGENT-TEAM-OS.md` (symlinked at `~/.agent-team-os/PROTOCOL.md`). This repo is the distributable implementation.
+The authoritative protocol is [docs/PROTOCOL-v3.md](./docs/PROTOCOL-v3.md). The older file-based spec (`PLAN-AGENT-TEAM-OS.md`, symlinked at `~/.agent-team-os/PROTOCOL.md`) stays valid only for the mini.
