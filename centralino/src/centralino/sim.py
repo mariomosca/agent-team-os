@@ -54,7 +54,7 @@ class Banco:
                 "leo": {"role": "it", "domain": "brandart",
                         "workspace_root": str(self.root / "Projects" / "00-Brandart-PM-OS")},
             },
-            "hosts": {"laptop": {"hub": True}, "mini": {"ssh": "mini", "bus_home": "/nessuno"},
+            "hosts": {"laptop": {"hub": True}, "mini": {"ssh": "mini", "bus_home": "/nessuno", "centralino": "centralino"},
                       "cloud": {"note": "alita-cloud via repo, nessun ssh"}},
             "cc_awareness": {"hub": "alita"},
         }

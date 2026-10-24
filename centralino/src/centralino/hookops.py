@@ -43,6 +43,14 @@ class HookOps:
     def _evento(self, caller: dict, ev: str):
         me = self.c.amap.identify(caller)
         now = iso_now()
+        tid = caller.get("onda_terminal_id")
+        altra = next((e for e in self.c.onda.entries() if tid and e.get("terminalId") == tid
+                      and e.get("agent") and (e.get("agent"), e.get("slug")) != (me.agent, me.slug)), None)
+        if altra is not None:
+            # BR24-F5.5e: pannello ereditato da un'altra sessione (un claude lanciato dentro il suo terminale)
+            self.c.log("warn", "pannello_altrui", sessione=f"{me.agent}/{me.slug}", terminale=tid,
+                       di=f"{altra.get('agent')}/{altra.get('slug')}")
+            caller = {**caller, "onda_terminal_id": None}
         if ev == "end":
             self.c._write(lambda: Store.end_session(self.c._conn(), me.agent, me.slug, me.host or "", now))
         else:
