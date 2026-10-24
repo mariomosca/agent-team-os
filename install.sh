@@ -22,6 +22,10 @@
 #                       remote host: with --host <name>, or with $AB_HOME/HOST set
 #                       to a host that is not the hub.
 #   --custode --uninstall   remove the custode (job + script). Nothing else.
+#   --centralino        bus v3 (BR24, docs/CENTRALINO.md §13): installs the thin hooks and
+#                       agent-team-os-centralino.py from centralino/hooks/ instead of the
+#                       file-bus hooks. The daemon and its mode are the switch script's job
+#                       (centralino/passaggio.sh), not this one.
 #   --sveglia           install the wake (README "La sveglia", bus v2.6): a launchd job
 #                       every 10 s that wakes an idle session when the result it waits
 #                       for arrives. On every machine that runs sessions.
@@ -40,6 +44,7 @@ HOST_NAME=""
 HOST_SYNC=0
 REGISTER_HOOKS=0
 CUSTODE=0
+CENTRALINO=0
 SVEGLIA=0
 UNINSTALL=0
 while [[ $# -gt 0 ]]; do
@@ -49,6 +54,7 @@ while [[ $# -gt 0 ]]; do
     --host-sync) HOST_SYNC=1; shift ;;
     --register-hooks) REGISTER_HOOKS=1; shift ;;
     --custode) CUSTODE=1; shift ;;
+    --centralino) CENTRALINO=1; shift ;;
     --sveglia) SVEGLIA=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
@@ -124,9 +130,9 @@ echo "Copying helper library → $CLAUDE_HOME/scripts/agent-team-os-lib.sh"
 cp "$REPO_DIR/scripts/agent-team-os-lib.sh" "$CLAUDE_HOME/scripts/agent-team-os-lib.sh"
 chmod +x "$CLAUDE_HOME/scripts/agent-team-os-lib.sh"
 
-echo "Copying v2.0 modules → $CLAUDE_HOME/scripts/"
-cp "$REPO_DIR/scripts/agent-team-os-taskprovider.sh" "$CLAUDE_HOME/scripts/agent-team-os-taskprovider.sh"
-cp "$REPO_DIR/scripts/agent-team-os-harvest.sh"      "$CLAUDE_HOME/scripts/agent-team-os-harvest.sh"
+echo "Copying bus modules → $CLAUDE_HOME/scripts/"
+# BR24-F5.2: taskprovider and harvest are gone; drop stale copies of an older install.
+rm -f "$CLAUDE_HOME/scripts/agent-team-os-taskprovider.sh" "$CLAUDE_HOME/scripts/agent-team-os-harvest.sh"
 cp "$REPO_DIR/scripts/agent-team-os-collect.sh"      "$CLAUDE_HOME/scripts/agent-team-os-collect.sh"
 cp "$REPO_DIR/scripts/agent-team-os-wake.py"         "$CLAUDE_HOME/scripts/agent-team-os-wake.py"
 # An installed custode (the mini) gets the new script on every install; its jobs
@@ -135,30 +141,36 @@ if [[ -f "$CLAUDE_HOME/scripts/agent-team-os-custode.sh" ]]; then
   cp "$REPO_DIR/scripts/agent-team-os-custode.sh" "$CLAUDE_HOME/scripts/agent-team-os-custode.sh"
   chmod +x "$CLAUDE_HOME/scripts/agent-team-os-custode.sh"
 fi
-chmod +x "$CLAUDE_HOME/scripts/agent-team-os-taskprovider.sh" "$CLAUDE_HOME/scripts/agent-team-os-harvest.sh" \
-         "$CLAUDE_HOME/scripts/agent-team-os-collect.sh" "$CLAUDE_HOME/scripts/agent-team-os-wake.py"
+chmod +x "$CLAUDE_HOME/scripts/agent-team-os-collect.sh" "$CLAUDE_HOME/scripts/agent-team-os-wake.py"
 
+HOOK_SRC="$REPO_DIR/hooks"
+if [[ "$CENTRALINO" -eq 1 ]]; then
+  HOOK_SRC="$REPO_DIR/centralino/hooks"
+  echo "Bus v3: thin hooks from $HOOK_SRC and agent-team-os-centralino.py → $CLAUDE_HOME/scripts/"
+  cp "$HOOK_SRC/agent-team-os-centralino.py" "$CLAUDE_HOME/scripts/agent-team-os-centralino.py"
+  chmod +x "$CLAUDE_HOME/scripts/agent-team-os-centralino.py"
+fi
 echo "Copying hooks → $CLAUDE_HOME/hooks/"
-cp "$REPO_DIR/hooks/agent-team-os-load.sh"   "$CLAUDE_HOME/hooks/agent-team-os-load.sh"
-cp "$REPO_DIR/hooks/agent-team-os-urgent.sh" "$CLAUDE_HOME/hooks/agent-team-os-urgent.sh"
-cp "$REPO_DIR/hooks/agent-team-os-stop.sh"   "$CLAUDE_HOME/hooks/agent-team-os-stop.sh"
-cp "$REPO_DIR/hooks/agent-team-os-onda-prompt.py" "$CLAUDE_HOME/hooks/agent-team-os-onda-prompt.py"
-cp "$REPO_DIR/hooks/agent-team-os-end.sh"    "$CLAUDE_HOME/hooks/agent-team-os-end.sh"
+cp "$HOOK_SRC/agent-team-os-load.sh"   "$CLAUDE_HOME/hooks/agent-team-os-load.sh"
+cp "$HOOK_SRC/agent-team-os-urgent.sh" "$CLAUDE_HOME/hooks/agent-team-os-urgent.sh"
+cp "$HOOK_SRC/agent-team-os-stop.sh"   "$CLAUDE_HOME/hooks/agent-team-os-stop.sh"
+cp "$HOOK_SRC/agent-team-os-onda-prompt.py" "$CLAUDE_HOME/hooks/agent-team-os-onda-prompt.py"
+cp "$HOOK_SRC/agent-team-os-end.sh"    "$CLAUDE_HOME/hooks/agent-team-os-end.sh"
 chmod +x "$CLAUDE_HOME/hooks/agent-team-os-load.sh" "$CLAUDE_HOME/hooks/agent-team-os-urgent.sh" "$CLAUDE_HOME/hooks/agent-team-os-stop.sh" \
          "$CLAUDE_HOME/hooks/agent-team-os-onda-prompt.py" "$CLAUDE_HOME/hooks/agent-team-os-end.sh"
 # NOTE: the Stop hook is COPIED but NOT auto-registered in settings.json.
 # Activate manually (gated) via skill update-config — see docs/agentic-v2/SETTINGS-DIFF.md
 
 echo "Copying slash commands → $CLAUDE_HOME/commands/"
-for cmd in bus inbox read send reply handoff delegate thread god; do
+rm -f "$CLAUDE_HOME/commands/god.md"  # BR24-F5.2: GOD mode is gone
+for cmd in bus inbox read send reply handoff delegate thread; do
   cp "$REPO_DIR/commands/${cmd}.md" "$CLAUDE_HOME/commands/${cmd}.md"
 done
 
 echo "Copying skill → $CLAUDE_HOME/skills/agent-team-os/"
 mkdir -p "$CLAUDE_HOME/skills/agent-team-os"
 cp "$REPO_DIR/skills/agent-team-os/SKILL.md" "$CLAUDE_HOME/skills/agent-team-os/SKILL.md"
-# v2: GOD contract shipped alongside the skill (used by /god on)
-cp "$REPO_DIR/skills/agent-team-os/GOD-CONTRACT.md" "$CLAUDE_HOME/skills/agent-team-os/GOD-CONTRACT.md" 2>/dev/null || true
+rm -f "$CLAUDE_HOME/skills/agent-team-os/GOD-CONTRACT.md"
 
 echo "Copying bus-band mod → $CLAUDE_HOME/mods/bus-band/"
 rm -rf "$CLAUDE_HOME/mods/bus-band"
@@ -185,17 +197,7 @@ fi
 
 jq -r '.agents | keys[]' "$BUS_HOME/AGENT_MAP.json" 2>/dev/null | while IFS= read -r agent; do
   [[ -z "$agent" ]] && continue
-  mkdir -p "$BUS_HOME/inboxes/$agent"
-  REG="$BUS_HOME/registry/${agent}.json"
-  if [[ ! -f "$REG" ]]; then
-    jq -n --arg name "$agent" '{
-      name: $name,
-      active: false,
-      last_seen: null,
-      workspace_path: null,
-      session_started: null
-    }' > "$REG"
-  fi
+  mkdir -p "$BUS_HOME/inboxes/$agent" "$BUS_HOME/registry/${agent}.d"
 done
 
 # --- v2.5: this machine's host name ---
