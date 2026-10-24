@@ -6,6 +6,7 @@ servite in thread separati, ma ogni scrittura passa dalla transazione unica di S
 
 from __future__ import annotations
 
+import faulthandler
 import json
 import os
 import signal
@@ -89,8 +90,14 @@ def _socket_in_uso(path: Path) -> bool:
         s.close()
 
 
-def _ciclo_sveglia(stop: threading.Event, ora: threading.Event, fn, log) -> None:
+WATCHDOG_S = 30          # ogni quanto il watchdog controlla
+WATCHDOG_PING_S = 10     # entro quanto il socket deve rispondere
+WATCHDOG_FALLIMENTI = 2  # controlli falliti di fila prima di uscire (launchd riavvia)
+
+
+def _ciclo_sveglia(stop: threading.Event, ora: threading.Event, fn, log, battiti: dict) -> None:
     """Un giro ogni 10 s, o subito quando un invio lo chiede (sveglia_ora)."""
+    battiti["sveglia"] = (time.monotonic(), SVEGLIA_S)
     while not stop.is_set():
         ora.wait(SVEGLIA_S)
         ora.clear()
@@ -100,24 +107,92 @@ def _ciclo_sveglia(stop: threading.Event, ora: threading.Event, fn, log) -> None
             fn()
         except Exception as exc:  # noqa: BLE001
             log("error", "giro_sveglia", error=repr(exc))
+        battiti["sveglia"] = (time.monotonic(), SVEGLIA_S)
 
 
-def _ciclo(stop: threading.Event, every: float, fn, log, nome: str) -> None:
+def _ciclo(stop: threading.Event, every: float, fn, log, nome: str, battiti: dict) -> None:
+    battiti[nome] = (time.monotonic(), every)
     while not stop.wait(every):
         try:
             fn()
         except Exception as exc:  # noqa: BLE001 - un giro fallito non ferma il daemon
             log("error", f"giro_{nome}", error=repr(exc))
+        battiti[nome] = (time.monotonic(), every)
+
+
+def _ping(path: Path, timeout: float) -> bool:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect(str(path))
+        s.sendall(b'{"v": 1, "id": "watchdog", "op": "admin.ping"}\n')
+        buf = b""
+        while not buf.endswith(b"\n"):
+            chunk = s.recv(4096)
+            if not chunk:
+                return False
+            buf += chunk
+        return bool(json.loads(buf).get("ok"))
+    except (OSError, ValueError):
+        return False
+    finally:
+        s.close()
+
+
+def _esci_per_watchdog(home: Path, motivo: str) -> None:
+    """Scrive il perché e gli stack di tutti i thread nel log degli errori, poi esce: launchd riavvia."""
+    f = home / "logs" / "centralino-errori.log"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    with f.open("a", encoding="utf-8") as fh:
+        fh.write(f"\n{time.strftime('%Y-%m-%dT%H:%M:%S%z')} watchdog: {motivo}; esco perché launchd riavvii\n")
+        fh.flush()
+        faulthandler.dump_traceback(file=fh, all_threads=True)
+        fh.flush()
+    os._exit(70)
+
+
+def _watchdog(d: "Daemon", esci) -> None:
+    """Il socket deve rispondere e i giri periodici devono avanzare. Due controlli falliti di fila:
+    ``esci(motivo)``. Gira in un thread suo, quindi vede anche un main thread bloccato."""
+    falliti = 0
+    while not d.stop.wait(d.watchdog_s):
+        problemi = []
+        if not _ping(d.sock_path, d.watchdog_ping_s):
+            problemi.append(f"il socket non risponde entro {d.watchdog_ping_s:g} s")
+        adesso = time.monotonic()
+        for nome, (ultimo, every) in list(d.battiti.items()):
+            if adesso - ultimo > 3 * every + 120:
+                problemi.append(f"il giro {nome} è fermo da {int(adesso - ultimo)} s")
+        if not problemi:
+            falliti = 0
+            continue
+        falliti += 1
+        d.central.log("error", "watchdog", problemi=problemi, falliti=falliti)
+        if falliti >= WATCHDOG_FALLIMENTI:
+            esci("; ".join(problemi))
+            return
 
 
 class Daemon:
-    """Socket in ascolto + giri periodici. ``avvia()`` prepara, ``esegui()`` serve fino a ``ferma()``."""
+    """Socket in ascolto + giri periodici. ``avvia()`` prepara, ``esegui()`` serve fino a ``ferma()``.
 
-    def __init__(self, home: Path, sock_path: Path | None = None, giri: bool = True):
+    ``ferma()`` imposta solo un flag: si chiama da un gestore di segnale, che non deve mai
+    prendere lock né avviare thread (24/10, 21:36: un gestore che aspettava un lock, interrotto
+    da un secondo segnale, si è bloccato su sé stesso e il socket non ha più risposto)."""
+
+    def __init__(self, home: Path, sock_path: Path | None = None, giri: bool = True,
+                 watchdog: bool = False, watchdog_s: float = WATCHDOG_S, esci=None,
+                 watchdog_ping_s: float = WATCHDOG_PING_S):
         self.home = Path(home)
         self.sock_path = Path(sock_path or self.home / "centralino.sock")
         self.giri = giri
+        self.watchdog = watchdog
+        self.watchdog_s = watchdog_s
+        self.watchdog_ping_s = watchdog_ping_s
+        self._esci = esci or (lambda motivo: _esci_per_watchdog(self.home, motivo))
         self.stop = threading.Event()
+        self.battiti: dict[str, tuple[float, float]] = {}
+        self._fine = False
 
     def avvia(self) -> "Daemon":
         os.umask(0o077)  # database, log e socket contengono i messaggi: solo l'utente
@@ -131,21 +206,26 @@ class Daemon:
         HookOps(self.central).registra()
         self.central.log("info", "avvio", home=str(self.home), socket=str(self.sock_path), pid=os.getpid())
         self.server = Server(self.sock_path, self.central)
+        self.server.timeout = 0.5
         os.chmod(self.sock_path, 0o600)
         (self.home / "centralino.pid").write_text(f"{os.getpid()}\n")
         if self.giri:
             log = self.central.log
             sveglia = Sveglia(self.central)
-            threading.Thread(target=_ciclo_sveglia, args=(self.stop, self.central.sveglia_ora, sveglia.giro, log),
-                             daemon=True).start()
+            threading.Thread(target=_ciclo_sveglia, name="giro-sveglia", daemon=True,
+                             args=(self.stop, self.central.sveglia_ora, sveglia.giro, log, self.battiti)).start()
             for every, fn, nome in [(PULIZIA_S, Pulizia(self.central).giro, "pulizia"),
                                     (RACCOLTA_S, self.central.raccolta, "raccolta")]:
-                threading.Thread(target=_ciclo, args=(self.stop, every, fn, log, nome), daemon=True).start()
+                threading.Thread(target=_ciclo, name=f"giro-{nome}", daemon=True,
+                                 args=(self.stop, every, fn, log, nome, self.battiti)).start()
+        if self.watchdog:
+            threading.Thread(target=_watchdog, name="watchdog", args=(self, self._esci), daemon=True).start()
         return self
 
     def esegui(self) -> None:
         try:
-            self.server.serve_forever(poll_interval=0.2)
+            while not self._fine:
+                self.server.handle_request()  # torna al più dopo server.timeout
         finally:
             self.stop.set()
             self.server.server_close()
@@ -158,12 +238,16 @@ class Daemon:
             self.central.store.close()
 
     def ferma(self) -> None:
-        self.stop.set()
-        threading.Thread(target=self.server.shutdown, daemon=True).start()
+        self._fine = True  # solo un flag: sicuro dentro un gestore di segnale
 
 
 def serve(home: Path, sock_path: Path | None = None, giri: bool = True) -> None:
-    d = Daemon(home, sock_path, giri).avvia()
+    home = Path(home)
+    (home / "logs").mkdir(parents=True, exist_ok=True)
+    # kill -USR1 <pid>: gli stack Python di tutti i thread nel log degli errori, senza root
+    errori = (home / "logs" / "centralino-errori.log").open("a", encoding="utf-8")
+    faulthandler.register(signal.SIGUSR1, file=errori, all_threads=True)
+    d = Daemon(home, sock_path, giri, watchdog=giri).avvia()
     signal.signal(signal.SIGTERM, lambda s, f: d.ferma())
     signal.signal(signal.SIGINT, lambda s, f: d.ferma())
     d.esegui()
