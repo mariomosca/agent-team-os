@@ -19,7 +19,7 @@ import socket
 import sys
 from pathlib import Path
 
-TIMEOUT_S = {"start": 4.0, "prompt": 3.0, "stop": 4.0, "end": 2.5}
+TIMEOUT_S = {"start": 2.5, "prompt": 3.0, "stop": 4.0, "end": 2.5}  # sotto i timeout di settings.json
 
 
 def home() -> Path:
