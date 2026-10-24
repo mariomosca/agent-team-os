@@ -490,3 +490,31 @@ aggiunta, ne ha assorbite 89) e `dbbus.py` di 590 perché porta con sé l'invio 
 erano in `files.py`. `sim.py` (banco di prova) resta di 574 righe. Non rimossi, perché il mini ne ha ancora
 bisogno: `lib.sh`, `wake.py`, `collect.sh`, `custode.sh`, `hooks/*.sh` e i loro test. `install.sh` installa
 gli hook v3 di default; `--file-bus` installa quelli a file, per il mini.
+
+## 16. Incidente del 24/10, 21:33: il daemon in ombra si blocca alla chiusura
+
+**Cosa.** Il daemon in ombra sul bus vero (pid 23545) dalle 21:33:26 non ha più risposto sul socket.
+
+**Causa, dimostrata.** Gli stack Python li ho presi con `lldb` e `faulthandler.dump_traceback` nel processo bloccato.
+- Il main thread, che accetta le connessioni, era nella `select` quando è arrivato un SIGTERM. Il gestore, `ferma()`, ha chiamato `stop.set()`: prende il lock (non rientrante) della `Condition` dell'Event e dentro chiama `notify_all()`.
+- Proprio lì è arrivato un secondo SIGTERM. Il gestore è ripartito annidato sullo stesso `stop.set()` e si è fermato sul lock tenuto dal suo stesso thread.
+- I tre thread dei giri, svegliati da `notify_all`, sono rimasti in `_acquire_restore` su quel lock.
+
+**Da dove i segnali.** Alle 21:33:26 un `pkill -f "centralino serve"`, lanciato per fermare un daemon di prova su una radice temporanea, ha colpito anche il daemon vero e il suo `uv run`, che inoltra il segnale al figlio: due SIGTERM quasi insieme. Il terzo segnale, alle 21:36:19, era un riavvio.
+
+**Le prove.**
+- L'ultima scrittura dei giri nel WAL è delle 21:33:21.
+- Il confronto delle 21:34:21 non c'è.
+- Nello stack ci sono tre `ferma()` annidati.
+
+**Correzione** (`d69f34b`, poi `839530c` sul branch di F5.5).
+- `ferma()` alza solo un flag. Il server gira con un ciclo `handle_request` che lo controlla ogni 0,5 s.
+- Un watchdog pinga il socket e controlla che i giri avanzino. Dopo due controlli falliti scrive nel log degli errori gli stack di tutti i thread ed esce, e launchd riavvia.
+- `kill -USR1 <pid>` scrive gli stack senza root.
+- Negli script lo stop è SIGTERM, poi `kill -9` dopo 6 s. Il passaggio fallisce se `status` non risponde entro 10 s.
+- Test di regressione in `tests/test_vita.py`:
+  - il gestore di segnale non prende lock (lo stesso test, sul `ferma()` vecchio, vede `set`, `lock.acquire` e `start`);
+  - quattro SIGTERM a raffica con richieste e giri in corso, ripetuti cinque volte;
+  - il watchdog che esce, sia con il socket muto sia con un giro fermo.
+
+**Regola.** Il centralino si ferma col pid di `centralino.pid` (o con launchd), mai con `pkill -f centralino`: prende anche il daemon vero.

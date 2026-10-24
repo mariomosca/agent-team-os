@@ -22,7 +22,8 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("serve", help="avvia il daemon (in primo piano)")
     s.add_argument("--socket")
     s.add_argument("--senza-giri", action="store_true", help="niente sveglia/raccolta/pulizia periodiche")
-    sub.add_parser("status", help="ping e contatori del daemon in esecuzione")
+    st = sub.add_parser("status", help="ping e contatori del daemon in esecuzione")
+    st.add_argument("--timeout", type=float, default=10, help="secondi di attesa del socket (default 10)")
     sm = sub.add_parser("sim", help="banco di prova a simulazione (AB_HOME temporaneo)")
     sm.add_argument("-v", "--verbose", action="store_true")
     a = p.parse_args(argv)
@@ -37,7 +38,8 @@ def main(argv: list[str] | None = None) -> int:
         from .sim import main as sim_main
         return sim_main(verbose=a.verbose)
     try:
-        out = {"ping": call("admin.ping", sock=sock), "stats": call("admin.stats", sock=sock)}
+        out = {"ping": call("admin.ping", sock=sock, timeout=a.timeout),
+               "stats": call("admin.stats", sock=sock, timeout=a.timeout)}
     except CentralinoGiu as exc:
         print(str(exc), file=sys.stderr)
         return 2
