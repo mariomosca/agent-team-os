@@ -131,7 +131,8 @@ class Centralino:
 
     def op_reply(self, caller: dict, a: dict, warnings: list) -> dict:
         """v3 bus_reply: risponde a un messaggio e lo archivia con esito risposto. Se il messaggio
-        è già archiviato, la risposta parte lo stesso (stesso thread e task_id)."""
+        è già archiviato, la risposta parte lo stesso (stesso thread e task_id). Una domanda
+        dell'esecutore su una delega non la consuma: la delega resta in casella per l'esito."""
         me = self._who(caller)
         mid = a.get("message_id") or a.get("in_reply_to") or ""
         typ = a.get("message_type") or "response"
@@ -141,7 +142,9 @@ class Centralino:
         if not summary:
             raise BusError("bus_reply: summary vuoto")
         orig = self.bus.read_message(me.agent, mid)
-        if orig["_location"]["state"] == "pending":
+        tid = orig.get("task_id")
+        domanda_esecutore = typ == "question" and not (tid and self.bus.own_wait(me.agent, tid, me.slug))
+        if orig["_location"]["state"] == "pending" and not domanda_esecutore:
             out = self._write(lambda: self.bus.handle(me.agent, me.slug, orig["id"], "risposto", reply=summary,
                                                         live_slugs=self._live, reply_type=typ,
                                                         details=a.get("details")))
@@ -250,9 +253,9 @@ class Centralino:
         data["_reply_to"] = self.bus.reply_address(data)
         link = data.get("task_link") or {}
         tid = data.get("task_id")
-        gest = (f"bus_gestisci(message_id='{data['id']}', esito=...): chiuso (finito), riarma (non ha "
-                "finito, aspetti ancora), risposto (con reply: la risposta va all'esecutore con lo stesso "
-                "task_id e lo sveglia), letto")
+        gest = (f"bus_close(message_id='{data['id']}', esito=...): chiuso (finito, l'attesa si chiude), "
+                "riarma (non ha finito, aspetti ancora), letto; per rispondere all'esecutore "
+                f"bus_reply(message_id='{data['id']}'), che lo sveglia con lo stesso task_id")
         if link.get("by") == "da_agganciare":
             data["_task_hint"] = (
                 f"Da agganciare: {data.get('from')} ha piu' deleghe aperte da te "
@@ -266,17 +269,18 @@ class Centralino:
             # BR24-F2.6: delegato da un'altra sessione viva di questo agente, non da questa
             data["_task_hint"] = (f"Messaggio sul task {tid}, delegato da un'altra sessione ({me.agent}/"
                                   f"{other[1]}), non da te: non chiuderlo per lei. Se non ti "
-                                  f"riguarda, bus_gestisci(message_id='{data['id']}', esito='letto').")
+                                  f"riguarda, bus_close(message_id='{data['id']}', esito='letto').")
         elif tid and data.get("type") == "response":
             data["_task_hint"] = (f"Risposta di chi ti ha delegato il task {tid}: prosegui il lavoro; "
-                                  f"l'esito finale va con bus_send(to='{data['_reply_to']}', "
-                                  f"message_type='response', task_id='{tid}').")
+                                  f"l'esito finale va con bus_reply sul messaggio della delega (o su "
+                                  f"questo, bus_reply(message_id='{data['id']}')): porta il task_id "
+                                  "e sveglia chi delega.")
         elif tid:
             data["_task_hint"] = (
-                f"Delegated task {tid}: when done, bus_send(to='{data['_reply_to']}', "
-                f"message_type='response', in_reply_to='{data['id']}') — the task_id travels with "
-                "it and wakes the sender. Questions on the way: message_type='question', same "
-                "task_id (in_reply_to carries it). Every return wakes the delegator.")
+                f"Task {tid} delegato a te: a lavoro finito, bus_reply(message_id='{data['id']}') con "
+                "l'esito; porta il task_id e sveglia chi delega. Domande prima di finire: "
+                f"bus_reply(message_id='{data['id']}', message_type='question'): la delega resta "
+                "in casella per l'esito.")
         self.bus.clear_waiting_agent(me.agent, me.slug, answer=data)
         if a.get("archive"):
             dest = self._write(lambda: self.bus.archive_message(me.agent, a.get("message_id") or "", "read"))

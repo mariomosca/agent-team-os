@@ -21,7 +21,7 @@ Non attivarla per i sub-agent locali (Explore, Plan, code-reviewer): quelli sono
 | Tool | Cosa fa |
 |---|---|
 | `bus_send` | messaggio nuovo. Con `kind='delega'` registra l'attesa e restituisce il `task_id` |
-| `bus_reply` | risponde a un messaggio (`response` o `question`): va a chi ha scritto, eredita thread e `task_id`, archivia il messaggio con esito `risposto` |
+| `bus_reply` | risponde a un messaggio (`response` o `question`): va a chi ha scritto, eredita thread e `task_id`, archivia il messaggio con esito `risposto` (non una `question` di chi esegue: la delega resta in casella per l'esito) |
 | `bus_close` | consuma un messaggio (`chiuso`, `riarma`, `letto`) oppure, con solo `task_id`, chiude l'attesa di una delega |
 | `bus_inbox` | i messaggi pending di questa sessione e `mie_attese` (le tue deleghe aperte, con i ritorni non gestiti) |
 | `bus_read` | un messaggio intero con il suggerimento sul task, oppure un thread intero (`thread_id`) |

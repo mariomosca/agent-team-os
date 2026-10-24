@@ -100,3 +100,26 @@ def test_vista_globale(bus):
     assert {x["agent"] for x in v["agenti"]} == {"kai", "alita"}
     assert {s["slug"] for s in v["sessioni"]} == {"s1"}  # vive per heartbeat
     assert v["onda"] == {"valido": False, "writtenAt": None, "sessioni": []}
+
+
+def test_domanda_dell_esecutore_lascia_la_delega_aperta(bus):
+    # BR24-F5.5b (a): prova del 24/10, task t-20261024-hcpl2x
+    sock = bus / "centralino.sock"
+    kai, alita = _caller(bus, "kai"), _caller(bus, "alita")
+    r = call("send", {"to": "kai/s1", "intent": "x", "summary": "fai X", "message_type": "request",
+                      "kind": "delega"}, caller=alita, sock=sock)["result"]
+    mid, tid = r["id"], r["task_id"]
+    lettura = call("read", {"message_id": mid}, caller=kai, sock=sock)["result"]
+    assert "bus_gestisci" not in lettura["_task_hint"] and "bus_reply" in lettura["_task_hint"]
+    q = call("reply", {"message_id": mid, "summary": "A o B?", "message_type": "question"},
+             caller=kai, sock=sock)
+    assert q["ok"], q
+    inbox = call("inbox", {}, caller=kai, sock=sock)["result"]
+    assert [m["id"] for m in inbox["messages"]] == [mid]
+    domanda = call("inbox", {}, caller=alita, sock=sock)["result"]["messages"]
+    assert [(m["type"], m["task_id"]) for m in domanda] == [("question", tid)]
+    hint = call("read", {"message_id": domanda[0]["id"]}, caller=alita, sock=sock)["result"]["_task_hint"]
+    assert "bus_close" in hint and "bus_gestisci" not in hint and "risposto" not in hint
+    # l'esito sulla delega originale la consuma
+    e = call("reply", {"message_id": mid, "summary": "fatto"}, caller=kai, sock=sock)
+    assert e["ok"] and e["result"]["remaining"] == 0

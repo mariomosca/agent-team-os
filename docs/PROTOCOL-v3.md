@@ -61,7 +61,7 @@ trattano come deleghe.
 
 1. `bus_send(kind='delega')`: attesa `expected` sulla sessione del delegante, `task_id` sul messaggio.
 2. L'esecutore riceve la delega (sveglia se è fermo) e lavora.
-3. Domanda: `bus_reply(message_type='question')` con il `task_id` ereditato. Sveglia il delegante, l'attesa resta aperta.
+3. Domanda: `bus_reply(message_type='question')` con il `task_id` ereditato. Sveglia il delegante, l'attesa resta aperta e la delega resta nella casella dell'esecutore: l'esito va poi con `bus_reply` sulla delega.
 4. Risposta del delegante: `bus_reply` alla domanda. Sveglia l'esecutore.
 5. Esito: `bus_reply(message_type='response')` sulla delega. Sveglia il delegante, fuori da ogni tetto.
 6. Chiusura: `bus_close(esito='chiuso')` sul ritorno chiude l'attesa; `riarma` la tiene aperta; `bus_close(task_id=...)`
