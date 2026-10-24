@@ -221,7 +221,7 @@ if command -v plutil >/dev/null 2>&1; then
   ck "config Claude del mini" "$(plutil -extract EnvironmentVariables.CLAUDE_CONFIG_DIR raw "$PL")" "$IC"
   ck "log" "$(plutil -extract StandardOutPath raw "$PL")" "$IB/logs/custode.log"
 fi
-ck "bootout + bootstrap" "$(grep -v registro "$LC_LOG" | grep -c 'com.agent-team-os.custode')" "2"
+ck "bootout + bootstrap" "$(grep -E '^(bootout|bootstrap) ' "$LC_LOG" | grep -v registro | grep -c 'com.agent-team-os.custode')" "2"
 ck "con GUI niente crontab" "$([[ -e $FAKE_CRONTAB ]] && echo si || echo no)" "no"
 # Mini senza login grafico: cron al posto di launchd; la riga della vecchia sveglia a file va via.
 echo '* * * * * altro; agent-team-os-wake.py tick' > "$FAKE_CRONTAB"
@@ -256,6 +256,10 @@ if command -v plutil >/dev/null 2>&1; then
 fi
 ck "segnaposti sostituiti" "$(grep -c '__' "$DPL")" "0"
 ck "caricato" "$(grep -c 'bootstrap.*com.agent-team-os.centralino' "$LC_LOG")" "1"
+: > "$LC_LOG"
+ck "bootstrap fallito una volta: riprova" "$(FAKE_LAUNCHCTL_BOOTSTRAP_FAIL=$T/bs-once inst --daemon)/$(grep -c 'bootstrap.*com.agent-team-os.centralino' "$LC_LOG")" "0/2"
+ck "e lo dice caricato" "$(grep -c 'loaded (com.agent-team-os.centralino)' "$T/inst.out")" "1"
+ck "bootstrap sempre fallito: errore" "$(FAKE_LAUNCHCTL_BOOTSTRAP_FAIL=always inst --daemon)/$(grep -c 'ERROR: launchctl bootstrap' "$T/inst.out")" "1/1"
 : > "$GUI"
 echo '* * * * * altro' > "$FAKE_CRONTAB"
 ck "headless: install" "$(inst --daemon)" "0"
