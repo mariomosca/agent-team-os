@@ -259,7 +259,15 @@ ck "caricato" "$(grep -c 'bootstrap.*com.agent-team-os.centralino' "$LC_LOG")" "
 : > "$GUI"
 echo '* * * * * altro' > "$FAKE_CRONTAB"
 ck "headless: install" "$(inst --daemon)" "0"
-ck "headless: riga cron" "$(grep -c 'kill -0 .*centralino.pid.*|| nohup .*centralino serve' "$FAKE_CRONTAB")" "1"
+ck "headless: riga cron" "$(grep -c 'centralino.pid.*kill -0 .*|| nohup .*centralino serve' "$FAKE_CRONTAB")" "1"
+# la riga gira davvero: senza pid parte, con un pid vivo no (uv finto: "serve" scrive in $T/serve.log)
+CRON_CMD=$(grep 'centralino serve' "$FAKE_CRONTAB" | cut -d' ' -f6- | sed "s|>/dev/null 2>>[^ ]*|>>$T/serve.log 2>\&1|")
+rm -f "$IB/centralino.pid" "$T/serve.log"; bash -c "$CRON_CMD"; sleep 0.5
+ck "headless: senza pid parte" "$(grep -c 'fake serve' "$T/serve.log" 2>/dev/null)" "1"
+echo $$ > "$IB/centralino.pid"; rm -f "$T/serve.log"; bash -c "$CRON_CMD"; sleep 0.5
+ck "headless: pid vivo, non riparte" "$([[ -s $T/serve.log ]] && echo partito || echo fermo)" "fermo"
+echo 999999 > "$IB/centralino.pid"; bash -c "$CRON_CMD"; sleep 0.5
+ck "headless: pid morto, riparte" "$(grep -c 'fake serve' "$T/serve.log" 2>/dev/null)" "1"
 inst --daemon >/dev/null
 ck "headless: reinstall non duplica" "$(grep -c 'centralino serve' "$FAKE_CRONTAB")/$(grep -c altro "$FAKE_CRONTAB")" "1/1"
 ck "opzioni del bus a file rifiutate" "$(inst --file-bus)" "1"

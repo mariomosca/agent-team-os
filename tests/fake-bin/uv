@@ -8,6 +8,7 @@
 #   ... centralino status        the stats of a centralino; FAKE_CENTRALINO=down: not answering
 args=" $* "
 [[ "$1" == sync ]] && exit 0
+[[ "$args" == *" centralino serve "* ]] && { echo "fake serve"; exit 0; }
 if [[ "$args" == *" centralino status "* ]]; then
   [[ "${FAKE_CENTRALINO:-ok}" == down ]] && { echo "il centralino del bus non risponde su /x/centralino.sock" >&2; exit 2; }
   echo '{"ping":{"ok":true},"stats":{"ok":true,"result":{"messaggi":12,"pending":2,"sessioni_vive":1}}}'; exit 0
