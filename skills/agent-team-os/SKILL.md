@@ -104,5 +104,5 @@ Una sessione è viva se Onda la dà viva (voce in `sessions.json` non `exited`),
 ## Dove sta il resto
 
 - Protocollo: `docs/PROTOCOL-v3.md` e `docs/CENTRALINO.md` nel repo `agent-team-os`.
-- Il bus a file (`lib.sh`, `wake.py`, custode) resta solo sul Mac mini, che non ha il centralino.
+- Anche il Mac mini ha il suo centralino (sveglia via tmux); il bus a file non c'è più. Il custode controlla il mini ogni mattina.
 - Comandi: `/bus`, `/inbox`, `/read`, `/send`, `/reply`, `/handoff`, `/thread`, `/delegate`.

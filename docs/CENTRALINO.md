@@ -516,3 +516,50 @@ gli hook v3 di default; `--file-bus` installa quelli a file, per il mini.
   - il watchdog che esce, sia con il socket muto sia con un giro fermo.
 
 **Regola.** Il centralino si ferma col pid di `centralino.pid` (o con launchd), mai con `pkill -f centralino`: prende anche il daemon vero.
+
+## 17. Il centralino sul mini (BR24-F5.7, 24/10/2026)
+
+Il mini ha il suo centralino, stesso codice e stesso schema. Niente più bus a file.
+
+**Avvio.** Il mini non ha login grafico (`launchctl print gui/<uid>` fallisce via SSH), quindi niente
+LaunchAgent: `install.sh --daemon` scrive una riga di cron che ogni minuto avvia `centralino serve` se il
+pid di `centralino.pid` non è vivo. `serve` stesso rifiuta di partire se un centralino risponde già sul
+socket. Il watchdog (§16) esce se il daemon si blocca, e cron lo riavvia entro un minuto. Sul laptop resta
+launchd. Il controllo del pid vuole un pid vero: `kill -0 0` colpirebbe il gruppo della shell di cron e
+riuscirebbe sempre (la prima versione della riga aveva questo difetto, coperto ora da test).
+
+**Fra i due centralini.**
+
+| Verso | Come |
+|---|---|
+| laptop → mini | `ssh mini '<hosts.mini.centralino> consegna'` col messaggio su stdin; l'op `consegna` lo accoglie con le regole di tutti. Mini giù: coda in `outbox/mini/` del laptop e `remote_queue`, la raccolta lo riprova |
+| mini → laptop | il mini non apre SSH: il messaggio resta in `outbox/laptop/` del mini e la raccolta del laptop lo tira giù (tar) e lo cancella là dopo averlo scritto |
+| stato del mini | il laptop legge `registry/*.d/*.json` (li scrive il centralino del mini per Onda) e `<centralino> pendenti`, che legge SQLite in sola lettura |
+
+`hosts.mini.centralino` in AGENT_MAP del laptop è il comando completo
+(`/opt/homebrew/bin/uv run --frozen --project ~/Projects/01-Building/agent-team-os/centralino centralino`). Un
+host con `ssh` ma senza `centralino` non riceve: il messaggio resta in coda e l'errore va nel log.
+
+**Sveglia sul mini.** Il canale è tmux: il pannello lo dichiara l'hook (`TMUX_PANE`). Fino a F5.7 una
+sessione su tmux non risultava mai `ferma` (lo stato veniva solo da Onda) e quindi non si sarebbe mai
+svegliata: ora per il canale tmux decide `via_tmux` leggendo lo schermo (occupata, testo nella casella o una
+domanda aperta: rinvio). Test in `tests/test_tmux.py`.
+
+**Migrazione del 24/10.** Backup del mini in `~/.agent-team-os-backup/f57-20261024-224050`. I 22 messaggi
+pending (2 prove di kai del 14/10, 20 eventi `otto-giro` di leo) sono entrati nel centralino del mini con
+`consegna` (origine `migrazione-f57`); `inboxes/` e `waits/` (4 attese di prova del 17/10) restano come
+`inboxes.pre-f57` e `waits.pre-f57`. Tolte dal crontab la sveglia (`wake.py tick`) e la pulizia `--registro`
+del custode; il custode delle 7:00 resta, senza lib.
+
+**Da sapere.** `00-Brandart-PM-OS/contratti/run.sh` (il giro di Otto, sul mini) scrive i suoi eventi come file
+in `inboxes/leo/@00-brandart-pm-os/`: dopo F5.7 quei file non li legge nessuno. Va passato a
+`centralino consegna` (vault di Leo).
+
+**Conteggio** (righe di codice, `sim.py` escluso; comando: `git show <ref>:<file> | wc -l` sui file del
+centralino, degli hook v3, del MCP e di `lib.sh`/`wake.py`/`collect.sh` più gli hook a file):
+
+| | centralino | hook v3 | MCP | bus a file | totale |
+|---|---:|---:|---:|---:|---:|
+| `feat/br24-centralino` (ombra) | 4.593 | 236 | 1.892 | 3.990 | 10.711 |
+| dopo F5.5, laptop | 3.388 | 236 | 391 | 3.990 | 8.005 |
+| dopo F5.7 | 3.425 | 260 | 391 | 0 | **4.076** |

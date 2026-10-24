@@ -113,7 +113,8 @@ raggiungibile: serve anche un canale di sveglia. Per le sessioni di un altro hos
 
 ## 9. Host
 
-Due macchine: il laptop (con il centralino) e il mini (bus a file). Laptop verso mini: consegna via SSH; se il mini
+Due macchine, ognuna col suo centralino (BR24-F5.7). Laptop verso mini: `ssh mini '<centralino> consegna'`, col
+comando in `hosts.mini.centralino` di AGENT_MAP; se il mini
 non risponde, `queued=true` e il messaggio parte alla raccolta successiva (la coda sta in `remote_queue`). Mini
 verso laptop: i messaggi aspettano in `outbox/laptop/` del mini finché il centralino li raccoglie. Il cloud non ha
 SSH: i suoi messaggi arrivano con la sync e il centralino li accoglie come messaggi di un altro host, senza `task_id`
@@ -172,4 +173,5 @@ prova e sono rimossi con F5.5: dopo la conferma non c'è un modo a cui tornare. 
 | contratto del centralino, API, schema | `docs/CENTRALINO.md` |
 | uso per gli agenti | `skills/agent-team-os/SKILL.md`, `commands/*.md` |
 | schemi dei messaggi | `schema/` |
-| bus a file del mini | `scripts/agent-team-os-lib.sh`, `-wake.py`, `-collect.sh`, `-custode.sh` |
+| custode del mini | `scripts/agent-team-os-custode.sh` |
+| installazione | `install.sh` (`--daemon`, `--register-hooks`, `--host`, `--custode`) |
