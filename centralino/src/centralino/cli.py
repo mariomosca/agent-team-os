@@ -1,4 +1,4 @@
-"""centralino serve | status | ombra report | sim"""
+"""centralino serve | status | ombra | migra | esporta | modo | sim"""
 
 from __future__ import annotations
 
@@ -26,6 +26,10 @@ def main(argv: list[str] | None = None) -> int:
     o = sub.add_parser("ombra", help="modalità ombra")
     o.add_argument("azione", choices=["report", "confronta", "importa"])
     o.add_argument("--ore", type=float, default=48)
+    sub.add_parser("migra", help="storico a file in SQLite (daemon fermo)")
+    sub.add_parser("esporta", help="stato di SQLite nei file di oggi, per il ritorno (daemon fermo)")
+    md = sub.add_parser("modo", help="legge o scrive centralino.json")
+    md.add_argument("nuovo", nargs="?", choices=["ombra", "attivo"])
     sm = sub.add_parser("sim", help="banco di prova a simulazione (AB_HOME temporaneo)")
     sm.add_argument("-v", "--verbose", action="store_true")
     a = p.parse_args(argv)
@@ -35,6 +39,25 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "serve":
         from .server import serve
         serve(home, Path(a.socket) if a.socket else None, giri=not a.senza_giri)
+        return 0
+    if a.cmd in ("migra", "esporta"):
+        from .server import _socket_in_uso
+        if _socket_in_uso(sock):
+            print(f"il daemon risponde su {sock}: fermalo prima di {a.cmd}", file=sys.stderr)
+            return 2
+        from . import migra as mg
+        from .ombra import Ombra
+        from .ops import Centralino
+        c = Centralino(home, log_path=home / "logs" / "centralino.jsonl", kick_wake=lambda caller: None)
+        out = mg.migra(c, Ombra(c)) if a.cmd == "migra" else mg.esporta(c)
+        c.store.close()
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+    if a.cmd == "modo":
+        from . import config
+        if a.nuovo:
+            config.scrivi(home, config.Modo("sqlite", "attiva", True) if a.nuovo == "attivo" else config.Modo())
+        print(json.dumps(config.leggi(home).as_dict()))
         return 0
     if a.cmd == "sim":
         from .sim import main as sim_main
