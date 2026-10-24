@@ -2,6 +2,7 @@
 # Fake launchctl for test-custode.sh.
 #   print gui/<uid>/<label>  exit 0 if <label> is a line of FAKE_LAUNCHCTL_LOADED, else 113
 #   bootout/bootstrap        logged to FAKE_LAUNCHCTL_LOG
+#   FAKE_LAUNCHCTL_BOOTSTRAP_FAIL=always | <file>: bootstrap fails always, or once (while <file> is missing)
 [[ -n "${FAKE_LAUNCHCTL_LOG:-}" ]] && echo "$*" >> "$FAKE_LAUNCHCTL_LOG"
 case "$1" in
   print)
@@ -10,5 +11,10 @@ case "$1" in
       echo "$label = { state = running }"; exit 0
     fi
     echo "Could not find service \"$label\" in domain" >&2; exit 113 ;;
+  bootstrap)
+    f="${FAKE_LAUNCHCTL_BOOTSTRAP_FAIL:-}"
+    [[ "$f" == always ]] && { echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; }
+    if [[ -n "$f" && ! -e "$f" ]]; then touch "$f"; echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; fi
+    exit 0 ;;
   *) exit 0 ;;
 esac

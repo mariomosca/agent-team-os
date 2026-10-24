@@ -82,6 +82,21 @@ cron_drop() { # remove the crontab lines matching $1
     { crontab -l 2>/dev/null | grep -v -- "$1" || true; } | crontab -
   fi
 }
+job_load() { # (re)load a LaunchAgent: bootout is asynchronous, a bootstrap right after it fails
+  local label="$1" plist="$2" i
+  launchctl bootout "gui/$UID_N/$label" 2>/dev/null || true  # launchd stops it: never pkill
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    launchctl print "gui/$UID_N/$label" >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+  if launchctl bootstrap "gui/$UID_N" "$plist" 2>/dev/null \
+     || { sleep 2; launchctl bootstrap "gui/$UID_N" "$plist"; }; then
+    echo "  loaded ($label)"
+  else
+    echo "ERROR: launchctl bootstrap of $label failed: load it with launchctl bootstrap gui/$UID_N $plist"
+    return 1
+  fi
+}
 job_drop() { # unload and remove a LaunchAgent by label
   can_launchctl && launchctl bootout "gui/$UID_N/$1" 2>/dev/null || true
   rm -f "$LA_DIR/$1.plist"
@@ -245,10 +260,7 @@ if [[ "$DAEMON" -eq 1 ]]; then
     sed -e "s|__UV__|$UV_BIN|g" -e "s|__CENTRALINO_DIR__|$C_DIR|g" -e "s|__AB_HOME__|$BUS_HOME|g" \
         -e '/^<!--$/,/^-->$/d' "$C_DIR/launchd/${D_LABEL}.plist" > "$D_PLIST"
     echo "Centralino → $D_PLIST (launchd, KeepAlive)"
-    if can_launchctl; then
-      launchctl bootout "gui/$UID_N/$D_LABEL" 2>/dev/null || true  # launchd stops it: never pkill
-      launchctl bootstrap "gui/$UID_N" "$D_PLIST" && echo "  loaded ($D_LABEL)"
-    fi
+    can_launchctl && job_load "$D_LABEL" "$D_PLIST"
   else
     # No GUI login: cron every minute starts it when the pid in centralino.pid is gone.
     # serve itself refuses to start when a centralino already answers on the socket.
@@ -297,8 +309,7 @@ PLIST
   echo "Custode → $CUSTODE_PLIST (every day at 7:00, log $BUS_HOME/logs/custode.log)"
   echo "  by hand: $CLAUDE_HOME/scripts/agent-team-os-custode.sh [--no-telegram]"
   if has_gui; then
-    launchctl bootout "gui/$UID_N/${CUSTODE_LABEL}" 2>/dev/null || true
-    launchctl bootstrap "gui/$UID_N" "$CUSTODE_PLIST" && echo "  loaded ($CUSTODE_LABEL)"
+    job_load "$CUSTODE_LABEL" "$CUSTODE_PLIST"
   elif can_launchctl; then
     rm -f "$CUSTODE_PLIST"
     C_ENV="AB_HOME=$BUS_HOME CLAUDE_CONFIG_DIR=$CLAUDE_HOME PATH=\$HOME/.local/bin:\$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
