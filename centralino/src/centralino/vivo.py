@@ -148,6 +148,8 @@ class Vivacita:
             settled = age_s(e.get("stateSince"))
             ferma = (e.get("state") == "idle" and e.get("hasText") is False
                      and settled is not None and settled >= SETTLE_S)
+        elif canale == "tmux":
+            ferma = hb_viva  # lo stato lo legge via_tmux dallo schermo: occupata o con testo = Rinvio
         return StatoSessione(agent, slug, self.host, onda_viva or hb_viva, per, canale,
                              e.get("state") if e else None, ferma,
                              (e or {}).get("cwd") or (row["workspace_path"] if row else None))

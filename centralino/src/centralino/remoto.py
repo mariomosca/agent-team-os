@@ -1,7 +1,9 @@
 """Trasporto verso gli altri host (il mini via SSH, il cloud via coda): solo spedizione e raccolta.
 
-Una consegna a un altro host prova l'SSH e, se non riesce, resta in ``outbox/<host>/`` finché
-la raccolta la porta. La raccolta spinge la coda, tira giù ``outbox/<laptop>/`` dell'altro host
+Ogni host con ``ssh`` ha il suo centralino (BR24-F5.7), indicato in AGENT_MAP da
+``hosts.<host>.centralino`` (il comando da lanciare là). Una consegna è
+``ssh <host> '<centralino> consegna'`` col messaggio su stdin; se non riesce, resta in
+``outbox/<host>/`` finché la raccolta la porta. La raccolta spinge la coda, tira giù ``outbox/<laptop>/`` dell'altro host
 in un solo ``tar`` e passa ogni messaggio a ``ricevi`` (il centralino lo mette in SQLite) prima
 di cancellarlo là. Non conosce caselle né attese: sono del centralino.
 """
@@ -15,6 +17,7 @@ import random
 import shlex
 import string
 import subprocess
+import sys
 import tarfile
 import time
 from datetime import timedelta
@@ -83,16 +86,22 @@ class Remoto:
         except (OSError, subprocess.TimeoutExpired):
             return None
 
-    def remote_put(self, host: str, rel: str, data: bytes) -> bool:
-        bh = self.amap.host_bus_home(host)
-        target = f"{bh}/{rel}"
-        d = os.path.dirname(target)
-        dirs = [shlex.quote(d)]
-        if os.path.basename(d).startswith("@"):
-            dirs += [shlex.quote(f"{d}/.read"), shlex.quote(f"{d}/.done")]
-        q = shlex.quote(target)
-        res = self.ssh(host, f"mkdir -p {' '.join(dirs)} && cat > {q}.tmp && mv {q}.tmp {q}", data)
+    def consegna(self, host: str, agent: str, slug: str | None, data: bytes) -> bool:
+        """Il messaggio passa al centralino dell'altro host, che lo mette nella sua casella."""
+        cmd = (self.hosts().get(host) or {}).get("centralino")
+        if not cmd:
+            print(f"hosts.{host}.centralino manca in AGENT_MAP: messaggio in coda, non consegnabile", file=sys.stderr)
+            return False
+        doc = {"agent": agent, "slug": slug, "record": json.loads(data), "origine": self.amap.host_self() or "host"}
+        res = self.ssh(host, f"{cmd} consegna", json.dumps(doc, ensure_ascii=False).encode("utf-8"))
         return res is not None and res.returncode == 0
+
+    @staticmethod
+    def _da_rel(rel: str) -> tuple[str, str | None]:
+        """``<agente>/[@slug/]<id>.json`` (coda e raccolta) → (agente, slug)."""
+        parts = rel.removeprefix("inboxes/").split("/")
+        slug = parts[1][1:] if len(parts) == 3 and parts[1].startswith("@") else None
+        return parts[0], slug
 
     def queue_for_host(self, host: str, rel: str, data: bytes) -> Path:
         dest = self.home / "outbox" / host / rel.removeprefix("inboxes/")
@@ -105,7 +114,7 @@ class Remoto:
     def deliver_remote(self, host: str, agent: str, slug: str | None, record: dict) -> str:
         rel = f"inboxes/{agent}" + (f"/@{slug}" if slug else "") + f"/{record['id']}.json"
         data = (json.dumps(record, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-        if (self.hosts().get(host) or {}).get("ssh") and self.remote_put(host, rel, data):
+        if (self.hosts().get(host) or {}).get("ssh") and self.consegna(host, agent, slug, data):
             return "delivered"
         self.queue_for_host(host, rel, data)
         return "queued"
@@ -155,8 +164,8 @@ class Remoto:
             reachable = True
             qdir = self.home / "outbox" / host
             for f in sorted(qdir.rglob("msg-*.json")) if qdir.is_dir() else []:
-                rel = "inboxes/" + str(f.relative_to(qdir))
-                if self.remote_put(host, rel, f.read_bytes()):
+                agent, slug = self._da_rel(str(f.relative_to(qdir)))
+                if self.consegna(host, agent, slug, f.read_bytes()):
                     f.unlink()
                     pushed += 1
                 else:
@@ -204,8 +213,7 @@ class Remoto:
                     continue
                 if not isinstance(record, dict) or not self.amap.agent_exists(parts[0]):
                     continue
-                agent = parts[0]
-                slug = parts[1][1:] if len(parts) == 3 and parts[1].startswith("@") else None
+                agent, slug = self._da_rel(rel)
                 if len(parts) == 3 and slug is None:
                     continue
                 esito = self.ricevi(agent, slug, Path(parts[-1]).stem, record)
@@ -228,8 +236,7 @@ class Remoto:
             f"cd {q} 2>/dev/null || exit 0\n"
             "find registry -path 'registry/*.d/*.json' -type f 2>/dev/null | while read -r f; do "
             "printf 'R\\t'; tr '\\n' ' ' < \"$f\"; echo; done\n"
-            "find inboxes -name 'msg-*.json' -type f -not -path '*/.read/*' -not -path '*/.done/*' "
-            "2>/dev/null | awk '{print \"I\\t\" $0}'"
+            f"{(self.hosts().get(host) or {}).get('centralino') or 'false'} pendenti | awk '{{print \"I\\t\" $0}}'"
         )
         res = self.ssh(host, cmd)
         if res is not None and res.returncode == 0:
