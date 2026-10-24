@@ -1,5 +1,7 @@
 # Prova del bus v3 (BR24), per Mario
 
+> Storico (F5.5): la prova si è fatta con `passaggio.sh` e `ritorno.sh` del branch `feat/br24-centralino`; dopo la rimozione i due script non esistono più.
+
 Circa 15 minuti, due sessioni vere in Onda: Alita (work-hub) e una sessione di Kai in una cartella di prova.
 Se un passo non torna, ci si ferma e si torna indietro con **un comando** (in fondo).
 

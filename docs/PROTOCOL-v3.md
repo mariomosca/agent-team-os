@@ -159,12 +159,11 @@ Alias delle vecchie tool (`bus_gestisci`, `bus_archive`, `bus_waits`, `bus_expec
 Il passaggio è a passi, ciascuno con il bus funzionante: passo 0 (correzioni al sistema di prima), passo 1
 (centralino in modalità ombra dietro le stesse tool), passo 2 (lettori e scrittori sul centralino), passo 3 (SQLite
 come fonte, codice morto via, pulizia attiva). Accensione e rollback della modalità ombra:
-[CENTRALINO.md](./CENTRALINO.md) §12. Il modo attivo è in `~/.agent-team-os/centralino.json`
-(`fonte: sqlite`, `sveglia: attiva`, `raccolta: true`).
+[CENTRALINO.md](./CENTRALINO.md) §12 (storico). Dopo F5.5 il modo attivo è l'unico.
 
-Gli script del passaggio e del ritorno sono `centralino/passaggio.sh` e `centralino/ritorno.sh` (li scrive Kai,
-BR24-F5). Il ritorno rimette il bus a file: serve tenere i file di archivio e ripristinare gli hook della versione
-precedente. Finché il ritorno non è stato provato, il passaggio non è definitivo.
+Gli script del passaggio e del ritorno (`centralino/passaggio.sh`, `centralino/ritorno.sh`, BR24-F5) servivano alla
+prova e sono rimossi con F5.5: dopo la conferma non c'è un modo a cui tornare. Il modo non è più in
+`centralino.json` (il file non si legge più).
 
 ## 13. Dove sta il resto
 

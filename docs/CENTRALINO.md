@@ -1,14 +1,13 @@
 # Centralino: contratto (BR24-F3.1)
 
-Stato: **approvato da Alita** il 24/10 alle 20:23; passo 1 implementato in `centralino/` (vedi §10-§12).
+Stato: **approvato da Alita** il 24/10 alle 20:23. Dopo la rimozione F5.5 (§15) il centralino ha un solo
+modo, quello attivo (SQLite unica fonte); la modalità ombra di §7 e §12 è storia e non esiste più nel codice.
 Fonti: `~/work-hub/brainstorming/bus-redesign/PROPOSTA.md` (architettura e regole approvate da Mario
 il 24/10) e `INVENTARIO.md` (stato di oggi, citato come `INV §n`).
 
-Il centralino è un daemon locale, **unico scrittore** dello stato del bus. Nel passo 1 (BR24-F3) nasce
-**in modalità ombra**: sta dietro le stesse 9 tool del MCP, scrive SQLite **e** i file di oggi, e i
-lettori di oggi (sveglia, hook Stop, Orbit, bus-band) continuano a leggere i file senza accorgersene.
-Le regole nuove (sessione viva, sveglia, Stop) nel passo 1 **si calcolano ma non si applicano**: si
-confrontano con quello che fa il sistema di oggi. Si applicano dal passo 2 (F4).
+Il centralino è un daemon locale, **unico scrittore** dello stato del bus. Nel passo 1 (BR24-F3) nacque
+**in modalità ombra** (SQLite più i file di oggi, regole nuove calcolate ma non applicate); dal passo 2
+(F4-F5) le applica e SQLite è l'unica fonte. Dopo F5.5 il codice dell'ombra e dei file di casella è tolto.
 
 ---
 
@@ -21,7 +20,7 @@ confrontano con quello che fa il sistema di oggi. Si applicano dal passo 2 (F4).
 | Socket | `~/.agent-team-os/centralino.sock` (Unix domain socket, permessi `0600`, stesso utente verificato con `getpeereid`) |
 | Log | `~/.agent-team-os/logs/centralino.jsonl`, una riga JSON per evento (`ts, livello, op, caller, esito, ms, dettagli`) |
 | Servizio | launchd `com.agent-team-os.centralino` (`KeepAlive`, `RunAtLoad`). Il plist è nel repo ma **non viene caricato** senza l'ok di Alita |
-| CLI | `centralino serve`, `centralino status`, `centralino ombra report [--ore 48]`, `centralino sim` (banco di prova) |
+| CLI | `centralino serve`, `centralino status`, `centralino sim` (banco di prova) |
 | Radice | `AB_HOME` (default `~/.agent-team-os`): i test girano su una radice temporanea, mai su quella vera |
 
 Un solo processo scrive SQLite: tutte le scritture passano da un'unica coda servita da un thread, con
@@ -99,8 +98,8 @@ mostrato così com'è al modello.
 
 ### 3.4 Operazioni di servizio
 
-`admin.ping` (versione, schema, uptime, coda di scrittura), `admin.stats`,
-`ombra.report {ore}` (§7), `ombra.ingest_now` (forza un giro di import dai file, per i test).
+`admin.ping` (versione, schema, uptime, coda di scrittura), `admin.stats`. Le operazioni `ombra.*`
+(report, import, confronto) sono tolte con F5.5.
 
 ---
 
@@ -295,52 +294,15 @@ vera resta `wake.py`, che il centralino continua a lanciare dopo ogni `send` non
 
 ---
 
-## 7. Modalità ombra
+## 7. Modalità ombra (storico, tolta con F5.5)
 
-### 7.1 Chi è la fonte
-
-Nel passo 1 **i file restano la fonte di verità** per tutti i lettori. SQLite si costruisce da due strade:
-
-1. **Scritture del centralino** (tutto ciò che arriva dal MCP): una transazione SQLite, poi la
-   scrittura dei file nel formato di oggi. Se la scrittura dei file fallisce, la transazione si annulla
-   e l'agente riceve l'errore: SQLite non può essere avanti ai file.
-2. **Import dei file scritti da altri** (lib/comandi slash, `wake.py`, `alita-memoria-sync`, hook
-   onda-prompt, raccolta del mini): un giro ogni 5 s su `inboxes/`, `waits/`, `threads/` per `mtime`,
-   più un giro completo ogni 10 minuti. Il record importato ha `origin='ingest'`.
-
-### 7.2 File scritti dal centralino (formato di oggi, byte-compatibile con i lettori)
-
-| File | Come oggi lo scrive | Il centralino |
-|---|---|---|
-| `inboxes/<a>/[@slug/]msg-*.json` | MCP `_deliver` | identico; tmp con nome unico (`.<id>.<pid>.<rand>.tmp`) + `rename`; rispetta il lock `locks/<agente>.lock` della lib |
-| spostamenti in `.read/` e `.done/` | `archive_message`, `handle` | identici |
-| `threads/<id>.jsonl` | MCP | identico |
-| `outbox/<mittente>.jsonl` | MCP `_append_outbox` | identico |
-| `waits/<a>/@<s>/<task>.json` | `bus.expect`, `bus.handle` | identico, tmp con nome unico (toglie la collisione di INV §2 punto 1) |
-| `registry/<a>.d/<s>.json` campo `waiting_agent` | MCP | identico |
-| `outbox/<host>/…` e consegna SSH | MCP `deliver_remote`, `queue_for_host` | identico, stesso lock `locks/collect-<host>.lock` |
-
-### 7.3 Confronto
-
-Un giro ogni 10 minuti (e a richiesta con `ombra.report`) confronta e scrive in `shadow_diffs`:
-
-| Area | Cosa si confronta | Differenza attesa (marcata `atteso`) |
-|---|---|---|
-| messaggi | presenza, casella, stato pending/read/done, esito | nessuna |
-| attese | stato, ritorni e loro stato, `executor_session` | aggancio fatto da `wake.py` su messaggi senza `task_id`; scadenze diverse (§6) |
-| sessioni | viva per la regola unica vs registro (TTL 240 min) vs Onda | sì: è il punto (casi ii e iii) |
-| sveglia | `wake_decisions` vs `logs/sveglia.log` (sveglia / rimandata / motivo) | `tetto_task`, `tetto_coppia`, `nessun_canale` su sessioni chiuse, sveglie da aggancio |
-| stop | "bloccherebbe" per la tabella §6 vs messaggi presenti in casella (regola di oggi) | event, cc-notify, comunicazioni |
-
-`centralino ombra report --ore 48` stampa: differenze **non attese** (devono essere 0 per passare al
-passo 2) e differenze attese raggruppate per regola, con esempi. Criterio di uscita dalla modalità ombra:
-48 h senza differenze non attese su messaggi e attese.
-
-### 7.4 Cosa NON cambia nel passo 1
-
-Nessun lettore cambia: `wake.py`, hook Stop/urgent/load/end, Orbit, bus-band, `alita-memoria-sync`,
-`collect.sh`, Onda. Nessuna modifica a Onda né a `sessions.json`. Il canale di invio della lib
-(`/send`, `/reply`, `/handoff`) resta e il centralino lo vede solo tramite l'import.
+Nel passo 1 i file restavano la fonte e SQLite li specchiava: un import ogni 5 s dei file scritti da
+altri, un confronto ogni 10 minuti in `shadow_diffs` (messaggi, attese, sessioni, sveglia, stop) con le
+differenze attese marcate, e `centralino ombra report --ore 48` come criterio di uscita (0 differenze non
+attese su messaggi e attese per 48 h). Servì a misurare che le regole nuove facessero meglio di quelle di
+oggi. Dopo il passaggio non serve più: `ombra.py`, `files.py`, `migra.py` e il modo in `config.py` sono
+rimossi, la tabella `shadow_diffs` e le decisioni solo decise (`modo='ombra'`) spariscono con lo schema v3
+al primo avvio. Per il testo completo vedi la storia del branch `feat/br24-centralino`.
 
 ---
 
@@ -431,15 +393,11 @@ In più: il passo 0 (`fix/br24-passo0`, in parallelo) cambia `wake.py` e `bus.py
 misura contro il comportamento **dopo** il passo 0: rebase su `main` quando è unito, e differenze
 attese di §7.3 allineate a quel comportamento. Il doppio `expect` dell'hook onda-prompt è nel passo 0.
 
-## 12. Accensione della modalità ombra (da fare solo con l'ok di Alita)
+## 12. Accensione della modalità ombra (storico)
 
-1. Daemon a mano su `~/.agent-team-os`, senza launchd: `uv run --project centralino centralino serve`.
-   Solo lettura dei file e scrittura di `centralino.db` e `logs/centralino.jsonl`: nessuna sessione
-   cambia comportamento finché nessun MCP ha `AB_CENTRALINO=1`.
-2. Una sessione di prova con `AB_CENTRALINO=1` nell'ambiente del suo MCP (non in `servers.yaml`).
-3. Dopo qualche ora pulita: `AB_CENTRALINO=1` in `servers.yaml` (Kai, `mcp_sync.py`) e plist launchd.
-4. 48 h: `centralino ombra report --ore 48` deve dire `passa: true` (0 differenze non attese su
-   messaggi e attese). Rollback in ogni momento: togliere `AB_CENTRALINO` e fermare il daemon.
+Fatta e superata: il passaggio al modo attivo l'ha sostituita. Con F5.5 non esiste più un modo da
+accendere o da cui tornare indietro: il centralino parte sempre attivo (SQLite fonte, sveglia, raccolta,
+pulizia).
 
 ## 13. Bus v3 dopo il passaggio (F4-F5)
 
@@ -523,3 +481,12 @@ l'obiettivo non si raggiunge. La proposta è che anche il mini abbia il suo cent
 canale tmux, nessuna raccolta: la fa il laptop). Il laptop gli consegna con `ssh mini … centralino consegna`
 invece di scrivere file nella sua casella, e raccoglie la sua coda `outbox/laptop` come oggi. Così
 `lib.sh` scende a quello che serve al custode, e `wake.py` sparisce. Va deciso prima di applicare F5.5.
+
+**Misurato sul branch `feat/br24-f55-rimozione`** (24/10/2026, laptop, `sim.py` escluso come da conto):
+centralino 3.275 righe (era 4.492), hook v3 236, MCP 391 (era 1.767 con `bus.py` e i rami a file di
+`server.py`), in totale **3.902** contro le ~6.500 di prima e le ~3.700 stimate. Lo scarto di ~200 righe dalla
+stima è tutto nel centralino: `remoto.py` è di 270 righe (stima 250), `sveglia.py` di 337 (stima 120 di
+aggiunta, ne ha assorbite 89) e `dbbus.py` di 590 perché porta con sé l'invio e le regole di validazione che
+erano in `files.py`. `sim.py` (banco di prova) resta di 574 righe. Non rimossi, perché il mini ne ha ancora
+bisogno: `lib.sh`, `wake.py`, `collect.sh`, `custode.sh`, `hooks/*.sh` e i loro test. `install.sh` installa
+gli hook v3 di default; `--file-bus` installa quelli a file, per il mini.
