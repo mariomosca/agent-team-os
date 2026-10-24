@@ -1010,6 +1010,16 @@ def collect_returns(path: Path, rec: dict, seen: list | None = None) -> list[dic
     return out
 
 
+def from_self(msg: dict, agent: str, slug: str) -> bool:
+    """Il messaggio l'ha scritto la sessione stessa. Per sessione, non per agente
+    (BR24-F2.6): una delega o una risposta fra due sessioni dello stesso agente
+    (kai/a -> kai/b) sveglia come le altre. Senza from_session: per agente."""
+    fs = msg.get("from_session")
+    if fs:
+        return fs == f"{agent}/{slug}"
+    return msg.get("from") == agent
+
+
 def collect_unlinked(waits_by_session: dict) -> list[dict]:
     """Messaggi 'da agganciare' (F1.3) ancora da segnalare: una sveglia ciascuno."""
     out = []
@@ -1080,7 +1090,7 @@ def collect_answers(open_tasks: set) -> tuple[list[dict], dict]:
                     continue
                 msg = read_json(p)
                 tid = _msg_task_id(msg or {})
-                if not msg or not tid or msg.get("type") != "response" or msg.get("from") == agent:
+                if not msg or not tid or msg.get("type") != "response" or from_self(msg, agent, slug):
                     continue
                 w = find_wait(tid)
                 if w is not None and w.parent == wait_dir(agent, slug):
@@ -1163,7 +1173,7 @@ def collect_urgent() -> tuple[list[dict], dict]:
                 if not msg or msg.get("priority") not in URGENT_PRIORITIES or msg.get("requires_response") is not True:
                     continue
                 sender = msg.get("from")
-                if not sender or sender == agent or msg.get("type") in UNLINKABLE_TYPES:
+                if not sender or msg.get("type") in UNLINKABLE_TYPES:
                     continue
                 if msg.get("kind") == "delega":
                     continue  # le deleghe le sveglia collect_delegations
@@ -1179,6 +1189,8 @@ def collect_urgent() -> tuple[list[dict], dict]:
                     if len(live) != 1:
                         continue  # all'agente intero con piu' sessioni: ci pensa l'hook del prompt
                     target = live[0]
+                if from_self(msg, agent, target):
+                    continue
                 st = states.setdefault((agent, target), read_json(urgent_path(agent, target)) or {})
                 mid = msg.get("id")
                 e = st.setdefault(mid, {"from": msg.get("from_session") or sender, "at": msg.get("ts") or now_iso(),
@@ -1236,7 +1248,7 @@ def collect_delegations() -> tuple[list[dict], dict]:
                 if not msg or msg.get("kind") != "delega" or msg.get("priority") == "low":
                     continue
                 sender = msg.get("from")
-                if not sender or sender == agent:
+                if not sender:
                     continue
                 target = slug
                 if target is None:
@@ -1244,7 +1256,7 @@ def collect_delegations() -> tuple[list[dict], dict]:
                     if len(live) != 1:
                         continue
                     target = live[0]
-                if (wait_dir(agent, target) / ".no-wake").exists():
+                if from_self(msg, agent, target) or (wait_dir(agent, target) / ".no-wake").exists():
                     continue
                 st = states.setdefault((agent, target), read_json(delegations_path(agent, target)) or {})
                 mid = msg.get("id")
