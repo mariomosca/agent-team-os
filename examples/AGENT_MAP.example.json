@@ -1,6 +1,6 @@
 {
-  "version": "2.0",
-  "updated": "2026-06-06",
+  "version": "3.0",
+  "updated": "2026-10-24",
   "rules": [
     {
       "pattern": "/Users/me/work",
@@ -19,9 +19,6 @@
     }
   ],
   "fallback": "ops",
-  "gods": [
-    "ops"
-  ],
   "agents": {
     "ops": {
       "display_name": "Ops",
@@ -36,9 +33,7 @@
       "persona_file": "personas/ops.md",
       "voice_id": "PS6wM7QnnPTUDE3t4bbl",
       "voice_name": "Serena",
-      "is_god": true,
-      "domain": "side",
-      "task_provider": "orbit"
+      "domain": "side"
     },
     "dev": {
       "display_name": "Dev",
@@ -55,7 +50,6 @@
       "persona_file": "personas/dev.md",
       "voice_id": "W71zT1VwIFFx3mMGH2uZ",
       "voice_name": "MarcoTrox",
-      "god": "ops",
       "domain": "side"
     },
     "growth": {
@@ -71,23 +65,7 @@
       "persona_file": "personas/growth.md",
       "voice_id": "Dzlw1nIlAqiOOW6J7qo1",
       "voice_name": "Chiara",
-      "god": "ops",
       "domain": "side"
     }
-  },
-  "routing_rules": {
-    "ops": {
-      "deny": [],
-      "reason": "ops is the hub, can talk to anyone"
-    },
-    "dev": {
-      "deny": [],
-      "reason": "dev can talk to ops and growth"
-    },
-    "growth": {
-      "deny": [],
-      "reason": "growth can talk to ops and dev"
-    }
-  },
-  "_v2_note": "v2.0 adds: gods[] (list of orchestrator agents), per-agent domain + god + optional task_provider. GOD agents drive a TaskProvider (orbit) per domain. See PLAN-AGENT-TEAM-OS.md v2.0."
+  }
 }

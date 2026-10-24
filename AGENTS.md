@@ -16,7 +16,7 @@ git clone https://github.com/mariomosca/agent-team-os && cd agent-team-os && ./i
 `install.sh` is idempotent: copies the lib + v2 modules + hooks + commands + skill into `~/.claude/`, creates `~/.agent-team-os/`, and drops a starter `AGENT_MAP.json` if none exists. It does **not** touch `settings.json` (you register hooks yourself — see below). Requires `jq`.
 
 After install:
-1. Edit `~/.agent-team-os/AGENT_MAP.json` — map your workspace paths to agent names (+ v2: `gods[]`, per-agent `domain`/`god`).
+1. Edit `~/.agent-team-os/AGENT_MAP.json` — map your workspace paths to agent names.
 2. Register hooks in `~/.claude/settings.json` (next section).
 3. Open a session in a mapped workspace; try `/inbox` or `/bus`.
 
@@ -40,20 +40,15 @@ The `Stop` hook is copied by the installer but **NOT auto-registered** — it's 
 - **Delegating with a result to wait for (v2.6)**: `bus_send(expect_result=true)` or `bus_expect` → `task_id`; the executor answers `type: response` with the same `task_id`; when it arrives and the waiting session is idle, `scripts/agent-team-os-wake.py` writes one line into its prompt (Onda or tmux), once. v2.7: a `question` with the same `task_id` also wakes the delegator, once per question, without consuming the wait; the asker carries `waiting_agent` in its registry entry. See README "La sveglia".
 - **Slash commands**: `/bus` (roster), `/inbox`, `/read <id>`, `/send`, `/reply`, `/handoff`, `/thread`.
 
-## v2.0 — hive-GOD-agentic (optional layers)
+## Optional layers
 
-- **Dual GOD orchestration**: GOD agents (`gods[]` in AGENT_MAP) orchestrate a domain — they decompose, propose to the human, then dispatch. Contract: [docs/agentic-v2/GOD-CONTRACT.md](./docs/agentic-v2/GOD-CONTRACT.md). Semi-autonomous: propose → human confirms → dispatch.
-- **TaskProvider layer**: pluggable task manager per domain (`scripts/agent-team-os-taskprovider.sh`). `ab_task_provider <agent>` resolves the provider; `ab_task_mapping <provider>` returns the declared status/assignee/priority/dependsOn/meetingIngestion mapping. Reference impl: Orbit (side). Brandart has no provider (PMOHub dismissed on 2026-10-01).
 - **drain-on-Stop hook**: keeps agents from closing with an unhandled inbox (opt-in, above).
-- **harvest/telemetry**: `scripts/agent-team-os-harvest.sh <cwd>` → token + USD cost per agent from `~/.claude/projects/*.jsonl`, per-model pricing.
 
 ## Key files
 
 | Path | Purpose |
 |------|---------|
-| `scripts/agent-team-os-lib.sh` | core bash helpers (`ab_*`); auto-sources taskprovider |
-| `scripts/agent-team-os-taskprovider.sh` | v2 TaskProvider routing + mapping |
-| `scripts/agent-team-os-harvest.sh` | v2 token/cost telemetry |
+| `scripts/agent-team-os-lib.sh` | core bash helpers (`ab_*`) |
 | `scripts/agent-team-os-collect.sh` | v2.5 one collection round with the other machines (launchd runs it) |
 | `scripts/agent-team-os-wake.py` | v2.6 the wake: expected results, one wake per expected message (v2.7: questions too) into an idle session (`install.sh --sveglia`) |
 | `schema/bus-wait.schema.json` | v2.6 expected-result file `waits/<agent>/@<slug>/<task_id>.json` |
@@ -66,7 +61,7 @@ The `Stop` hook is copied by the installer but **NOT auto-registered** — it's 
 | `commands/*.md` | slash commands |
 | `skills/agent-team-os/SKILL.md` | the skill (agent-invocable) |
 | `examples/AGENT_MAP.example.json` | starter config (v2 shape) |
-| `docs/agentic-v2/` | GOD contract, settings diff, briefs |
+| `docs/agentic-v2/` | settings diff for the Stop hook |
 
 ## Source of truth
 

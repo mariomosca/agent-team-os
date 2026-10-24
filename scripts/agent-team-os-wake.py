@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""agent-team-os-wake.py — esiti attesi e sveglia della sessione idle (bus v2.6).
+"""agent-team-os-wake.py — esiti attesi e sveglia della sessione idle (bus a file, v2.8:
+il bus del laptop e' il centralino, questo script gira sul Mac mini).
 
 Chi delega con un task_id registra un *atteso* sulla propria sessione:
 
@@ -9,16 +10,17 @@ Quando nella casella di quella sessione arriva un messaggio con lo stesso
 task_id, questo script sveglia la sessione, una volta sola, scrivendo nel suo
 prompt "Esito del task ... arrivato da ...: leggilo con bus_read ... e prosegui".
 
-Regole (brief F4, 17 ott 2026; domande da DR18-F1.7, bus v2.7):
+Regole (brief F4, 17 ott 2026; domande da DR18-F1.7, v2.7; ritorni e tetti v2.8):
   1. si sveglia solo una sessione idle: mai mentre lavora, chiede qualcosa,
      o ha testo nella casella (Mario sta scrivendo);
   2. una sola sveglia per messaggio atteso: ogni question con il task_id
      sveglia una volta (questions[msg_id], l'atteso resta expected), poi l'esito
      sveglia una volta (expected -> woken, e il file non torna indietro);
-  3. niente catene: un messaggio scritto da una sessione appena svegliata
-     (campo wake_chain, timbrato da chi spedisce) non sveglia nessuno; un
-     task_id ha un solo atteso su tutto il bus; tetto di sveglie per sessione
-     all'ora;
+  3. niente catene: una sessione al lavoro non si sveglia (i ritorni si
+     accodano); un task_id ha un solo atteso su tutto il bus; tetti di sveglie
+     all'ora per sessione, per task e per coppia. wake_chain, timbrato da chi
+     spedisce dopo una sveglia, ferma solo i messaggi dall'altro host
+     (collect_remote): sui ritorni di una delega non blocca;
   4. scadenza senza esito: un avviso nella casella di chi aspetta, una volta.
 
 Canali per scrivere nel prompt:
@@ -58,7 +60,6 @@ from pathlib import Path
 
 WAIT_VERSION = 1
 MAX_PER_HOUR = int(os.environ.get("AB_WAKE_MAX_PER_HOUR", "6"))
-CHAIN_MIN = int(os.environ.get("AB_WAKE_CHAIN_MIN", "30"))
 # Una sessione appena tornata idle puo' ancora star disegnando: aspetta un attimo.
 SETTLE_S = float(os.environ.get("AB_WAKE_SETTLE_S", "5"))
 # sessions.json si riscrive almeno ogni 15 s: oltre questo Onda non lo sta aggiornando.
@@ -770,7 +771,7 @@ def pair_log(a: str, b: str) -> Path:
 
 def note_wake(d: Path, task_id: str) -> None:
     _stamp(d / ".wakes.log")
-    # Chi spedisce da questa sessione nei prossimi CHAIN_MIN minuti timbra wake_chain.
+    # Chi spedisce da questa sessione dopo la sveglia timbra wake_chain (lib.sh, AB_WAKE_CHAIN_MIN).
     write_json(d / ".woken.json", {"task_id": task_id, "at": now_iso()})
 
 
@@ -1202,8 +1203,6 @@ def collect_urgent() -> tuple[list[dict], dict]:
 #   - indirizzata a una sessione (agente/slug), o all'agente intero con una sola
 #     sessione viva su questa macchina (altrimenti resta l'avviso dell'hook del prompt);
 #   - priorita' non low;
-#   - la sessione non ha chiesto di non essere svegliata (file .no-wake nella sua
-#     cartella delle attese: waits/<agente>/@<slug>/.no-wake);
 #   - "ferma" lo decide la guardia del canale (Onda onlyIfIdle, schermo tmux);
 #   - una sveglia per delega, dentro i tetti di sessione, task e coppia.
 # Le deleghe via onda_agent_prompt non passano da qui: arrivano gia' nel prompt.
@@ -1244,8 +1243,6 @@ def collect_delegations() -> tuple[list[dict], dict]:
                     if len(live) != 1:
                         continue
                     target = live[0]
-                if (wait_dir(agent, target) / ".no-wake").exists():
-                    continue
                 st = states.setdefault((agent, target), read_json(delegations_path(agent, target)) or {})
                 mid = msg.get("id")
                 e = st.setdefault(mid, {"task_id": _msg_task_id(msg), "from": msg.get("from_session") or sender,
@@ -1274,7 +1271,7 @@ def collect_delegations() -> tuple[list[dict], dict]:
 #   - niente catene: un messaggio con wake_chain non sveglia;
 #   - all'agente intero: l'unica sessione viva, oppure con piu' sessioni quella
 #     nella cartella di casa dell'agente (workspace_root in AGENT_MAP.json);
-#   - .no-wake, guardia del canale e tetti come per le deleghe.
+#   - guardia del canale e tetti come per le deleghe.
 
 REMOTE_TYPES = ("request", "brief")
 
@@ -1341,7 +1338,7 @@ def collect_remote() -> tuple[list[dict], dict]:
                 if w is not None and w.parent.parent.name == agent:
                     continue
                 target = slug or home_slug(agent)
-                if target is None or (wait_dir(agent, target) / ".no-wake").exists():
+                if target is None:
                     continue
                 st = states.setdefault((agent, target), read_json(remote_path(agent, target)) or {})
                 mid = msg.get("id")

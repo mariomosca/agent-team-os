@@ -34,9 +34,8 @@ No daemon. No server. No cloud. Just files on your machine.
 
 ```
 ~/.agent-team-os/
-  AGENT_MAP.json                  # path -> agent + capabilities + routing rules
+  AGENT_MAP.json                  # path -> agent + capabilities
   registry/<agent>.d/<slug>.json  # one card per LIVE SESSION (active, last_seen, workspace)
-  registry/<agent>.json           # flat card, kept for older readers
   inboxes/<agent>/                # broadcast msg-*.json — every session of that agent
   inboxes/<agent>/@<slug>/        # messages for ONE session
   inboxes/<agent>/@<slug>/.read/  # archive, next to the message it came from
@@ -193,7 +192,7 @@ The installer also copies a `Stop` hook (`agent-team-os-stop.sh`) but **does not
 { "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "~/.claude/hooks/agent-team-os-stop.sh" }] }] } }
 ```
 
-Test it isolated first — see [`docs/agentic-v2/SETTINGS-DIFF.md`](./docs/agentic-v2/SETTINGS-DIFF.md). For the full v2 layers (dual-GOD orchestration, TaskProvider, telemetry) see [`AGENTS.md`](./AGENTS.md).
+Test it isolated first — see [`docs/agentic-v2/SETTINGS-DIFF.md`](./docs/agentic-v2/SETTINGS-DIFF.md). See also [`AGENTS.md`](./AGENTS.md).
 
 ### Optional: the `bus-band` mod (Claude Code 2.1.287+)
 
@@ -311,9 +310,6 @@ Ritorno sul task t-20261021-ab12cd (spike parser) da kai/f3 (bus_read msg-…): 
     "ops":    { "role": "orchestrator", "capabilities": ["planning", "tracking"] },
     "dev":    { "role": "engineer",     "capabilities": ["bug-fix", "code-review", "refactor"] },
     "growth": { "role": "content",      "capabilities": ["draft-post", "review-copy"] }
-  },
-  "routing": {
-    "blocked_pairs": []
   }
 }
 ```
@@ -388,7 +384,7 @@ You can declare blocked pairs in `AGENT_MAP.json` to keep contexts isolated — 
 
 | Command | What it does |
 |---------|--------------|
-| `/bus`     | Show roster, live sessions with pending counts, and routing rules |
+| `/bus`     | Show roster and live sessions with pending counts |
 | `/inbox`   | List pending messages for this session (`--all` for every session of the agent) |
 | `/read <id>` | Read a message, resolve context_refs, consume it with an outcome (v2.8) |
 | `/send <to> <intent>` | Wizard to compose a new message (`<to>` = `agent` or `agent/slug`) |

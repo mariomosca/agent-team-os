@@ -33,7 +33,7 @@ got=$(AB_SESSION_SLUG=noi-calendar ab_list_inbox kai | xargs -I{} jq -r '.payloa
 ck "contenuto noi-calendar" "$got" "broadcast,per noi-calendar,"
 
 echo "── stop hook non conta i messaggi dell'altra sessione"
-ck "drain noi-calendar" "$(AB_SESSION_SLUG=noi-calendar ab_drain_fresh_count kai '')" "2"
+ck "drain noi-calendar" "$(AB_SESSION_SLUG=noi-calendar ab_count_inbox kai)" "2"
 
 echo "── cursor separati"
 ck "cursor per sessione" "$(basename $(ab_cursor_path kai noi-calendar))" "cursor@noi-calendar.json"
@@ -54,9 +54,9 @@ echo "── il messaggio di una sessione NON blocca la sorella (segnalato da Ka
 # Situazione reale: Leo scrive a kai senza slug, il messaggio blocca la sessione
 # sbagliata. Ora: i mirati contano solo per il destinatario, i piatti per tutti.
 AB_PAYLOAD_JSON='"'"'{"summary":"per microsoft-mcp"}'"'"' AB_TO=kai/microsoft-mcp ab_write_message >/dev/null 2>&1
-before=$(AB_SESSION_SLUG=noi-calendar ab_drain_fresh_count kai "")
+before=$(AB_SESSION_SLUG=noi-calendar ab_count_inbox kai)
 AB_PAYLOAD_JSON='"'"'{"summary":"altro per microsoft-mcp"}'"'"' AB_TO=kai/microsoft-mcp ab_write_message >/dev/null 2>&1
-after=$(AB_SESSION_SLUG=noi-calendar ab_drain_fresh_count kai "")
+after=$(AB_SESSION_SLUG=noi-calendar ab_count_inbox kai)
 ck "un messaggio per la sorella non aumenta il mio drain" "$after" "$before"
 
 echo "── chi scrive a un agente multi-sessione viene avvisato"
