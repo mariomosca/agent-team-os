@@ -1,0 +1,294 @@
+"""Stato del centralino in SQLite: un solo processo scrive, sempre in transazione.
+
+Le scritture passano tutte da ``Store.tx()`` (``BEGIN IMMEDIATE`` sotto un lock di
+processo): è la coda unica di scrittura del contratto. Le letture usano una
+connessione per thread, che con WAL non aspetta lo scrittore.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Iterator
+
+SCHEMA_VERSION = 1
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id                TEXT PRIMARY KEY,
+  ts                TEXT NOT NULL,
+  from_agent        TEXT NOT NULL,
+  from_slug         TEXT,
+  from_host         TEXT,
+  to_agent          TEXT NOT NULL,
+  to_slug           TEXT,
+  to_host           TEXT NOT NULL,
+  type              TEXT NOT NULL,
+  kind              TEXT,
+  intent            TEXT,
+  priority          TEXT NOT NULL DEFAULT 'normal',
+  thread_id         TEXT NOT NULL,
+  in_reply_to       TEXT,
+  task_id           TEXT,
+  requires_response INTEGER NOT NULL DEFAULT 0,
+  response_by       TEXT,
+  state             TEXT NOT NULL,
+  esito             TEXT,
+  handled_by        TEXT,
+  handled_at        TEXT,
+  delivery          TEXT NOT NULL,
+  origin            TEXT NOT NULL,
+  path              TEXT,
+  raw               TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS messages_inbox  ON messages(to_agent, to_slug, state);
+CREATE INDEX IF NOT EXISTS messages_task   ON messages(task_id);
+CREATE INDEX IF NOT EXISTS messages_thread ON messages(thread_id, ts);
+
+CREATE TABLE IF NOT EXISTS waits (
+  task_id          TEXT PRIMARY KEY,
+  owner_agent      TEXT NOT NULL,
+  owner_slug       TEXT NOT NULL,
+  owner_host       TEXT,
+  description      TEXT,
+  delegated_to     TEXT,
+  executor_session TEXT,
+  delegation_msg   TEXT,
+  thread_id        TEXT,
+  created_at       TEXT NOT NULL,
+  deadline         TEXT,
+  state            TEXT NOT NULL,
+  last_activity    TEXT,
+  closed_at        TEXT,
+  closed_by        TEXT,
+  close_reason     TEXT,
+  target           TEXT,
+  origin           TEXT NOT NULL,
+  raw              TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS waits_owner ON waits(owner_agent, owner_slug, state);
+
+CREATE TABLE IF NOT EXISTS wait_returns (
+  task_id   TEXT NOT NULL,
+  msg_id    TEXT NOT NULL,
+  from_addr TEXT,
+  at        TEXT,
+  type      TEXT,
+  state     TEXT NOT NULL,
+  esito     TEXT,
+  PRIMARY KEY (task_id, msg_id)
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  agent             TEXT NOT NULL,
+  slug              TEXT NOT NULL,
+  host              TEXT NOT NULL,
+  workspace_path    TEXT,
+  claude_session_id TEXT,
+  onda_terminal_id  TEXT,
+  tmux_pane         TEXT,
+  pid               INTEGER,
+  started_at        TEXT,
+  last_heartbeat    TEXT,
+  last_event        TEXT,
+  ended_at          TEXT,
+  PRIMARY KEY (agent, slug, host)
+);
+
+CREATE TABLE IF NOT EXISTS wake_decisions (
+  id        INTEGER PRIMARY KEY,
+  at        TEXT NOT NULL,
+  giro      INTEGER NOT NULL,
+  agent     TEXT NOT NULL,
+  slug      TEXT NOT NULL,
+  msg_id    TEXT NOT NULL,
+  task_id   TEXT,
+  regola    TEXT NOT NULL,
+  decisione TEXT NOT NULL,
+  motivo    TEXT,
+  canale    TEXT
+);
+CREATE INDEX IF NOT EXISTS wake_msg ON wake_decisions(msg_id, agent, slug, id);
+CREATE INDEX IF NOT EXISTS wake_at  ON wake_decisions(agent, slug, decisione, at);
+
+CREATE TABLE IF NOT EXISTS remote_queue (
+  msg_id     TEXT PRIMARY KEY,
+  host       TEXT NOT NULL,
+  queued_at  TEXT NOT NULL,
+  attempts   INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS shadow_diffs (
+  id     INTEGER PRIMARY KEY,
+  at     TEXT NOT NULL,
+  giro   INTEGER NOT NULL,
+  area   TEXT NOT NULL,
+  chiave TEXT NOT NULL,
+  attesa TEXT,
+  sqlite TEXT,
+  file   TEXT
+);
+CREATE INDEX IF NOT EXISTS diffs_at ON shadow_diffs(at, area);
+"""
+
+
+def _d(v) -> dict:
+    """I record vecchi hanno a volte una stringa dove oggi c'è un oggetto: vale come assente."""
+    return v if isinstance(v, dict) else {}
+
+
+def _s(v) -> str | None:
+    return v if isinstance(v, str) else None
+
+
+def _j(v) -> str | None:
+    return None if v is None else json.dumps(v, ensure_ascii=False, sort_keys=True)
+
+
+class Store:
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._wlock = threading.RLock()
+        self._w = self._connect()
+        self._local = threading.local()
+        with self._wlock:
+            self._w.executescript(SCHEMA)
+            self._w.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
+                            (str(SCHEMA_VERSION),))
+
+    def _connect(self) -> sqlite3.Connection:
+        c = sqlite3.connect(self.path, timeout=10, isolation_level=None, check_same_thread=False)
+        c.row_factory = sqlite3.Row
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA synchronous=NORMAL")
+        c.execute("PRAGMA foreign_keys=ON")
+        c.execute("PRAGMA busy_timeout=10000")
+        return c
+
+    def close(self) -> None:
+        with self._wlock:
+            self._w.close()
+
+    # ---------- transazioni ----------
+
+    @contextmanager
+    def tx(self) -> Iterator[sqlite3.Connection]:
+        """L'unica via di scrittura: una transazione IMMEDIATE alla volta nel processo."""
+        with self._wlock:
+            self._w.execute("BEGIN IMMEDIATE")
+            try:
+                yield self._w
+            except BaseException:
+                self._w.execute("ROLLBACK")
+                raise
+            else:
+                self._w.execute("COMMIT")
+
+    def read(self) -> sqlite3.Connection:
+        c = getattr(self._local, "c", None)
+        if c is None:
+            c = self._connect()
+            self._local.c = c
+        return c
+
+    # ---------- messaggi ----------
+
+    @staticmethod
+    def put_message(c: sqlite3.Connection, record: dict, *, state: str, to_slug: str | None,
+                    to_host: str, path: str | None, origin: str, delivery: str = "local",
+                    mid: str | None = None) -> None:
+        """``mid``: l'id con cui le tool trovano il messaggio, cioè il nome del file. Coincide
+        con ``record["id"]`` tranne in qualche file vecchio rinominato a mano."""
+        fs = _s(record.get("from_session")) or ""
+        from_slug = (fs.partition("/")[2] or None) if "/" in fs else None
+        handled = _d(record.get("handled"))
+        c.execute(
+            """INSERT INTO messages (id, ts, from_agent, from_slug, from_host, to_agent, to_slug, to_host,
+                 type, kind, intent, priority, thread_id, in_reply_to, task_id, requires_response,
+                 response_by, state, esito, handled_by, handled_at, delivery, origin, path, raw)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET
+                 to_slug=excluded.to_slug, task_id=excluded.task_id, kind=excluded.kind,
+                 state=excluded.state, esito=excluded.esito, handled_by=excluded.handled_by,
+                 handled_at=excluded.handled_at, path=excluded.path, raw=excluded.raw""",
+            (mid or record["id"], _s(record.get("ts")) or "", _s(record.get("from")) or "", from_slug,
+             _s(_d(record.get("context")).get("host")), record.get("to") or "", to_slug, to_host,
+             record.get("type") or "", record.get("kind"), record.get("intent"),
+             record.get("priority") or "normal", record.get("thread_id") or "",
+             _s(record.get("in_reply_to")), _s(record.get("task_id")),
+             1 if record.get("requires_response") else 0, record.get("response_by"),
+             state, handled.get("esito"), handled.get("by"), handled.get("at"),
+             delivery, origin, path, _j(record)))
+
+    def message(self, mid: str) -> sqlite3.Row | None:
+        return self.read().execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone()
+
+    # ---------- attese ----------
+
+    @staticmethod
+    def put_wait(c: sqlite3.Connection, rec: dict, *, origin: str) -> None:
+        deleg = _d(rec.get("delegation"))
+        c.execute(
+            """INSERT INTO waits (task_id, owner_agent, owner_slug, owner_host, description, delegated_to,
+                 executor_session, delegation_msg, thread_id, created_at, deadline, state, last_activity,
+                 closed_at, closed_by, close_reason, target, origin, raw)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(task_id) DO UPDATE SET
+                 executor_session=excluded.executor_session, deadline=excluded.deadline,
+                 state=excluded.state, last_activity=excluded.last_activity,
+                 closed_at=excluded.closed_at, closed_by=excluded.closed_by,
+                 close_reason=excluded.close_reason, raw=excluded.raw""",
+            (rec["task_id"], rec.get("agent") or "", rec.get("slug") or "", rec.get("host"),
+             rec.get("description"), rec.get("delegated_to"), rec.get("executor_session"),
+             deleg.get("msg_id"), deleg.get("thread_id"), rec.get("created_at") or "",
+             rec.get("deadline"), rec.get("state") or "", rec.get("last_activity"),
+             rec.get("closed_at") or rec.get("cancelled_at"), rec.get("closed_by"),
+             rec.get("note") or rec.get("close_reason"), _j(rec.get("target")), origin, _j(rec)))
+        c.execute("DELETE FROM wait_returns WHERE task_id=?", (rec["task_id"],))
+        for mid, e in _d(rec.get("returns")).items():
+            e = _d(e)
+            c.execute("INSERT INTO wait_returns (task_id, msg_id, from_addr, at, type, state, esito) "
+                      "VALUES (?,?,?,?,?,?,?)",
+                      (rec["task_id"], mid, e.get("from"), e.get("at"), e.get("type"),
+                       e.get("state") or "pending", e.get("handled")))
+
+    def wait(self, task_id: str) -> sqlite3.Row | None:
+        return self.read().execute("SELECT * FROM waits WHERE task_id=?", (task_id,)).fetchone()
+
+    # ---------- sessioni ----------
+
+    @staticmethod
+    def heartbeat(c: sqlite3.Connection, agent: str, slug: str, host: str, now: str, *,
+                  workspace: str | None = None, caller: dict | None = None, event: str | None = None) -> None:
+        caller = caller or {}
+        c.execute(
+            """INSERT INTO sessions (agent, slug, host, workspace_path, claude_session_id, onda_terminal_id,
+                 tmux_pane, pid, started_at, last_heartbeat, last_event, ended_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL)
+               ON CONFLICT(agent, slug, host) DO UPDATE SET
+                 workspace_path=COALESCE(excluded.workspace_path, workspace_path),
+                 claude_session_id=COALESCE(excluded.claude_session_id, claude_session_id),
+                 onda_terminal_id=COALESCE(excluded.onda_terminal_id, onda_terminal_id),
+                 tmux_pane=COALESCE(excluded.tmux_pane, tmux_pane),
+                 pid=COALESCE(excluded.pid, pid),
+                 started_at=CASE WHEN ended_at IS NOT NULL THEN excluded.started_at ELSE started_at END,
+                 last_heartbeat=excluded.last_heartbeat,
+                 last_event=COALESCE(excluded.last_event, last_event),
+                 ended_at=NULL""",
+            (agent, slug, host, workspace, caller.get("claude_session_id"), caller.get("onda_terminal_id"),
+             caller.get("tmux_pane"), caller.get("pid"), now, now, event))
+
+    @staticmethod
+    def end_session(c: sqlite3.Connection, agent: str, slug: str, host: str, now: str) -> None:
+        c.execute("UPDATE sessions SET ended_at=?, last_event='end' WHERE agent=? AND slug=? AND host=?",
+                  (now, agent, slug, host))
+
+    def sessions(self) -> list[sqlite3.Row]:
+        return self.read().execute("SELECT * FROM sessions").fetchall()
