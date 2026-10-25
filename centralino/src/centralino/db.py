@@ -342,10 +342,14 @@ class Store:
                  onda_terminal_id=COALESCE(excluded.onda_terminal_id, onda_terminal_id),
                  tmux_pane=COALESCE(excluded.tmux_pane, tmux_pane),
                  pid=COALESCE(excluded.pid, pid),
-                 started_at=CASE WHEN ended_at IS NOT NULL THEN excluded.started_at ELSE started_at END,
+                 started_at=CASE WHEN ended_at IS NOT NULL AND excluded.last_event IS NOT NULL
+                                 THEN excluded.started_at ELSE started_at END,
                  last_heartbeat=excluded.last_heartbeat,
                  last_event=COALESCE(excluded.last_event, last_event),
-                 ended_at=NULL""",
+                 -- BR24-F6.13: un heartbeat senza evento (il MCP di un processo bg-spare) non
+                 -- riapre una sessione chiusa; la riapre solo un evento di sessione (start, prompt)
+                 ended_at=CASE WHEN excluded.last_event IS NULL AND (ended_at IS NOT NULL OR last_event='end')
+                               THEN COALESCE(ended_at, last_heartbeat) ELSE NULL END""",
             (agent, slug, host, workspace, caller.get("claude_session_id"), caller.get("onda_terminal_id"),
              caller.get("tmux_pane"), caller.get("pid"), now, now, event))
 

@@ -25,6 +25,10 @@ def bus(monkeypatch):
     d = Daemon(home, giri=False).avvia()
     t = threading.Thread(target=d.esegui, daemon=True)
     t.start()
+    # sessioni vere: l'hook di start c'è sempre (F6.13, un battito da solo non fa una sessione)
+    for a in ("kai", "alita"):
+        assert call("session.event", {"event": "start"}, caller={"cwd": str(home / "ws" / a / "s1")},
+                    sock=home / "centralino.sock")["ok"]
     yield home
     d.ferma()
     t.join(5)

@@ -625,3 +625,19 @@ fra le vive di questa, quindi la riga dice `chiusa` finché non torna qualcosa.
 mittente, da, leggi (`/read <id>`), priorita (`urgente`, `alta`, altrimenti `null`). La banda li disegna
 nella sezione "Da fare".
 
+## 19. Sessioni fantasma dei processi bg-spare (BR24-F6.13, 25/10/2026)
+
+Il daemon di Claude Code tiene pronti processi di riserva (`claude bg-spare --bg-spare <sock>`, figli di
+`claude bg-pty-host`) con la cwd di una cartella già usata. Caricano il MCP agent-bus, che batte ogni 60 s
+anche se nessuno ha mai usato quel processo. Il 25/10 kai/onda-electron, chiusa da Alita alle 08:40, risultava
+ancora viva "per heartbeat, canale nessuno" e la banda la segnalava come "senza canale di sveglia". In più
+l'heartbeat dopo l'evento `end` azzerava `ended_at` e la sessione tornava viva.
+
+- Un heartbeat senza evento non riapre una sessione chiusa (`ended_at` impostato o `last_event='end'`): la
+  riapre solo un evento di sessione (`start`, `prompt`, `stop`) dagli hook.
+- Viva per heartbeat solo con un evento di sessione alle spalle (`last_event` non nullo e diverso da `end`):
+  un processo che carica il MCP senza che sia partito nessun hook non è una sessione. Quando il processo di
+  riserva viene preso per una sessione vera, l'hook di SessionStart la registra.
+- Viva per Onda resta com'è (il pannello è la prova). Il processo bg-spare non si tocca: è del daemon di
+  Claude Code. Scenario `caso_bg_spare` nel banco di prova.
+

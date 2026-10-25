@@ -376,6 +376,7 @@ def caso_due_sessioni(b: Banco) -> None:
 
 def caso_heartbeat_senza_canale(b: Banco) -> None:
     """Sessione fuori da Onda (Alita in claude attach): viva per heartbeat, canale nessuno."""
+    b.op("alita/work-hub", "session.event", event="start")  # F6.13: viva solo dopo un evento di sessione
     b.op("alita/work-hub", "session.heartbeat")
     st = b.stato("alita/work-hub")
     _check(st.viva and st.descrizione == "viva per heartbeat, canale: nessuno", st.descrizione)
@@ -385,6 +386,20 @@ def caso_heartbeat_senza_canale(b: Banco) -> None:
     _check(b.decisioni("alita/work-hub")[out["id"]][1:] == ("coda", "nessun_canale"), "in coda, nessun canale")
     b.avanza(121)
     _check(not b.stato("alita/work-hub").viva, "due battiti persi: chiusa")
+
+
+def caso_bg_spare(b: Banco) -> None:
+    """BR24-F6.13: un processo bg-spare di Claude Code carica il MCP e batte senza essere una
+    sessione; e dopo la fine di una sessione il suo battito non la riapre (kai/onda-electron, 25/10)."""
+    b.op("kai/onda-electron", "session.heartbeat")
+    _check(not b.stato("kai/onda-electron").viva, "un battito senza eventi di sessione non è una sessione")
+    b.op("kai/orbit", "session.event", event="start")
+    _check(b.stato("kai/orbit").viva, "dopo start è viva")
+    b.op("kai/orbit", "session.event", event="end")
+    b.op("kai/orbit", "session.heartbeat")
+    _check(not b.stato("kai/orbit").viva, "dopo end un battito non la riapre")
+    b.op("kai/orbit", "session.event", event="start")
+    _check(b.stato("kai/orbit").viva, "una sessione nuova nella stessa cartella sì")
 
 
 # ======================================================================
@@ -475,6 +490,7 @@ def att_scadenza(b: Banco) -> None:
 
 
 def att_senza_canale(b: Banco) -> None:
+    b.op("alita/work-hub", "session.event", event="start")
     b.op("alita/work-hub", "session.heartbeat")
     out = b.op("kai/orbit", "send", to="alita/work-hub", intent="x", summary="x", message_type="request",
                kind="delega")
@@ -543,7 +559,7 @@ def att_pulizia(b: Banco) -> None:
 
 
 SCENARI = [caso_irjocy, caso_orbit_non_viva, caso_xn9lv0, caso_attese_non_chiudibili, caso_passaggio_attesa,
-           caso_delega_completa, caso_mini_irraggiungibile, caso_due_sessioni, caso_heartbeat_senza_canale,
+           caso_delega_completa, caso_mini_irraggiungibile, caso_due_sessioni, caso_heartbeat_senza_canale, caso_bg_spare,
            att_delega_completa, att_stop, att_hook_start, att_scadenza, att_senza_canale, att_agente_nudo,
            att_cloud, att_pulizia]
 

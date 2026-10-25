@@ -133,7 +133,10 @@ class Vivacita:
         e = self.onda.find(agent, slug, self.host, row["claude_session_id"] if row else None)
         onda_viva = e is not None and e.get("state") != "exited"
         hb = None
-        if row is not None and row["ended_at"] is None:
+        # BR24-F6.13: viva per heartbeat solo con un evento di sessione alle spalle (start,
+        # prompt, stop): un processo bg-spare di Claude Code carica il MCP e batte ogni 60 s
+        # senza essere una sessione, e dopo "end" il battito non la riapre
+        if row is not None and row["ended_at"] is None and row["last_event"] not in (None, "end"):
             hb = age_s(row["last_heartbeat"])
         hb_viva = hb is not None and hb <= HEARTBEAT_S
         per = "onda" if onda_viva else ("heartbeat" if hb_viva else None)
