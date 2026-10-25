@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { BusMessage, BusSnapshot, TeamSnapshot, WaitsSnapshot } from '../types'
+import type { BusMessage, BusSnapshot, TeamSnapshot, WaitRow, WaitsSnapshot } from '../types'
 import {
   PRIORITY_LABEL,
   agentForCwd,
@@ -22,9 +22,20 @@ import {
   toRow,
   toastText,
 } from './team'
-import { askRows, orderWaits, parseWait, toWaitRow, waitsHeadline } from './waits'
-import type { Wait } from './waits'
-import { fallbackText, inboxOf, parseVista, sessionsOf, vistaRequest, waitsOf } from './vista'
+import {
+  orbitInfo,
+  orbitSql,
+  orderRows,
+  orderWaits,
+  parseWait,
+  planRef,
+  toDelegationRow,
+  waitsFooter,
+  waitsHeadline,
+  executorLive,
+} from './waits'
+import type { Live, OrbitRow, PlanRef, Wait } from './waits'
+import { fallbackText, inboxOf, liveOf, parseVista, sessionsOf, vistaRequest, waitsOf } from './vista'
 import type { Vista } from './vista'
 
 const snapshot = atom({ plugin: 'bus-band', key: 'snapshot' } as const, null)
@@ -42,7 +53,8 @@ const POLL_MS = 20_000
 const VISTA_TIMEOUT_MS = 2_000
 const SHOWN = 3
 const TEAM_SHOWN = 4
-const WAITS_SHOWN = 3
+const WAITS_SHOWN = 5
+const ORBIT_TTL_MS = 60_000
 
 const busRoot = async ($: EngineInterface) => {
   const busHome = await $.env.get('AB_HOME')
@@ -111,6 +123,46 @@ const scanTeam = async ($: EngineInterface, vista: Vista | null): Promise<TeamSn
   }
 }
 
+// Live sessions, to say whether a delegation's executor is open (BR24-F6.4): the
+// centralino's vista, else Onda's sessions.json as the Squadra section reads it.
+const liveSessions = async ($: EngineInterface, root: string, vista: Vista | null): Promise<Live[]> => {
+  if (vista !== null) return liveOf(vista)
+  const file = `${root}/onda/sessions.json`
+  if (!(await $.fs.exists(file))) return []
+  const parsed = parseSessions(await $.fs.read(file))
+
+  return (parsed?.sessions ?? [])
+    .filter(s => s.state !== 'exited' && s.agent !== null)
+    .map(s => ({ agent: s.agent!, slug: s.slug, host: s.host, working: s.state === 'working' }))
+}
+
+// Orbit's rows for the plan codes of the waits: one read-only sqlite3 call, kept a
+// minute. Empty where Orbit is not there (the mini) or the query fails.
+let orbitCache: { sql: string; at: number; rows: OrbitRow[] } | null = null
+
+const orbitRows = async ($: EngineInterface, refs: readonly PlanRef[]): Promise<OrbitRow[]> => {
+  if (refs.length === 0) return []
+  const home = await $.env.get('HOME')
+  if (home === undefined) return []
+  const sql = orbitSql(refs)
+  const now = Date.now()
+  if (orbitCache !== null && orbitCache.sql === sql && now - orbitCache.at < ORBIT_TTL_MS) return orbitCache.rows
+  const db = `${home}/Library/Application Support/Orbit/orbit.db`
+  if (!(await $.fs.exists(db))) return []
+  const out = await $.process
+    .run(['sqlite3', '-readonly', '-json', '-cmd', '.timeout 1000', `file:${db}?mode=ro`, sql], { timeoutMs: 3000 })
+    .catch(() => null)
+  let rows: OrbitRow[] = []
+  try {
+    rows = out !== null && out.exitCode === 0 && out.stdout.trim() !== '' ? (JSON.parse(out.stdout) as OrbitRow[]) : []
+  } catch {
+    rows = []
+  }
+  orbitCache = { sql, at: now, rows }
+
+  return rows
+}
+
 // The results this session waits for (bus v2.6). Null when there are none.
 const scanWaits = async ($: EngineInterface, vista: Vista | null): Promise<WaitsSnapshot | null> => {
   const root = await busRoot($)
@@ -140,15 +192,42 @@ const scanWaits = async ($: EngineInterface, vista: Vista | null): Promise<Waits
   const ordered = orderWaits(found, now)
   if (ordered.length === 0) return null
 
-  // Questions waiting for this session first: they are the ones that block someone.
-  const rows = [...askRows(ordered, now), ...ordered.map(w => toWaitRow(w, now))]
+  const live = await liveSessions($, root, vista).catch(() => [])
+  const refs = ordered.map(w => planRef(w.description))
+  const orbit = await orbitRows($, refs.filter((r): r is PlanRef => r !== null)).catch(() => [])
+  const host = (vista as { host?: unknown } | null)?.host
+  const rows = orderRows(
+    ordered.map((w, i) => {
+      const ref = refs[i]
+
+      return toDelegationRow(
+        w,
+        now,
+        ref === null || ref === undefined ? null : orbitInfo(orbit, ref),
+        executorLive(w.executor, live, typeof host === 'string' ? host : 'laptop'),
+      )
+    }),
+  )
 
   return {
     headline: waitsHeadline(ordered),
     rows: rows.slice(0, WAITS_SHOWN),
     hidden: Math.max(0, rows.length - WAITS_SHOWN),
+    footer: waitsFooter(rows),
     expired: ordered.filter(w => w.state === 'expired').map(w => w.taskId),
   }
+}
+
+// A row opens in the prompt box, for the person to send: `/read <msg>` or
+// `/orbit <plan>`. A draft already there is never overwritten.
+const openInPrompt = async ($: EngineInterface, text: string) => {
+  const box = await $.prompt.read().catch(() => null)
+  if (box !== null && box.text.trim() !== '') {
+    $.ui.toast(`La casella ha già del testo: ${text}`)
+
+    return
+  }
+  await $.prompt.fill({ text, mode: 'replace' }).catch(() => $.ui.toast(text))
 }
 
 // The mod cannot open Onda's socket (JSON-RPC; $.http speaks HTTP), so the
@@ -263,6 +342,7 @@ export const register: Register = on => {
       description: 'Mostra o nasconde la banda del bus; "squadra" solo la sezione squadra',
       argumentHint: '[squadra]',
     })
+    orbitCache = null
     await refresh($).catch(() => {})
     $.clock.every(POLL_MS, () => refresh($).catch(() => {}))
 
@@ -309,7 +389,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         {showMessages ? messagesBlock($, snap, Box, Button, Text) : null}
-        {showWaits ? waitsBlock(attese, Box, Text) : null}
+        {showWaits ? waitsBlock($, attese, e.props.bodyColumns, Box, Button, Text) : null}
         {showTeam ? teamBlock($, squadra, Box, Button, Text) : null}
         {viaFile !== null ? <Text dimColor>{viaFile}</Text> : null}
       </Box>
@@ -349,18 +429,99 @@ const messagesBlock = (
   )
 }
 
-const waitsBlock = (attese: WaitsSnapshot, Box: Els['Box'], Text: Els['Text']) => (
-  <Box flexDirection="column">
-    <Text bold>{attese.headline}</Text>
-    {attese.rows.map(r => (
-      <Text key={r.key} dimColor={!r.alert} bold={r.alert} wrap="truncate-end">
-        {r.alert ? '!! ' : '   '}
-        {r.text}
-      </Text>
-    ))}
-    {attese.hidden > 0 ? <Text dimColor>   +{attese.hidden}, bus_waits per la lista</Text> : null}
-  </Box>
-)
+// Cells a string takes: one per code point (the band draws no wide glyphs).
+const cells = (text: string) => Array.from(text).length
+
+// `text` cut to `width` cells, `…` last when cut.
+const fit = (text: string, width: number) => {
+  if (width <= 0) return ''
+  const chars = Array.from(text)
+
+  return chars.length <= width ? text : `${chars.slice(0, width - 1).join('')}…`
+}
+
+const pad = (text: string, width: number) => {
+  const cut = fit(text, width)
+
+  return cut + ' '.repeat(Math.max(0, width - cells(cut)))
+}
+
+const STATE_COLOR: Partial<Record<WaitRow['state'], string>> = {
+  domanda: 'warning',
+  esito: 'warning',
+  scaduta: 'error',
+  mario: 'claude',
+  lavora: 'success',
+}
+
+// BR24-F6.4, on the model of the Orbit pane: a title, rules, one aligned line per
+// delegation (state in words and glyph, plan code, title, executor, age), counts
+// and keys at the bottom. A digit or a click on a row puts `/read <msg>` in the
+// prompt; a click on the code puts `/orbit <plan>`.
+const waitsBlock = (
+  $: EngineInterface,
+  attese: WaitsSnapshot,
+  columns: number | undefined,
+  Box: Els['Box'],
+  Button: Els['Button'],
+  Text: Els['Text'],
+) => {
+  const width = Math.max(40, columns ?? 100)
+  const rows = attese.rows
+  const labelW = Math.max(...rows.map(r => cells(r.label)))
+  // Glyph, space, label, two spaces.
+  const stateW = labelW + 4
+  const codeW = Math.max(0, ...rows.map(r => cells(r.code ?? '')))
+  const sinceW = Math.max(...rows.map(r => cells(r.since)))
+  // The executor column goes first when the band is narrow.
+  const whoW = width >= 80 ? Math.min(24, Math.max(...rows.map(r => cells(r.who)))) : 0
+  const gaps = 2 + (codeW > 0 ? 2 : 0) + (whoW > 0 ? 2 : 0) + 1
+  const titleW = Math.max(8, width - stateW - codeW - whoW - sinceW - gaps)
+  const rule = <Text color="subtle">{'─'.repeat(width)}</Text>
+  const hint = `${rows.length > 1 ? `1-${Math.min(9, rows.length)}` : '1'} o clic: apri · clic sul codice: piano in Orbit`
+
+  return (
+    <Box flexDirection="column">
+      <Text bold>{attese.headline}</Text>
+      {rule}
+      {rows.map((r, i) => {
+        const open = () => (r.read !== null ? void openInPrompt($, r.read) : undefined)
+        const tone = STATE_COLOR[r.state]
+
+        return (
+          <Box key={r.key}>
+            <Button key={`read-${r.key}`} plain {...(i < 9 ? { hotkey: String(i + 1) } : {})} onPress={open}>
+              <Text bold={r.alert || r.state === 'mario'} {...(tone !== undefined ? { color: tone } : { dimColor: true })}>
+                {r.glyph} {pad(r.label, labelW)}{'  '}
+              </Text>
+            </Button>
+            {codeW > 0 ? (
+              r.plan !== null ? (
+                <Button key={`plan-${r.key}`} plain onPress={() => void openInPrompt($, `/orbit ${r.plan}`)}>
+                  {pad(r.code ?? '', codeW)}
+                </Button>
+              ) : (
+                <Text>{' '.repeat(codeW)}</Text>
+              )
+            ) : null}
+            <Button key={`title-${r.key}`} plain onPress={open}>
+              {codeW > 0 ? '  ' : ''}
+              {pad(r.note === null ? r.title : `${r.title} (${r.note})`, titleW)}
+              {whoW > 0 ? <Text dimColor>{`  ${pad(r.who, whoW)}`}</Text> : null}
+              <Text dimColor>{` ${r.since.padStart(sinceW)}`}</Text>
+            </Button>
+          </Box>
+        )
+      })}
+      {attese.hidden > 0 ? <Text dimColor>{`  +${attese.hidden}, bus_inbox per la lista`}</Text> : null}
+      {rule}
+      <Box justifyContent="space-between">
+        <Text bold>{attese.footer}</Text>
+        <Text dimColor>{fit(hint, Math.max(0, width - cells(attese.footer) - 2))}</Text>
+      </Box>
+    </Box>
+  )
+}
 
 const teamBlock = (
   $: EngineInterface,

@@ -1,5 +1,6 @@
 import type { SessionsFile } from './team'
 import { parseSessionList } from './team'
+import type { Live } from './waits'
 
 // Pure logic of the bus centralino's `vista` (BR24-F4.3): one read-only op on
 // $AB_HOME/centralino.sock that gives this band its three sections, records in
@@ -9,11 +10,21 @@ import { parseSessionList } from './team'
 
 export type VistaMessage = { agent: string; slug: string | null; letto: boolean; raw: unknown }
 export type VistaWait = { agent: string; slug: string | null; raw: unknown }
+// A bus session as the centralino sees it (only the fields the band reads).
+export type VistaSession = {
+  agent?: unknown
+  slug?: unknown
+  host?: unknown
+  viva?: unknown
+  ferma?: unknown
+  onda_state?: unknown
+}
 
 export type Vista = {
   onda?: { valido?: boolean; writtenAt?: string | null; sessioni?: unknown[] }
   messaggi?: VistaMessage[]
   attese?: VistaWait[]
+  sessioni?: VistaSession[]
 }
 
 // Every pending message, however old (the band lists them all, like the inbox);
@@ -63,3 +74,15 @@ export const sessionsOf = (v: Vista): SessionsFile | null =>
     : null
 
 export const fallbackText = (why: string) => `Bus letto dai file: ${why}.`
+
+// The live sessions (BR24-F6.4: is the executor of a delegation open, and working?).
+// Working: Onda says so, or, without Onda, the centralino does not call it stopped.
+export const liveOf = (v: Vista): Live[] =>
+  (v.sessioni ?? [])
+    .filter(s => s.viva === true && typeof s.agent === 'string' && typeof s.slug === 'string')
+    .map(s => ({
+      agent: s.agent as string,
+      slug: s.slug as string,
+      host: typeof s.host === 'string' ? s.host : 'laptop',
+      working: s.onda_state === 'working' || (typeof s.onda_state !== 'string' && s.ferma === false),
+    }))

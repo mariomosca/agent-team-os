@@ -54,16 +54,28 @@ export type TeamSnapshot = {
   sessions: TeamSession[]
 }
 
+// One delegation this session waits for (BR24-F6.4): who holds the ball, in words
+// and glyph, the plan code, a one-line title, the executor, and what a click opens.
 export type WaitRow = {
   key: string
-  text: string
+  state: 'domanda' | 'esito' | 'scaduta' | 'mario' | 'consegnato' | 'fermo' | 'chiusa' | 'lavora'
+  glyph: string
+  label: string
+  code: string | null
+  plan: string | null
+  title: string
+  who: string
+  since: string
+  read: string | null
   alert: boolean
+  note: string | null
 }
 
 export type WaitsSnapshot = {
   headline: string
   rows: WaitRow[]
   hidden: number
+  footer: string
   expired: string[]
 }
 

@@ -41,7 +41,7 @@ const VISTA = JSON.stringify({
   },
 })
 
-const world = (on: On, env: Record<string, string>, centralino = false) => {
+const world = (on: On, env: Record<string, string>, centralino = false, vista = VISTA, orbit = '') => {
   mock.env(on, { AB_HOME: ROOT, HOME: '/Users/m', ...env })
   mock.clock(on, { now: NOW })
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
@@ -51,6 +51,7 @@ const world = (on: On, env: Record<string, string>, centralino = false) => {
   on('fs.exists', (_$, e) => ({
     value:
       (centralino && e.path === `${ROOT}/centralino.sock`) ||
+      e.path === '/Users/m/Library/Application Support/Orbit/orbit.db' ||
       e.path in FILES ||
       Object.keys(FILES).some(f => f.startsWith(`${e.path}/`)),
   }))
@@ -68,7 +69,7 @@ const world = (on: On, env: Record<string, string>, centralino = false) => {
   on('process.run', (_$, e) => ({
     value: {
       exitCode: 0,
-      stdout: centralino && e.argv[0] === 'nc' ? VISTA : '',
+      stdout: centralino && e.argv[0] === 'nc' ? vista : e.argv[0] === 'sqlite3' ? orbit : '',
       stderr: '',
       isStdoutTruncated: false,
       isStderrTruncated: false,
@@ -115,5 +116,81 @@ describe('centralino (BR24-F4.3)', () => {
     const ui = await $.ui.mount({ plugin: 'bus-band', surface: 'terminal', component: 'AbovePrompt', requestId: 'band', props: PROPS })
     expect(await ui.find({ text: 'da alita' })).toBeDefined()
     expect(await ui.find({ text: 'Bus letto dai file: il centralino del bus non è attivo.' })).toBeDefined()
+  })
+})
+
+// Alita's two waits of 25/10 08:42, as the centralino gave them (BR24-F6.4).
+const ALITA_WAITS = JSON.stringify({
+  v: 1,
+  id: 'r',
+  ok: true,
+  result: {
+    host: 'laptop',
+    sessioni: [{ agent: 'kai', slug: 'onda-electron', host: 'laptop', viva: true, ferma: true, onda_state: 'idle' }],
+    messaggi: [],
+    attese: [
+      {
+        agent: 'kai',
+        slug: 'portineria',
+        raw: {
+          task_id: 't-20261024-qgd2r2',
+          state: 'expected',
+          created_at: '2026-10-17T23:00:00Z',
+          delegated_to: 'kai/onda-electron',
+          executor_session: 'kai/onda-electron',
+          delegation: { msg_id: 'msg-on24' },
+          description:
+            "on24-f3-hairline: Piano ON24, fase F3, nuova: Hairline nella schermata del workspace vuoto. Richiesta di Mario delle 22:51.\n\nCos'è: @lucasmarkes/hairline (github.com/lucasmarkes/hairline), licenza MIT",
+          returns: {
+            'msg-q': { at: '2026-10-17T23:05:00Z', type: 'question', state: 'handled', handled: 'risposto' },
+            'msg-r': { at: '2026-10-18T01:03:00Z', type: 'response', state: 'handled', handled: 'riarma' },
+          },
+        },
+      },
+      {
+        agent: 'kai',
+        slug: 'portineria',
+        raw: {
+          task_id: 't-20261025-i57l3z',
+          state: 'expected',
+          created_at: '2026-10-18T08:57:00Z',
+          delegated_to: 'kai/alita-mobile',
+          delegation: { msg_id: 'msg-am18' },
+          description:
+            "am18-f15-analisi-24ott: AM18, fase F15, nuova: correzioni dall'analisi notturna del 24/10. Ok di Mario del 25/10 alle 08:38; si fa oggi pomeriggio, quando apri la sessione.\n\nReport: ~/.alita-memoria/a",
+        },
+      },
+    ],
+  },
+})
+
+const ORBIT_ROWS = JSON.stringify([
+  { code: 'ON24', phase: 'F3', phase_title: 'Hairline nella schermata del workspace vuoto', step_key: 'F3.4', title: 'Prova di Mario su Onda-dev', state: 'todo', assignee: 'mario' },
+  { code: 'AM18', phase: 'F15', phase_title: "Analisi notturna del 24/10: voce persa", step_key: 'F15.1', title: 'Verifica', state: 'todo', assignee: 'kai' },
+])
+
+describe('deleghe aperte (BR24-F6.4)', () => {
+  test("Alita's two waits: one line each, who holds the ball in words", async ($, on) => {
+    world(on, {}, true, ALITA_WAITS, ORBIT_ROWS)
+    await $.session.start(START)
+    const ui = await $.ui.mount({ plugin: 'bus-band', surface: 'terminal', component: 'AbovePrompt', requestId: 'band', props: { hasSurvey: false, bodyColumns: 110 } as never })
+    expect(await ui.find({ text: 'Deleghe aperte · 2' })).toBeDefined()
+    expect(await ui.find({ text: /tocca a Mario/ })).toBeDefined()
+    expect(await ui.find({ text: /Kai non aperto/ })).toBeDefined()
+    expect(await ui.find({ text: /^ON24-F3/ })).toBeDefined()
+    expect(await ui.find({ text: /Hairline nella schermata del workspace vuoto/ })).toBeDefined()
+    expect(await ui.find({ text: /Analisi notturna del 24\/10/ })).toBeDefined()
+    expect(await ui.find({ text: /\n/ })).toBeUndefined()
+    expect(await ui.find({ text: /Report:/ })).toBeUndefined()
+  })
+
+  test('without Orbit the title is the first sentence, still one line; re-armed is "consegnato"', async ($, on) => {
+    world(on, {}, true, ALITA_WAITS, '')
+    await $.session.start(START)
+    const ui = await $.ui.mount({ plugin: 'bus-band', surface: 'terminal', component: 'AbovePrompt', requestId: 'band', props: { hasSurvey: false, bodyColumns: 110 } as never })
+    expect(await ui.find({ text: /Kai ha consegnato/ })).toBeDefined()
+    expect(await ui.find({ text: /^ {2}Hairline nella schermata del workspace vuoto\. / })).toBeDefined()
+    expect(await ui.find({ text: /Richiesta di Mario|Piano ON24/ })).toBeUndefined()
+    expect(await ui.find({ text: /^○ Kai non aperto {5}$/ })).toBeDefined()
   })
 })
