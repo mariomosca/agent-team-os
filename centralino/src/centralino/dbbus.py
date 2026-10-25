@@ -157,15 +157,15 @@ class DbBus:
         """BR24-F6.6: la prima lettura di una delega da parte di chi la esegue (la sessione
         destinataria, o una sessione dell'agente se è andata alla casella comune) ne fissa
         ``letto_at``. Non conta la lettura di chi l'ha mandata né di un'altra sessione.
-        Solo registro: la sveglia non la guarda."""
+        Valgono anche la sveglia consegnata (sveglia.py) e il primo ritorno sul task
+        (``_registra_ritorno``). Solo registro: la sveglia non la guarda."""
         r = self._row(agent, partial_id)
         if (r is None or r["kind"] != "delega" or r["letto_at"] or r["to_host"] != (self.host_self() or "")
                 or r["to_slug"] not in (None, slug)
                 or (r["from_agent"] == agent and r["from_slug"] == slug)):
             return None
         at = iso_now()
-        self._tx(lambda c: c.execute("UPDATE messages SET letto_at=?, letto_da=? WHERE id=? AND letto_at IS NULL",
-                                     (at, f"{agent}/{slug}", r["id"])))
+        self._tx(lambda c: Store.segna_letta(c, r["id"], at, f"{agent}/{slug}"))
         return at
 
     def _set_state(self, conn, mid: str, state: str, record: dict | None = None) -> None:
@@ -379,6 +379,13 @@ class DbBus:
             "state": "pending"}
         if not rec.get("executor_session") and record.get("from_session"):
             rec["executor_session"] = record["from_session"]
+        # chi risponde o chiede sul task ha letto la delega (anche da un'altra macchina)
+        if (dm := _d(rec.get("delegation")).get("msg_id")):
+            by = record.get("from_session") or record.get("from") or None
+            if by and host and host != self.host_self():
+                ag, _, sl = by.partition("/")
+                by = f"{ag}@{host}/{sl}" if sl else f"{ag}@{host}"
+            Store.segna_letta(c, dm, record.get("ts") or iso_now(), by)
         rec["last_activity"] = record.get("ts") or iso_now()
         self._save_wait(c, rec)
 

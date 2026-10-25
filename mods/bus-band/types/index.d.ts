@@ -58,7 +58,7 @@ export type TeamSnapshot = {
 // and glyph, the plan code, a one-line title, the executor, and what a click opens.
 export type WaitRow = {
   key: string
-  state: 'domanda' | 'esito' | 'scaduta' | 'mario' | 'consegnato' | 'fermo' | 'chiusa' | 'coda' | 'lavora'
+  state: 'domanda' | 'esito' | 'scaduta' | 'mario' | 'consegnato' | 'fermo' | 'chiusa' | 'coda' | 'lavora' | 'ignoto'
   glyph: string
   label: string
   code: string | null

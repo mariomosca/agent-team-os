@@ -1,6 +1,5 @@
 import type { SessionsFile } from './team'
 import { parseSessionList } from './team'
-import type { Live } from './waits'
 
 // Pure logic of the bus centralino's `vista` (BR24-F4.3): one read-only op on
 // $AB_HOME/centralino.sock that gives this band its three sections, records in
@@ -9,9 +8,8 @@ import type { Live } from './waits'
 // so register.tsx sends the request through `nc -U`. No `$` here.
 
 export type VistaMessage = { agent: string; slug: string | null; letto: boolean; raw: unknown }
-// BR24-F6.6: letto_at/letto_da, when the executor first read the delegation
-// (absent from a centralino before schema v4).
-export type VistaWait = { agent: string; slug: string | null; raw: unknown; letto_at?: unknown; letto_da?: unknown }
+// BR24-F6.7: stato_palla and riga, who holds the ball and the row to draw (centralino/palla.py).
+export type VistaWait = { agent: string; slug: string | null; raw: unknown; stato_palla?: unknown; riga?: unknown }
 // A bus session as the centralino sees it (only the fields the band reads).
 export type VistaSession = {
   agent?: unknown
@@ -64,14 +62,14 @@ export const inboxOf = (v: Vista, agent: string, slug: string): [string, string]
       return [JSON.stringify(m.raw), typeof id === 'string' ? `${id}.json` : 'msg-.json']
     })
 
-// The waits of this session, as texts for parseWait, with the reading of the delegation.
+// The waits of this session, as texts for parseWait, with who holds the ball.
 export const waitsOf = (v: Vista, agent: string, slug: string): string[] =>
   (v.attese ?? [])
     .filter(w => w.agent === agent && w.slug === slug)
     .map(w =>
       JSON.stringify(
-        'letto_at' in w && typeof w.raw === 'object' && w.raw !== null
-          ? { ...w.raw, letto_at: w.letto_at ?? null, letto_da: w.letto_da ?? null }
+        'stato_palla' in w && typeof w.raw === 'object' && w.raw !== null
+          ? { ...w.raw, stato_palla: w.stato_palla, riga: w.riga }
           : w.raw,
       ),
     )
@@ -84,15 +82,3 @@ export const sessionsOf = (v: Vista): SessionsFile | null =>
     : null
 
 export const fallbackText = (why: string) => `Bus letto dai file: ${why}.`
-
-// The live sessions (BR24-F6.4: is the executor of a delegation open, and working?).
-// Working: Onda says so, or, without Onda, the centralino does not call it stopped.
-export const liveOf = (v: Vista): Live[] =>
-  (v.sessioni ?? [])
-    .filter(s => s.viva === true && typeof s.agent === 'string' && typeof s.slug === 'string')
-    .map(s => ({
-      agent: s.agent as string,
-      slug: s.slug as string,
-      host: typeof s.host === 'string' ? s.host : 'laptop',
-      working: s.onda_state === 'working' || (typeof s.onda_state !== 'string' && s.ferma === false),
-    }))

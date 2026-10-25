@@ -78,5 +78,8 @@ def test_sul_mini_una_delega_sveglia_il_pannello_tmux(tmux, tmp_path):
         decisioni = Sveglia(c).giro_sveglia()
         assert [(d.decisione, d.canale) for d in decisioni] == [("sveglia", "tmux")]
         assert "-t %3 -l " in (tmux / "sent").read_text()
+        # BR24-F6.6: la sveglia consegnata vale come lettura della delega
+        m = c.store.message(r["result"]["id"])
+        assert m["letto_at"] and m["letto_da"] == "kai/s1"
     finally:
         c.store.close()

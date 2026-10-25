@@ -97,6 +97,10 @@ def test_vista_globale(bus):
     assert [m["raw"]["intent"] for m in v["messaggi"]] == ["x"]
     assert v["messaggi"][0]["agent"] == "alita" and v["messaggi"][0]["slug"] == "s1"
     assert len(v["attese"]) == 1 and v["attese"][0]["raw"]["state"] == "expected"
+    # BR24-F6.7: chi ha la palla lo dice il centralino, con i dati della riga
+    a = v["attese"][0]
+    assert a["stato_palla"] in ("coda", "fermo", "lavora", "chiusa")
+    assert a["riga"]["parola"] and a["riga"]["glifo"] and a["riga"]["leggi"] == f"/read {a['raw']['delegation']['msg_id']}"
     assert {x["agent"] for x in v["agenti"]} == {"kai", "alita"}
     assert {s["slug"] for s in v["sessioni"]} == {"s1"}  # vive per heartbeat
     assert v["onda"] == {"valido": False, "writtenAt": None, "sessioni": []}
@@ -175,6 +179,19 @@ def test_letto_at_alla_prima_lettura_dell_esecutore(bus):
     st.close()
 
 
+def test_letta_al_primo_ritorno_dell_esecutore(bus):
+    # BR24-F6.6 (correzione): chi lavora dalla sveglia può non chiamare mai bus_read
+    sock = bus / "centralino.sock"
+    kai, alita = _caller(bus, "kai"), _caller(bus, "alita")
+    mid = call("send", {"to": "kai/s1", "intent": "x", "summary": "fai X", "message_type": "request",
+                        "kind": "delega"}, caller=alita, sock=sock)["result"]["id"]
+    assert call("vista", sock=sock)["result"]["attese"][0]["letto_at"] is None
+    assert call("reply", {"message_id": mid, "summary": "A o B?", "message_type": "question"},
+                caller=kai, sock=sock)["ok"]
+    a = call("vista", sock=sock)["result"]["attese"][0]
+    assert a["letto_at"] and a["letto_da"] == "kai/s1"
+
+
 def test_migrazione_v4_con_backup(tmp_path):
     import sqlite3
     from centralino.db import Store
@@ -182,6 +199,9 @@ def test_migrazione_v4_con_backup(tmp_path):
     Store(db).close()
     c = sqlite3.connect(db)
     c.execute("UPDATE meta SET value='3' WHERE key='schema_version'")
+    c.execute("INSERT INTO messages (id, ts, from_agent, to_agent, to_host, type, kind, thread_id, state, "
+              "delivery, origin, raw) VALUES ('m-vecchia', 't', 'alita', 'kai', 'laptop', 'request', 'delega', "
+              "'th', 'pending', 'local', 'x', '{}')")
     c.execute("ALTER TABLE messages DROP COLUMN letto_da")
     c.execute("ALTER TABLE messages DROP COLUMN letto_at")
     c.commit()
@@ -189,6 +209,9 @@ def test_migrazione_v4_con_backup(tmp_path):
     st = Store(db)
     cols = {r["name"] for r in st.read().execute("PRAGMA table_info(messages)")}
     assert {"letto_at", "letto_da"} <= cols
+    # una delega di prima vale come letta: niente "in coda" falso
+    vecchia = st.message("m-vecchia")
+    assert vecchia["letto_at"] and vecchia["letto_da"] is None
     st.close()
     baks = list(tmp_path.glob("centralino.db.bak-v3-*"))
     assert len(baks) == 1

@@ -566,22 +566,47 @@ centralino, degli hook v3, del MCP e di `lib.sh`/`wake.py`/`collect.sh` più gli
 | dopo F5.5, laptop | 3.388 | 236 | 391 | 3.990 | 8.005 |
 | dopo F5.7 | 3.425 | 260 | 391 | 0 | **4.076** |
 
-## 18. Delega letta: "in coda" o "ci lavora" (BR24-F6.6, 25/10/2026)
+## 18. Chi ha la palla: delega letta e `stato_palla` (BR24-F6.6, 25/10/2026)
 
 La banda diceva "Kai lavora" anche quando la sessione esecutrice lavorava su altro e la delega non
-l'aveva ancora aperta. Ora il centralino registra la lettura.
+l'aveva ancora aperta, e calcolava da sola lo stato di ogni delega. Ora il centralino registra la
+lettura e calcola lo stato, per la banda e per l'Ufficio di Orbit.
 
-- **Schema v4**: `messages.letto_at`, `messages.letto_da` (colonne aggiunte da `MIGRAZIONI`). Prima di
-  migrare un database di schema più vecchio, `Store` ne fa una copia accanto con la backup API di SQLite
-  (`centralino.db.bak-v3-<ora>`), una volta sola.
-- **Chi segna**: `read` (`bus_read`) su un messaggio `kind=delega`, la prima volta, dalla sessione
-  destinataria (o da una sessione dell'agente, se la delega è andata alla casella comune). Non segna la
-  lettura del delegante né di un'altra sessione dello stesso agente. È solo un registro: la sveglia non lo
-  guarda e non cambia.
-- **Vista**: ogni attesa porta `letto_at` e `letto_da` della sua delega (`waits.delegation_msg`), `null`
-  finché non è letta. Una delega a un'altra macchina resta `null`: la lettura avviene sul centralino di là.
-- **Banda**: sessione esecutrice viva e al lavoro, delega non letta → `⧗ in coda: Kai occupato`; letta →
-  `◐ Kai ci lavora`; senza sessione esecutrice ma con l'agente vivo in altre cartelle →
-  `○ Kai non aperto qui · vivo in <slug>` (`+N` se più d'una). Con un centralino prima della v4 (campo
-  assente) la banda resta a "ci lavora".
+**Lettura (schema v4).** `messages.letto_at`, `messages.letto_da`, aggiunte da `MIGRAZIONI`. Prima di
+migrare un database di schema più vecchio, `Store` ne fa una copia accanto con la backup API di SQLite
+(`centralino.db.bak-v3-<ora>`), una volta sola. Una delega (`kind=delega`) conta come letta alla prima di:
 
+- `read` (`bus_read`) della sessione destinataria, o di una sessione dell'agente se è andata alla casella
+  comune; non conta la lettura del delegante né di un'altra sessione dello stesso agente;
+- un ritorno dell'esecutore sul task (esito, domanda, qualunque messaggio col task_id): `letto_da` è chi
+  lo manda, anche da un'altra macchina (`kai@mini/slug`);
+- una sveglia consegnata nella casella del prompt della sessione esecutrice (decisione `sveglia`).
+
+È solo un registro: la sveglia non lo guarda. Alla migrazione le deleghe già esistenti valgono come
+lette alla prima sveglia consegnata, se c'è, altrimenti all'ora della migrazione (`letto_da` vuoto):
+meglio "ci lavora" come prima che un "in coda" falso. Il prompt dell'utente nella sessione esecutrice
+non conta (non è un segnale che il centralino veda).
+
+**Vista.** Ogni attesa porta, accanto a `raw`:
+
+| Campo | Cosa |
+|---|---|
+| `letto_at`, `letto_da` | quando e chi ha letto la delega; `null` finché non è letta |
+| `stato_palla` | `domanda`, `esito`, `scaduta`, `mario`, `consegnato`, `fermo`, `chiusa`, `coda`, `lavora` |
+| `riga.glifo`, `riga.parola` | lo stato in glifo e parola (mai il solo colore): `?` domanda per te, `✉` esito da leggere, `!` scaduta, `●` tocca a Mario, `✓` Kai ha consegnato, `◌` Kai fermo, `○` Kai non aperto (`qui · vivo in <slug>` `+N`), `⧗` in coda: Kai occupato, `◐` Kai ci lavora |
+| `riga.ordine` | posizione dello stato, prima ciò che chiede qualcosa a chi ha delegato |
+| `riga.codice`, `riga.piano` | codice del piano dall'intent o dal summary (`BR24-F6.6`), e il piano |
+| `riga.titolo` | titolo del passo (o della fase) in Orbit, prima clausola; senza Orbit la prima frase del summary |
+| `riga.esecutore`, `riga.vivo_in` | la sessione che esegue (dal ritorno, da chi ha letto, o l'indirizzo della delega) e, se non è viva, le cartelle dove l'agente è vivo |
+| `riga.da`, `riga.leggi` | età della delega; `/read <id>` della domanda aperta, del primo esito non gestito o della delega |
+| `riga.allerta`, `riga.nota` | da guardare subito; il tetto che trattiene una sveglia, in parola |
+
+Regole (`centralino/palla.py`, test in `tests/test_palla.py`): scaduta, poi domanda aperta, poi esito
+non gestito, poi `mario` se l'ultimo ritorno è riarmato e in Orbit il passo è di Mario (o Mario ha un
+passo aperto nella fase), poi sessione esecutrice viva al lavoro (`coda` se la delega non è letta,
+`lavora` se sì), poi `consegnato` se riarmata, `fermo` se viva e ferma, altrimenti `chiusa`. Un'attesa
+senza messaggio di delega (registrata da `bus_expect`) non sa se è letta e resta a `lavora`. Orbit si
+legge in sola lettura da `~/Library/Application Support/Orbit/orbit.db` (`AB_ORBIT_DB` per cambiarlo),
+una query per tutti i codici, tenuta un minuto; sul mini non c'è e il titolo viene dal summary. Una
+delega a un'altra macchina diventa letta solo al primo ritorno: le sessioni dell'altra macchina non sono
+fra le vive di questa, quindi la riga dice `chiusa` finché non torna qualcosa.

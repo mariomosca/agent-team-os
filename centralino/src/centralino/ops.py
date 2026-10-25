@@ -7,12 +7,13 @@ che tiene lo stato solo in SQLite.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__
+from . import __version__, palla
 from .db import Store
 from .dbbus import BusError, DbBus
 from .indirizzi import AgentMap, ErroreIndirizzo
@@ -41,6 +42,7 @@ class Centralino:
         self.log = Log(log_path)
         # chi invia sveglia subito: il giro della sveglia non aspetta i suoi 10 s
         self.sveglia_ora = threading.Event()
+        self.orbit = palla.Orbit(Path(os.environ["AB_ORBIT_DB"]) if os.environ.get("AB_ORBIT_DB") else palla.ORBIT_DB)
         self.started = time.time()
 
     # ---------- transazione corrente (per thread) ----------
@@ -427,11 +429,20 @@ class Centralino:
         # BR24-F6.6: accanto all'attesa, quando chi esegue ha letto la delega (null: non ancora,
         # o la delega è su un'altra macchina e la lettura resta là)
         attese = [{"agent": x["owner_agent"], "slug": x["owner_slug"], "raw": json.loads(x["raw"]),
-                   "letto_at": x["letto_at"], "letto_da": x["letto_da"]}
-                  for x in r.execute("SELECT w.owner_agent, w.owner_slug, w.raw, m.letto_at, m.letto_da "
+                   "letto_at": x["letto_at"], "letto_da": x["letto_da"], "delega_qui": x["delega_qui"]}
+                  for x in r.execute("SELECT w.owner_agent, w.owner_slug, w.raw, m.letto_at, m.letto_da, m.id IS NOT NULL AS delega_qui "
                                      "FROM waits w LEFT JOIN messages m ON m.id = w.delegation_msg WHERE "
                                      "w.state IN ('expected','expired') OR w.created_at>=? ORDER BY w.created_at",
                                      (cut("attese_s", 86400),))]
+        # BR24-F6.7: chi ha la palla, calcolato qui per la banda e per l'Ufficio di Orbit
+        vive = [{"agent": x["agent"], "slug": x["slug"], "host": x.get("host") or host,
+                 "lavora": x.get("onda_state") == "working"
+                 or (not isinstance(x.get("onda_state"), str) and x.get("ferma") is False)} for x in sessioni]
+        rifs = [rf for x in attese if (rf := palla.rif_piano(x["raw"].get("description") or ""))]
+        righe_orbit = self.orbit.righe(rifs)
+        for x in attese:
+            x.update(palla.stato_palla(x["raw"], x["letto_at"], vive, host, righe_orbit,
+                                       letto_noto=bool(x.pop("delega_qui")), letto_da=x["letto_da"]))
         agenti = [{"agent": k, **{f: (v or {}).get(f) for f in ("display_name", "role", "domain", "workspace_root",
                                                                "voice_id", "avatar_path", "host")}}
                   for k, v in sorted(self.amap.agents().items())]

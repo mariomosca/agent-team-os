@@ -41,7 +41,7 @@ const VISTA = JSON.stringify({
   },
 })
 
-const world = (on: On, env: Record<string, string>, centralino = false, vista = VISTA, orbit = '') => {
+const world = (on: On, env: Record<string, string>, centralino = false, vista = VISTA) => {
   mock.env(on, { AB_HOME: ROOT, HOME: '/Users/m', ...env })
   mock.clock(on, { now: NOW })
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
@@ -51,7 +51,6 @@ const world = (on: On, env: Record<string, string>, centralino = false, vista = 
   on('fs.exists', (_$, e) => ({
     value:
       (centralino && e.path === `${ROOT}/centralino.sock`) ||
-      e.path === '/Users/m/Library/Application Support/Orbit/orbit.db' ||
       e.path in FILES ||
       Object.keys(FILES).some(f => f.startsWith(`${e.path}/`)),
   }))
@@ -69,7 +68,7 @@ const world = (on: On, env: Record<string, string>, centralino = false, vista = 
   on('process.run', (_$, e) => ({
     value: {
       exitCode: 0,
-      stdout: centralino && e.argv[0] === 'nc' ? vista : e.argv[0] === 'sqlite3' ? orbit : '',
+      stdout: centralino && e.argv[0] === 'nc' ? vista : '',
       stderr: '',
       isStdoutTruncated: false,
       isStderrTruncated: false,
@@ -119,64 +118,56 @@ describe('centralino (BR24-F4.3)', () => {
   })
 })
 
-// Alita's two waits of 25/10 08:42, as the centralino gave them (BR24-F6.4).
-const ALITA_WAITS = JSON.stringify({
-  v: 1,
-  id: 'r',
-  ok: true,
-  result: {
-    host: 'laptop',
-    sessioni: [{ agent: 'kai', slug: 'onda-electron', host: 'laptop', viva: true, ferma: true, onda_state: 'idle' }],
-    messaggi: [],
-    attese: [
-      {
-        agent: 'kai',
-        slug: 'portineria',
-        raw: {
-          task_id: 't-20261024-qgd2r2',
-          state: 'expected',
-          created_at: '2026-10-17T23:00:00Z',
-          delegated_to: 'kai/onda-electron',
-          executor_session: 'kai/onda-electron',
-          delegation: { msg_id: 'msg-on24' },
-          description:
-            "on24-f3-hairline: Piano ON24, fase F3, nuova: Hairline nella schermata del workspace vuoto. Richiesta di Mario delle 22:51.\n\nCos'è: @lucasmarkes/hairline (github.com/lucasmarkes/hairline), licenza MIT",
-          returns: {
-            'msg-q': { at: '2026-10-17T23:05:00Z', type: 'question', state: 'handled', handled: 'risposto' },
-            'msg-r': { at: '2026-10-18T01:03:00Z', type: 'response', state: 'handled', handled: 'riarma' },
-          },
-        },
-      },
-      {
-        agent: 'kai',
-        slug: 'portineria',
-        raw: {
-          task_id: 't-20261025-i57l3z',
-          state: 'expected',
-          created_at: '2026-10-18T08:57:00Z',
-          delegated_to: 'kai/alita-mobile',
-          delegation: { msg_id: 'msg-am18' },
-          description:
-            "am18-f15-analisi-24ott: AM18, fase F15, nuova: correzioni dall'analisi notturna del 24/10. Ok di Mario del 25/10 alle 08:38; si fa oggi pomeriggio, quando apri la sessione.\n\nReport: ~/.alita-memoria/a",
-        },
-      },
-    ],
-  },
+// Alita's two waits of 25/10 08:42, as the centralino gave them (BR24-F6.4), with
+// who holds the ball computed there (BR24-F6.7, centralino/palla.py).
+const ON24 = {
+  task_id: 't-20261024-qgd2r2',
+  state: 'expected',
+  created_at: '2026-10-17T23:00:00Z',
+  delegated_to: 'kai/onda-electron',
+  executor_session: 'kai/onda-electron',
+  delegation: { msg_id: 'msg-on24' },
+  description:
+    "on24-f3-hairline: Piano ON24, fase F3, nuova: Hairline nella schermata del workspace vuoto. Richiesta di Mario delle 22:51.\n\nCos'è: @lucasmarkes/hairline (github.com/lucasmarkes/hairline), licenza MIT",
+}
+const AM18 = {
+  task_id: 't-20261025-i57l3z',
+  state: 'expected',
+  created_at: '2026-10-18T08:57:00Z',
+  delegated_to: 'kai/alita-mobile',
+  delegation: { msg_id: 'msg-am18' },
+  description:
+    "am18-f15-analisi-24ott: AM18, fase F15, nuova: correzioni dall'analisi notturna del 24/10. Ok di Mario del 25/10 alle 08:38; si fa oggi pomeriggio, quando apri la sessione.\n\nReport: ~/.alita-memoria/a",
+}
+const riga = (glifo: string, parola: string, codice: string, titolo: string, esecutore: string, leggi: string) => ({
+  glifo, parola, codice, piano: codice.split('-')[0], titolo, esecutore, leggi, allerta: false, nota: null, vivo_in: [],
 })
 
-const ORBIT_ROWS = JSON.stringify([
-  { code: 'ON24', phase: 'F3', phase_title: 'Hairline nella schermata del workspace vuoto', step_key: 'F3.4', title: 'Prova di Mario su Onda-dev', state: 'todo', assignee: 'mario' },
-  { code: 'AM18', phase: 'F15', phase_title: "Analisi notturna del 24/10: voce persa", step_key: 'F15.1', title: 'Verifica', state: 'todo', assignee: 'kai' },
+const vista = (attese: unknown[]) =>
+  JSON.stringify({ v: 1, id: 'r', ok: true, result: { host: 'laptop', sessioni: [], messaggi: [], attese } })
+
+const ALITA_WAITS = vista([
+  {
+    agent: 'kai', slug: 'portineria', raw: ON24, stato_palla: 'mario',
+    riga: riga('●', 'tocca a Mario', 'ON24-F3', 'Hairline nella schermata del workspace vuoto', 'kai/onda-electron', '/read msg-on24'),
+  },
+  {
+    agent: 'kai', slug: 'portineria', raw: AM18, stato_palla: 'chiusa',
+    riga: riga('○', 'Kai non aperto qui · vivo in onda-electron', 'AM18-F15', 'Analisi notturna del 24/10', 'kai/alita-mobile', '/read msg-am18'),
+  },
 ])
+
+const mount = ($: Parameters<Parameters<typeof test>[1]>[0]) =>
+  $.ui.mount({ plugin: 'bus-band', surface: 'terminal', component: 'AbovePrompt', requestId: 'band', props: { hasSurvey: false, bodyColumns: 110 } as never })
 
 describe('deleghe aperte (BR24-F6.4)', () => {
   test("Alita's two waits: one line each, who holds the ball in words", async ($, on) => {
-    world(on, {}, true, ALITA_WAITS, ORBIT_ROWS)
+    world(on, {}, true, ALITA_WAITS)
     await $.session.start(START)
-    const ui = await $.ui.mount({ plugin: 'bus-band', surface: 'terminal', component: 'AbovePrompt', requestId: 'band', props: { hasSurvey: false, bodyColumns: 110 } as never })
+    const ui = await mount($)
     expect(await ui.find({ text: 'Deleghe aperte · 2' })).toBeDefined()
     expect(await ui.find({ text: /tocca a Mario/ })).toBeDefined()
-    expect(await ui.find({ text: /Kai non aperto qui · vivo in onda-electron/ })).toBeDefined()
+    expect(await ui.find({ text: /^○ Kai non aperto qui · vivo in onda-electron {2}$/ })).toBeDefined()
     expect(await ui.find({ text: /^ON24-F3/ })).toBeDefined()
     // the longer state ("non aperto qui · vivo in ...", BR24-F6.6) leaves the title less room
     expect(await ui.find({ text: /Hairline nella schermata d…/ })).toBeDefined()
@@ -185,59 +176,26 @@ describe('deleghe aperte (BR24-F6.4)', () => {
     expect(await ui.find({ text: /Report:/ })).toBeUndefined()
   })
 
-  test('without Orbit the title is the first sentence, still one line; re-armed is "consegnato"', async ($, on) => {
-    world(on, {}, true, ALITA_WAITS, '')
+  test('BR24-F6.6: in coda while the executor has not read the delegation, ci lavora after', async ($, on) => {
+    world(
+      on,
+      {},
+      true,
+      vista([
+        { agent: 'kai', slug: 'portineria', raw: AM18, stato_palla: 'coda', riga: riga('⧗', 'in coda: Kai occupato', 'AM18-F15', 'Analisi', 'kai/alita-mobile', '/read msg-am18') },
+        { agent: 'kai', slug: 'portineria', raw: ON24, stato_palla: 'lavora', riga: riga('◐', 'Kai ci lavora', 'ON24-F3', 'Hairline', 'kai/onda-electron', '/read msg-on24') },
+      ]),
+    )
     await $.session.start(START)
-    const ui = await $.ui.mount({ plugin: 'bus-band', surface: 'terminal', component: 'AbovePrompt', requestId: 'band', props: { hasSurvey: false, bodyColumns: 110 } as never })
-    expect(await ui.find({ text: /Kai ha consegnato/ })).toBeDefined()
-    expect(await ui.find({ text: /^ {2}Hairline nella schermata d/ })).toBeDefined()
-    expect(await ui.find({ text: /Richiesta di Mario|Piano ON24/ })).toBeUndefined()
-    expect(await ui.find({ text: /^○ Kai non aperto qui · vivo in onda-electron {2}$/ })).toBeDefined()
-  })
-
-  test('BR24-F6.6: in coda while the executor has not read the delegation', async ($, on) => {
-    const vista = (letto: string | null) =>
-      JSON.stringify({
-        v: 1,
-        id: 'r',
-        ok: true,
-        result: {
-          host: 'laptop',
-          sessioni: [{ agent: 'kai', slug: 'f3', host: 'laptop', viva: true, ferma: false, onda_state: 'working' }],
-          messaggi: [],
-          attese: [
-            {
-              agent: 'kai',
-              slug: 'portineria',
-              letto_at: letto,
-              letto_da: letto === null ? null : 'kai/f3',
-              raw: {
-                task_id: 't-1',
-                state: 'expected',
-                created_at: '2026-10-25T08:16:00Z',
-                delegated_to: 'kai/f3',
-                delegation: { msg_id: 'msg-d' },
-                description: 'br24-f6.6: BR24-F6.6: lettura della delega.',
-              },
-            },
-          ],
-        },
-      })
-    world(on, {}, true, vista(null), '')
-    await $.session.start(START)
-    const ui = await $.ui.mount({ plugin: 'bus-band', surface: 'terminal', component: 'AbovePrompt', requestId: 'band', props: { hasSurvey: false, bodyColumns: 110 } as never })
+    const ui = await mount($)
     expect(await ui.find({ text: /^⧗ in coda: Kai occupato {2}$/ })).toBeDefined()
-    expect(await ui.find({ text: /ci lavora/ })).toBeUndefined()
+    expect(await ui.find({ text: /^◐ Kai ci lavora {10}$/ })).toBeDefined()
   })
 
-  test('BR24-F6.6: ci lavora once read', async ($, on) => {
-    const v = JSON.parse(ALITA_WAITS)
-    v.result.sessioni = [{ agent: 'kai', slug: 'alita-mobile', host: 'laptop', viva: true, ferma: false, onda_state: 'working' }]
-    v.result.attese = [{ ...v.result.attese[1], letto_at: '2026-10-25T08:20:00Z', letto_da: 'kai/alita-mobile' }]
-    world(on, {}, true, JSON.stringify(v), '')
+  test('an older centralino without the ball: the row says it does not know', async ($, on) => {
+    world(on, {}, true, vista([{ agent: 'kai', slug: 'portineria', raw: AM18 }]))
     await $.session.start(START)
-    const ui = await $.ui.mount({ plugin: 'bus-band', surface: 'terminal', component: 'AbovePrompt', requestId: 'band', props: { hasSurvey: false, bodyColumns: 110 } as never })
-    expect(await ui.find({ text: /^◐ Kai ci lavora {2}$/ })).toBeDefined()
-    expect(await ui.find({ text: /in coda/ })).toBeUndefined()
+    const ui = await mount($)
+    expect(await ui.find({ text: /stato non noto/ })).toBeDefined()
   })
 })

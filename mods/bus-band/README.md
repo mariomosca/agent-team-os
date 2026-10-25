@@ -38,19 +38,19 @@ Deleghe aperte · 2                                                         [-]
 
 On the model of the Orbit pane: a title, rules, one aligned line per delegation, counts and keys at the bottom.
 
-- Source: the waits of this session in the centralino's vista (the files of `$AB_HOME/waits/<agent>/@<slug>/` when it is not there). Open ones, plus expired ones for a day.
+- Source: the waits of this session in the centralino's vista, each with **who holds the ball computed by the centralino** (`stato_palla` and `riga`, `centralino/palla.py`, CENTRALINO.md §18): the band only draws it, the same state Orbit's office reads. Open ones, plus expired ones for a day. A centralino without `stato_palla` gives `· stato non noto`.
 - **One line per delegation, always**: newlines and runs of spaces become one space, the title is cut with `…` at the band's width (`bodyColumns`). The executor column goes when the band is under 80 columns.
 - **Who holds the ball**, in a word and a glyph, never colour alone:
   - `? domanda per te`: the executor asked something and nobody answered;
   - `✉ esito da leggere`: a return is in the box with no outcome;
   - `! scaduta`: the deadline passed;
   - `● tocca a Mario`: the last return was handled with `riarma` and in Orbit the linked step is Mario's, or Mario has an open step in the same phase;
-  - `⧗ in coda: Kai occupato`: the executor's session is alive and working, but has not read the delegation yet (centralino `letto_at`, BR24-F6.6): it is on something else;
-  - `◐ Kai ci lavora`, `◌ Kai fermo`: the executor's session is alive, working (and has read the delegation) or not (centralino `sessioni`, else Onda's `sessions.json`);
+  - `⧗ in coda: Kai occupato`: the executor's session is alive and working, but has not read the delegation yet (no `bus_read`, no return, no wake delivered to it, BR24-F6.6): it is on something else;
+  - `◐ Kai ci lavora`, `◌ Kai fermo`: the executor's session is alive, working (and has the delegation) or not;
   - `✓ Kai ha consegnato`: the last return was re-armed, the executor is not working and Orbit names no step of Mario's: the executor is done for now, the ball is outside it;
   - `○ Kai non aperto`: no live session of the executor; `○ Kai non aperto qui · vivo in onda-electron` (`+1`, `+2` for more) when the agent is alive in other folders on the same machine.
   Rows in this order, then by age.
-- **Plan code** from the intent or the summary (`ON24-F3`, `am18-f15`, `BR24-F6.4`, `wh17-f8.3b`; any case). The title is the step's (or phase's) in Orbit, first clause only, read with one `sqlite3 -readonly` query for all the waits and kept a minute; without Orbit (the mini, no code) the first sentence of the summary, without the intent and Alita's opening `Piano ON24, fase F3, nuova:`.
+- **Plan code and title** from the centralino's row: the code from the intent or the summary (`ON24-F3`, `BR24-F6.4`, `wh17-f8.3b`, any case), the title from the step (or phase) in Orbit, first clause only; without Orbit (the mini, no code) the first sentence of the summary.
 - **Keys and clicks**: ctrl+x tab gives the band the keys; `1`-`9` or a click on a row puts `/read <msg>` in the prompt box (the open question, the first unread return, else the delegation); a click on the code puts `/orbit <plan>`. A draft already in the box is never overwritten: a toast says what to type. The engine's `[-]` (ctrl+x ctrl+a) collapses the band.
 - A wake held back by a cap (`tetto_task`, `tetto_coppia`, `tetto_orario`) is said in words at the end of the title. A toast once when a wait expires.
 
@@ -89,7 +89,7 @@ The mod is its own plugin, separate from the main `agent-team-os` plugin, so a m
 
 ## Security
 
-Mods are not sandboxed: they run with Claude Code's own access. This one reads `~/.agent-team-os/` (`AB_HOME`) and `ONDA_SOCKET`, makes no network call, and runs only `nc -U` on the centralino socket (read-only `vista`), `sqlite3 -readonly` on Orbit's DB (titles and assignees of the plan codes), `kill -0 <pid>` (is Onda alive), `mkdir -p` and `mv` inside `onda/requests/` (the button). It writes only there, and the prompt box when a row is opened. Check with `claude plugin validate mods/bus-band`, which lists every engine call and env variable the module touches.
+Mods are not sandboxed: they run with Claude Code's own access. This one reads `~/.agent-team-os/` (`AB_HOME`) and `ONDA_SOCKET`, makes no network call, and runs only `nc -U` on the centralino socket (read-only `vista`), `kill -0 <pid>` (is Onda alive), `mkdir -p` and `mv` inside `onda/requests/` (the button). It writes only there, and the prompt box when a row is opened. Check with `claude plugin validate mods/bus-band`, which lists every engine call and env variable the module touches.
 
 ## Develop
 

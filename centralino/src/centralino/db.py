@@ -169,6 +169,7 @@ class Store:
                 if col not in cols:
                     self._w.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
             self._v3()
+            self._v4()
             self._w.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
                             (str(SCHEMA_VERSION),))
 
@@ -204,6 +205,20 @@ class Store:
             except sqlite3.OperationalError:
                 pass  # SQLite vecchio: la colonna resta col suo default, nessuno la legge più
         self._w.execute("DELETE FROM meta WHERE key='sveglia_log_offset'")
+
+    def _v4(self) -> None:
+        """v4 (BR24-F6.6): le deleghe di prima non dicono se chi esegue le ha lette. Valgono come
+        lette alla prima sveglia consegnata, se c'è, altrimenti all'ora della migrazione
+        (``letto_da`` vuoto): meglio "ci lavora" come prima che un "in coda" falso su una delega
+        già aperta da giorni."""
+        r = self._w.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        if r is None or int(r["value"]) >= 4:
+            return
+        from .tempo import iso_now
+        self._w.execute(
+            "UPDATE messages SET letto_at=COALESCE((SELECT MIN(w.at) FROM wake_decisions w WHERE "
+            "w.msg_id=messages.id AND w.decisione='sveglia'), ?) WHERE kind='delega' AND letto_at IS NULL",
+            (iso_now(),))
 
     def _connect(self) -> sqlite3.Connection:
         c = sqlite3.connect(self.path, timeout=10, isolation_level=None, check_same_thread=False)
@@ -268,6 +283,13 @@ class Store:
              1 if record.get("requires_response") else 0, record.get("response_by"),
              state, handled.get("esito"), handled.get("by"), handled.get("at"),
              delivery, origin, path, _j(record)))
+
+    @staticmethod
+    def segna_letta(c: sqlite3.Connection, mid: str, at: str, by: str | None) -> None:
+        """BR24-F6.6: la delega ``mid`` è arrivata a chi la esegue (lettura, sveglia consegnata,
+        primo ritorno). Conta solo la prima volta."""
+        c.execute("UPDATE messages SET letto_at=?, letto_da=? WHERE id=? AND kind='delega' AND letto_at IS NULL",
+                  (at, by, mid))
 
     def message(self, mid: str) -> sqlite3.Row | None:
         return self.read().execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone()

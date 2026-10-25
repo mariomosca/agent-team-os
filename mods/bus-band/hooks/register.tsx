@@ -22,21 +22,9 @@ import {
   toRow,
   toastText,
 } from './team'
-import {
-  orbitInfo,
-  orbitSql,
-  orderRows,
-  orderWaits,
-  parseWait,
-  planRef,
-  toDelegationRow,
-  waitsFooter,
-  waitsHeadline,
-  executorLive,
-  agentElsewhere,
-} from './waits'
-import type { Live, OrbitRow, PlanRef, Wait } from './waits'
-import { fallbackText, inboxOf, liveOf, parseVista, sessionsOf, vistaRequest, waitsOf } from './vista'
+import { orderRows, orderWaits, parseWait, toDelegationRow, waitsFooter, waitsHeadline } from './waits'
+import type { Wait } from './waits'
+import { fallbackText, inboxOf, parseVista, sessionsOf, vistaRequest, waitsOf } from './vista'
 import type { Vista } from './vista'
 
 const snapshot = atom({ plugin: 'bus-band', key: 'snapshot' } as const, null)
@@ -55,7 +43,6 @@ const VISTA_TIMEOUT_MS = 2_000
 const SHOWN = 3
 const TEAM_SHOWN = 4
 const WAITS_SHOWN = 5
-const ORBIT_TTL_MS = 60_000
 
 const busRoot = async ($: EngineInterface) => {
   const busHome = await $.env.get('AB_HOME')
@@ -124,46 +111,6 @@ const scanTeam = async ($: EngineInterface, vista: Vista | null): Promise<TeamSn
   }
 }
 
-// Live sessions, to say whether a delegation's executor is open (BR24-F6.4): the
-// centralino's vista, else Onda's sessions.json as the Squadra section reads it.
-const liveSessions = async ($: EngineInterface, root: string, vista: Vista | null): Promise<Live[]> => {
-  if (vista !== null) return liveOf(vista)
-  const file = `${root}/onda/sessions.json`
-  if (!(await $.fs.exists(file))) return []
-  const parsed = parseSessions(await $.fs.read(file))
-
-  return (parsed?.sessions ?? [])
-    .filter(s => s.state !== 'exited' && s.agent !== null)
-    .map(s => ({ agent: s.agent!, slug: s.slug, host: s.host, working: s.state === 'working' }))
-}
-
-// Orbit's rows for the plan codes of the waits: one read-only sqlite3 call, kept a
-// minute. Empty where Orbit is not there (the mini) or the query fails.
-let orbitCache: { sql: string; at: number; rows: OrbitRow[] } | null = null
-
-const orbitRows = async ($: EngineInterface, refs: readonly PlanRef[]): Promise<OrbitRow[]> => {
-  if (refs.length === 0) return []
-  const home = await $.env.get('HOME')
-  if (home === undefined) return []
-  const sql = orbitSql(refs)
-  const now = Date.now()
-  if (orbitCache !== null && orbitCache.sql === sql && now - orbitCache.at < ORBIT_TTL_MS) return orbitCache.rows
-  const db = `${home}/Library/Application Support/Orbit/orbit.db`
-  if (!(await $.fs.exists(db))) return []
-  const out = await $.process
-    .run(['sqlite3', '-readonly', '-json', '-cmd', '.timeout 1000', `file:${db}?mode=ro`, sql], { timeoutMs: 3000 })
-    .catch(() => null)
-  let rows: OrbitRow[] = []
-  try {
-    rows = out !== null && out.exitCode === 0 && out.stdout.trim() !== '' ? (JSON.parse(out.stdout) as OrbitRow[]) : []
-  } catch {
-    rows = []
-  }
-  orbitCache = { sql, at: now, rows }
-
-  return rows
-}
-
 // The results this session waits for (bus v2.6). Null when there are none.
 const scanWaits = async ($: EngineInterface, vista: Vista | null): Promise<WaitsSnapshot | null> => {
   const root = await busRoot($)
@@ -193,23 +140,7 @@ const scanWaits = async ($: EngineInterface, vista: Vista | null): Promise<Waits
   const ordered = orderWaits(found, now)
   if (ordered.length === 0) return null
 
-  const live = await liveSessions($, root, vista).catch(() => [])
-  const refs = ordered.map(w => planRef(w.description))
-  const orbit = await orbitRows($, refs.filter((r): r is PlanRef => r !== null)).catch(() => [])
-  const host = (vista as { host?: unknown } | null)?.host
-  const rows = orderRows(
-    ordered.map((w, i) => {
-      const ref = refs[i]
-
-      return toDelegationRow(
-        w,
-        now,
-        ref === null || ref === undefined ? null : orbitInfo(orbit, ref),
-        executorLive(w.executor, live, typeof host === 'string' ? host : 'laptop'),
-        agentElsewhere(w.executor, live, typeof host === 'string' ? host : 'laptop'),
-      )
-    }),
-  )
+  const rows = orderRows(ordered.map(w => toDelegationRow(w, now)))
 
   return {
     headline: waitsHeadline(ordered),
@@ -344,7 +275,6 @@ export const register: Register = on => {
       description: 'Mostra o nasconde la banda del bus; "squadra" solo la sezione squadra',
       argumentHint: '[squadra]',
     })
-    orbitCache = null
     await refresh($).catch(() => {})
     $.clock.every(POLL_MS, () => refresh($).catch(() => {}))
 
