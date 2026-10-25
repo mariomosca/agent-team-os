@@ -1,4 +1,4 @@
-import type { SessionsFile } from './team'
+import type { NoChannel, SessionsFile } from './team'
 import { parseSessionList } from './team'
 
 // Pure logic of the bus centralino's `vista` (BR24-F4.3): one read-only op on
@@ -18,6 +18,8 @@ export type VistaSession = {
   viva?: unknown
   ferma?: unknown
   onda_state?: unknown
+  canale?: unknown
+  started_at?: unknown
 }
 
 export type Vista = {
@@ -82,3 +84,18 @@ export const sessionsOf = (v: Vista): SessionsFile | null =>
     : null
 
 export const fallbackText = (why: string) => `Bus letto dai file: ${why}.`
+
+// BR24-F6.7: the other live bus sessions of this machine (not this one), and those of
+// them the centralino cannot wake (alive, no Onda pane, no tmux).
+const others = (v: Vista, agent: string, slug: string) =>
+  (v.sessioni ?? []).filter(
+    s => s.viva === true && typeof s.agent === 'string' && typeof s.slug === 'string' && !(s.agent === agent && s.slug === slug),
+  )
+
+export const liveCountOf = (v: Vista, agent: string, slug: string) => others(v, agent, slug).length
+
+export const noChannelOf = (v: Vista, agent: string, slug: string): NoChannel[] =>
+  others(v, agent, slug)
+    .filter(s => s.canale === 'nessuno')
+    .map(s => ({ agent: s.agent as string, slug: s.slug as string, since: typeof s.started_at === 'string' ? s.started_at : '' }))
+

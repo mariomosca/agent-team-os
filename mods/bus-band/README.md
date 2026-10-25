@@ -8,7 +8,7 @@ Bus alita/work-hub: 2 in attesa, 1 urgenti o alta (+1 di altri workspace)  [Nasc
    [normale] da vera: content-brief
 ```
 
-- A second section, **Squadra**, shows the sibling sessions (see below).
+- A second section, **Squadra**, shows only the sibling sessions that need Mario (see below).
 - UI text is in Italian (the agents' working language). Shows only when something is pending; disappears when the inbox is empty.
 - Same scoping as the shell lib (v1.4): agent from `AGENT_MAP.json` by cwd prefix, slug = workspace basename, shared root `inboxes/<agent>/` plus `inboxes/<agent>/@<slug>/`, messages whose `context.project_path` belongs to another workspace counted apart.
 - Priority is spelled out (`URGENTE`, `ALTA`, a `!!` marker), never colour alone.
@@ -54,19 +54,27 @@ On the model of the Orbit pane: a title, rules, one aligned line per delegation,
 - **Keys and clicks**: ctrl+x tab gives the band the keys; `1`-`9` or a click on a row puts `/read <msg>` in the prompt box (the open question, the first unread return, else the delegation); a click on the code puts `/orbit <plan>`. A draft already in the box is never overwritten: a toast says what to type. The engine's `[-]` (ctrl+x ctrl+a) collapses the band.
 - A wake held back by a cap (`tetto_task`, `tetto_coppia`, `tetto_orario`) is said in words at the end of the title. A toast once when a wait expires.
 
-## Squadra (v2.2)
+## Squadra: only what needs Mario (BR24-F6.7)
+
+The band says what Mario has to do now; the whole team is in Orbit's office. Nothing for him:
 
 ```
-Bus kai/portineria: ...                    (messages, as above)
-Squadra: 3 vive, 1 ferma
-!! kai/portineria   TESTO FERMO da 12 min   [Rimetti nel mosaico]
-   leo/pm-os        aspetta un permesso da 3 min
-   nico/brandart    lavora (Bash)   fuori dal mosaico   [Rimetti]
+Squadra: 4 vive · niente per te
 ```
 
-- Source: `$AB_HOME/onda/sessions.json`, written by [Onda](https://github.com/mariomosca) (only Onda sees the terminal buffer, so only it knows who is stuck). Contract: [`schema/CONTRACT.md`](../../schema/CONTRACT.md) "Onda → mod", schema `schema/onda-sessions.schema.json`.
-- Read in the same poll (20 s and end of turn). The section is **absent** if the file is missing, unreadable, of an unknown version, or if `ondaPid` is not alive (`kill -0`). The current session is left out (same cwd, or same agent and slug).
-- Order: stuck first (`TESTO FERMO` = text in the prompt box with no Enter, waiting for a permission, waiting for an answer), then by time in state. State is always in words, never only colour. At most 4 rows, then `+N`.
+Something for him, one aligned line per session:
+
+```
+Squadra: 4 vive · 3 per te
+✎ testo fermo nella casella  leo/pm-os          da 12 min  [Vai al pannello]
+⚑ aspetta un permesso        vera/growth        da 3 min   fuori dal mosaico [Rimetti nel mosaico]
+⊘ senza canale di sveglia    kai/onda-electron  da 2 h
+```
+
+- **Exceptions**, in this order and then the longest waiting: `✎ testo fermo nella casella` (text in the prompt box with no Enter), `⚑ aspetta un permesso`, `? aspetta una risposta` (Onda's states, from the vista's copy of `onda/sessions.json`), `⊘ senza canale di sveglia` (alive for the centralino but with no Onda pane and no tmux: a wake cannot reach it). Glyph and word, never colour alone. At most 4 rows, then `+N`.
+- **Live count** from the centralino's `sessioni` (it sees the sessions outside Onda too), else Onda's list. The current session is never listed nor counted (same cwd, or same agent and slug).
+- The section is **absent** with no other live session, or if Onda's file is missing, unreadable, of an unknown version, or its `ondaPid` is not alive (`kill -0`).
+- The pane button stays on the exception rows that have an Onda workspace: `Vai al pannello`, or `Rimetti nel mosaico` when the workspace is out of the mosaic.
 - **Toast** once per episode when a sibling session becomes stuck (not for sessions already stuck when this one starts: they are in the band).
 - `/bus-band` hides/shows the whole band; `/bus-band squadra` only the team section.
 - **Delegated sessions**: with `SESSIONE_DELEGATA=1` in the session's environment (a session another agent opened through Onda for a task) the team section is never drawn and raises no toasts. The messages for that session stay.

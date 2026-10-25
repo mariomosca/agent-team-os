@@ -37,13 +37,17 @@ export type TeamSession = {
   host: string
 }
 
+// BR24-F6.7: one session that needs Mario, in word and glyph.
 export type TeamRow = {
   key: string
+  kind: 'testo' | 'permesso' | 'domanda' | 'canale'
+  glyph: string
+  label: string
   name: string
-  text: string
+  since: string
   stuck: boolean
   unmounted: boolean
-  workspaceId: string
+  workspaceId: string | null
   canMount: boolean
 }
 

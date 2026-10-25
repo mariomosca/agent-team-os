@@ -105,8 +105,42 @@ describe('centralino (BR24-F4.3)', () => {
     expect(await ui.find({ text: 'dal-centralino' })).toBeDefined()
     expect(await ui.find({ text: 'da alita' })).toBeUndefined()
     expect(await ui.find({ text: 'altra-sessione' })).toBeUndefined()
-    expect(await ui.find({ text: 'nico/brandart' })).toBeDefined()
+    // BR24-F6.7: nico is idle, nothing for Mario: one line, no list of the living
+    expect(await ui.find({ text: 'Squadra: 1 viva · niente per te' })).toBeDefined()
+    expect(await ui.find({ text: /nico\/brandart/ })).toBeUndefined()
     expect(await ui.find({ text: 'Bus letto dai file' })).toBeUndefined()
+  })
+
+  test('BR24-F6.7: only the sessions that need Mario, glyph and word, the pane button', async ($, on) => {
+    const v = JSON.parse(VISTA)
+    v.result.onda.sessioni = [
+      { sessionId: 'b', workspaceId: 'ws-2', agent: 'nico', slug: 'brandart', cwd: '/w/brandart', state: 'idle', stateSince: '2026-10-18T08:50:00Z', mounted: true },
+      { sessionId: 'c', workspaceId: 'ws-3', agent: 'leo', slug: 'pm-os', cwd: '/w/pm-os', state: 'pending_input', stateSince: '2026-10-18T08:48:00Z', mounted: true },
+      { sessionId: 'd', workspaceId: 'ws-4', agent: 'vera', slug: 'growth', cwd: '/w/growth', state: 'waiting_permission', stateSince: '2026-10-18T08:57:00Z', mounted: false },
+      { sessionId: 'me', workspaceId: 'ws-5', agent: 'kai', slug: 'portineria', cwd: CWD, state: 'pending_input', stateSince: '2026-10-18T08:40:00Z', mounted: true },
+    ]
+    v.result.sessioni = [
+      { agent: 'nico', slug: 'brandart', viva: true, canale: 'onda' },
+      { agent: 'leo', slug: 'pm-os', viva: true, canale: 'onda' },
+      { agent: 'vera', slug: 'growth', viva: true, canale: 'onda' },
+      { agent: 'kai', slug: 'onda-electron', viva: true, canale: 'nessuno', started_at: '2026-10-18T08:30:00Z' },
+      { agent: 'kai', slug: 'portineria', viva: true, canale: 'onda' },
+    ]
+    world(on, { ONDA_SOCKET: '/tmp/onda.sock' }, true, JSON.stringify(v))
+    await $.session.start(START)
+    const ui = await $.ui.mount({ plugin: 'bus-band', surface: 'terminal', component: 'AbovePrompt', requestId: 'band', props: PROPS })
+    expect(await ui.find({ text: 'Squadra: 4 vive · 3 per te' })).toBeDefined()
+    expect(await ui.find({ text: /^✎ testo fermo nella casella/ })).toBeDefined()
+    expect(await ui.find({ text: /^⚑ aspetta un permesso/ })).toBeDefined()
+    expect(await ui.find({ text: /^⊘ senza canale di sveglia/ })).toBeDefined()
+    expect(await ui.find({ text: /^ {2}leo\/pm-os/ })).toBeDefined()
+    expect(await ui.find({ text: /kai\/onda-electron/ })).toBeDefined()
+    expect(await ui.find({ text: /da \d+ (min|h)/ })).toBeDefined()
+    expect(await ui.find({ text: /nico\/brandart/ })).toBeUndefined()
+    // the current session is never listed, even when it is stuck itself
+    expect(await ui.find({ text: /^ {2}kai\/portineria/ })).toBeUndefined()
+    expect(await ui.find({ label: 'Vai al pannello' })).toBeDefined()
+    expect(await ui.find({ label: 'Rimetti nel mosaico' })).toBeDefined()
   })
 
   test("without it: today's files, and the band says so", async ($, on) => {

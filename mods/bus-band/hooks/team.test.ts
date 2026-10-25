@@ -2,6 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import {
   describe as say,
+  exceptionRows,
   isSelf,
   orderTeam,
   parseSessions,
@@ -9,7 +10,6 @@ import {
   requestName,
   stuckKeys,
   teamHeadline,
-  toRow,
 } from './team'
 
 const NOW = Date.parse('2026-10-14T09:30:00Z')
@@ -68,16 +68,35 @@ describe('team', () => {
     expect(say({ ...base, state: 'pending_input', stateSince: '2026-10-14T09:18:00Z' }, NOW)).toBe('TESTO FERMO da 12 min')
     expect(say({ ...base, state: 'waiting_permission', stateSince: '2026-10-14T09:27:00Z' }, NOW)).toBe('aspetta un permesso da 3 min')
     expect(say(base, NOW)).toBe('lavora (Bash)')
+    expect(say({ ...base, state: 'waiting_answer', stateSince: '2026-10-14T06:00:00Z' }, NOW)).toBe('aspetta una risposta da 3 h')
   })
 
-  test('headline and row', () => {
-    const rows = orderTeam(
-      parseSessions(file([session({ sessionId: 'a', state: 'pending_input' }), session({ sessionId: 'b' }), session({ sessionId: 'c' })]))!.sessions,
-      () => false,
-    ).map(s => toRow(s, NOW, true))
-    expect(teamHeadline(rows)).toBe('Squadra: 3 vive, 1 ferma')
-    expect(rows[0]!.name).toBe('kai/x')
-    expect(rows[0]!.canMount).toBe(true)
+  test('BR24-F6.7: only the exceptions, by kind then the longest waiting, glyph and word', () => {
+    const sessions = parseSessions(
+      file([
+        session({ sessionId: 'a', slug: 'a', state: 'working' }),
+        session({ sessionId: 'b', slug: 'b', state: 'waiting_answer', stateSince: '2026-10-14T09:25:00Z' }),
+        session({ sessionId: 'c', slug: 'c', state: 'pending_input', stateSince: '2026-10-14T09:28:00Z' }),
+        session({ sessionId: 'd', slug: 'd', state: 'pending_input', stateSince: '2026-10-14T09:10:00Z', mounted: false }),
+        session({ sessionId: 'e', slug: 'e', state: 'idle' }),
+      ]),
+    )!.sessions
+    const rows = exceptionRows(sessions, [{ agent: 'kai', slug: 'onda-electron', since: '' }], NOW, true)
+    expect(rows.map(r => `${r.glyph} ${r.label} ${r.name} ${r.since}`)).toEqual([
+      '✎ testo fermo nella casella kai/d 20 min',
+      '✎ testo fermo nella casella kai/c 2 min',
+      '? aspetta una risposta kai/b 5 min',
+      '⊘ senza canale di sveglia kai/onda-electron ',
+    ])
+    expect(rows[0]!.unmounted).toBe(true)
+    expect(rows[3]!.workspaceId).toBe(null)
+    expect(rows[3]!.canMount).toBe(false)
+  })
+
+  test('headline: how many alive, and what is for Mario', () => {
+    expect(teamHeadline(3, 0)).toBe('Squadra: 3 vive · niente per te')
+    expect(teamHeadline(1, 0)).toBe('Squadra: 1 viva · niente per te')
+    expect(teamHeadline(5, 2)).toBe('Squadra: 5 vive · 2 per te')
   })
 
   test('toast episodes: one key per session and stuck state', () => {

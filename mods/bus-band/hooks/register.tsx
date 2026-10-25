@@ -12,6 +12,7 @@ import {
   workspaceMatch,
 } from './bus'
 import {
+  exceptionRows,
   isSelf,
   orderTeam,
   parseSessions,
@@ -19,12 +20,11 @@ import {
   requestName,
   stuckKeys,
   teamHeadline,
-  toRow,
   toastText,
 } from './team'
 import { orderRows, orderWaits, parseWait, toDelegationRow, waitsFooter, waitsHeadline } from './waits'
 import type { Wait } from './waits'
-import { fallbackText, inboxOf, parseVista, sessionsOf, vistaRequest, waitsOf } from './vista'
+import { fallbackText, inboxOf, liveCountOf, noChannelOf, parseVista, sessionsOf, vistaRequest, waitsOf } from './vista'
 import type { Vista } from './vista'
 
 const snapshot = atom({ plugin: 'bus-band', key: 'snapshot' } as const, null)
@@ -99,12 +99,14 @@ const scanTeam = async ($: EngineInterface, vista: Vista | null): Promise<TeamSn
   const canMount = (await $.env.get('ONDA_SOCKET')) !== undefined
   const now = Date.now()
   const others = orderTeam(parsed.sessions, s => isSelf(s, cwd, agent, slug))
-  if (others.length === 0) return null
-
-  const rows = others.map(s => toRow(s, now, canMount))
+  // BR24-F6.7: the live count and the sessions without a channel come from the
+  // centralino (it sees the sessions outside Onda too); without it, Onda's list.
+  const live = Math.max(vista !== null ? liveCountOf(vista, agent, slug) : 0, others.length)
+  if (live === 0 && others.length === 0) return null
+  const rows = exceptionRows(others, vista !== null ? noChannelOf(vista, agent, slug) : [], now, canMount)
 
   return {
-    headline: teamHeadline(rows),
+    headline: teamHeadline(live, rows.length),
     rows: rows.slice(0, TEAM_SHOWN),
     hidden: Math.max(0, rows.length - TEAM_SHOWN),
     sessions: others,
@@ -455,32 +457,46 @@ const waitsBlock = (
   )
 }
 
+// BR24-F6.7: only what needs Mario. One line when nothing does; otherwise one
+// aligned line per session, glyph and word first (never colour alone), the pane
+// button on the right.
 const teamBlock = (
   $: EngineInterface,
   squadra: TeamSnapshot,
   Box: Els['Box'],
   Button: Els['Button'],
   Text: Els['Text'],
-) => (
-  <Box flexDirection="column">
-    <Text bold>{squadra.headline}</Text>
-    {squadra.rows.map(r => (
-      <Box key={r.key}>
-        <Text dimColor={!r.stuck} bold={r.stuck} wrap="truncate-end">
-          {r.stuck ? '!! ' : '   '}
-          {r.name.padEnd(22)}
-          {r.text}
-          {r.unmounted ? '   fuori dal mosaico' : ''}{' '}
-        </Text>
-        {r.canMount ? (
-          <Button
-            key={`mount-${r.key}`}
-            label={!r.unmounted ? 'Vai al pannello' : r.stuck ? 'Rimetti nel mosaico' : 'Rimetti'}
-            onPress={() => requestMount($, r.workspaceId)}
-          />
-        ) : null}
-      </Box>
-    ))}
-    {squadra.hidden > 0 ? <Text dimColor>   +{squadra.hidden}</Text> : null}
-  </Box>
-)
+) => {
+  const labelW = Math.max(0, ...squadra.rows.map(r => cells(r.label)))
+  const nameW = Math.max(0, ...squadra.rows.map(r => cells(r.name)))
+  const sinceW = Math.max(0, ...squadra.rows.map(r => cells(r.since)))
+
+  return (
+    <Box flexDirection="column">
+      <Text bold>{squadra.headline}</Text>
+      {squadra.rows.map(r => (
+        <Box key={r.key}>
+          <Text bold color="warning" wrap="truncate-end">
+            {r.glyph} {pad(r.label, labelW)}
+          </Text>
+          <Text wrap="truncate-end">
+            {'  '}
+            {pad(r.name, nameW)}
+          </Text>
+          <Text dimColor>
+            {`  ${r.since === '' ? '' : `da ${r.since}`.padEnd(sinceW + 3)}`}
+            {r.unmounted ? '  fuori dal mosaico' : ''}{' '}
+          </Text>
+          {r.canMount && r.workspaceId !== null ? (
+            <Button
+              key={`mount-${r.key}`}
+              label={r.unmounted ? 'Rimetti nel mosaico' : 'Vai al pannello'}
+              onPress={() => requestMount($, r.workspaceId!)}
+            />
+          ) : null}
+        </Box>
+      ))}
+      {squadra.hidden > 0 ? <Text dimColor>  +{squadra.hidden}</Text> : null}
+    </Box>
+  )
+}

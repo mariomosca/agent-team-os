@@ -82,9 +82,9 @@ export const orderTeam = (sessions: readonly TeamSession[], self: (s: TeamSessio
         (Date.parse(a.stateSince) || 0) - (Date.parse(b.stateSince) || 0),
     )
 
-const duration = (min: number) => (min < 1 ? 'meno di 1 min' : `${min} min`)
+const duration = (min: number) => (min < 1 ? 'meno di 1 min' : min < 120 ? `${min} min` : `${Math.floor(min / 60)} h`)
 
-// The state in words, never colour alone.
+// The state in words, never colour alone (toasts and the old wording).
 export const describe = (s: TeamSession, now: number) => {
   const min = minutesSince(s.stateSince, now)
 
@@ -102,22 +102,74 @@ export const describe = (s: TeamSession, now: number) => {
   }
 }
 
-export const toRow = (s: TeamSession, now: number, canMount: boolean): TeamRow => ({
-  key: s.sessionId,
-  name: `${s.agent ?? '?'}/${s.slug}`,
-  text: describe(s, now),
-  stuck: isStuck(s.state),
-  unmounted: !s.mounted,
-  workspaceId: s.workspaceId,
-  canMount,
-})
+// ---- BR24-F6.7: only the sessions that need Mario ----
+// The band says what Mario has to do now; Orbit's office gives the whole team.
 
-export const teamHeadline = (rows: readonly TeamRow[]) => {
-  const stuck = rows.filter(r => r.stuck).length
-  const live = rows.length === 1 ? '1 viva' : `${rows.length} vive`
-  if (stuck === 0) return `Squadra: ${live}`
+export type Exception = TeamRow['kind']
 
-  return `Squadra: ${live}, ${stuck === 1 ? '1 ferma' : `${stuck} ferme`}`
+// Glyph and word per exception, in the order they are shown: never colour alone.
+const EXCEPTION: Record<Exception, { glyph: string; label: string }> = {
+  testo: { glyph: '✎', label: 'testo fermo nella casella' },
+  permesso: { glyph: '⚑', label: 'aspetta un permesso' },
+  domanda: { glyph: '?', label: 'aspetta una risposta' },
+  canale: { glyph: '⊘', label: 'senza canale di sveglia' },
+}
+const ORDER: readonly Exception[] = ['testo', 'permesso', 'domanda', 'canale']
+
+const exceptionOf = (state: TeamState): Exception | null =>
+  state === 'pending_input' ? 'testo' : state === 'waiting_permission' ? 'permesso' : state === 'waiting_answer' ? 'domanda' : null
+
+// A bus session the centralino sees alive without a channel to wake it (not in Onda, no tmux).
+export type NoChannel = { agent: string; slug: string; since: string }
+
+export const exceptionRows = (
+  onda: readonly TeamSession[],
+  noChannel: readonly NoChannel[],
+  now: number,
+  canMount: boolean,
+): TeamRow[] => {
+  const rows: { row: TeamRow; min: number }[] = []
+  for (const s of onda) {
+    const kind = exceptionOf(s.state)
+    if (kind === null) continue
+    const min = minutesSince(s.stateSince, now)
+    rows.push({ min, row: {
+      key: s.sessionId,
+      kind,
+      ...EXCEPTION[kind],
+      name: `${s.agent ?? '?'}/${s.slug}`,
+      since: duration(min),
+      stuck: true,
+      unmounted: !s.mounted,
+      workspaceId: s.workspaceId,
+      canMount,
+    } })
+  }
+  for (const s of noChannel) {
+    const min = s.since === '' ? 0 : minutesSince(s.since, now)
+    rows.push({ min, row: {
+      key: `canale:${s.agent}/${s.slug}`,
+      kind: 'canale',
+      ...EXCEPTION.canale,
+      name: `${s.agent}/${s.slug}`,
+      since: s.since === '' ? '' : duration(min),
+      stuck: true,
+      unmounted: false,
+      workspaceId: null,
+      canMount: false,
+    } })
+  }
+
+  // By kind, then the one waiting longest.
+  return rows
+    .sort((a, b) => ORDER.indexOf(a.row.kind) - ORDER.indexOf(b.row.kind) || b.min - a.min)
+    .map(r => r.row)
+}
+
+export const teamHeadline = (live: number, exceptions: number) => {
+  const vive = live === 1 ? '1 viva' : `${live} vive`
+
+  return `Squadra: ${vive} · ${exceptions === 0 ? 'niente per te' : `${exceptions} per te`}`
 }
 
 // Episode key: a session toasts once per (session, state) until it leaves it.
