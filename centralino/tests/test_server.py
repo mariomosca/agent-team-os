@@ -169,13 +169,15 @@ def test_letto_at_alla_prima_lettura_dell_esecutore(bus):
     time.sleep(1.1)
     call("read", {"message_id": mid}, caller=kai, sock=sock)
     assert attesa()["letto_at"] == prima["letto_at"]
-    # una comunicazione letta non segna nulla
+    # BR24-F6.8: anche un messaggio che non è una delega registra la sua prima lettura
     m2 = call("send", {"to": "kai/s1", "intent": "y", "summary": "info", "message_type": "brief",
                        "kind": "comunicazione"}, caller=alita, sock=sock)["result"]["id"]
-    call("read", {"message_id": m2}, caller=kai, sock=sock)
+    call("read", {"message_id": m2}, caller=kai2, sock=sock)
     from centralino.db import Store
     st = Store(bus / "centralino.db")
-    assert st.message(m2)["letto_at"] is None
+    assert st.message(m2)["letto_at"] is None  # un'altra sessione non conta
+    call("read", {"message_id": m2}, caller=kai, sock=sock)
+    assert st.message(m2)["letto_da"] == "kai/s1"
     st.close()
 
 
@@ -217,6 +219,28 @@ def test_vista_dell_esecutore(bus):
     e = call("reply", {"message_id": mid, "summary": "fatto"}, caller=kai, sock=sock)["result"]["sent"]["id"]
     esito = next(m for m in call("vista", sock=sock)["result"]["messaggi"] if m["raw"]["id"] == e)
     assert esito["stato_msg"] == "ritorno" and esito["riga"] is None
+
+
+def test_dopo_il_riarma_la_risposta_del_delegante_ridà_la_palla(bus):
+    # BR24-F6.8: AM18-F15 del 25/10, "tocca a Mario" anche dopo che Alita aveva risposto all'esecutore
+    sock = bus / "centralino.sock"
+    kai, alita = _caller(bus, "kai"), _caller(bus, "alita")
+    mid = call("send", {"to": "kai/s1", "intent": "x", "summary": "fai X", "message_type": "request",
+                        "kind": "delega"}, caller=alita, sock=sock)["result"]["id"]
+    call("read", {"message_id": mid}, caller=kai, sock=sock)
+    e = call("reply", {"message_id": mid, "summary": "fatto, serve l'ok di Mario"},
+             caller=kai, sock=sock)["result"]["sent"]["id"]
+    assert call("close", {"message_id": e, "esito": "riarma"}, caller=alita, sock=sock)["ok"]
+    palla = lambda: call("vista", sock=sock)["result"]["attese"][0]["stato_palla"]  # noqa: E731
+    # kai qui è viva per heartbeat e non ferma: per la vista lavora
+    assert palla() == "lavora"
+    ok = call("send", {"to": "kai/s1", "intent": "ok", "summary": "ok di Mario, vai", "message_type": "response",
+                       "in_reply_to": e}, caller=alita, sock=sock)["result"]["id"]
+    assert palla() == "coda"  # la risposta del delegante non è ancora letta
+    stato_msg = next(m["stato_msg"] for m in call("vista", sock=sock)["result"]["messaggi"] if m["raw"]["id"] == ok)
+    assert stato_msg == "risposta"
+    call("read", {"message_id": ok}, caller=kai, sock=sock)
+    assert palla() == "lavora"
 
 
 def test_migrazione_v4_con_backup(tmp_path):

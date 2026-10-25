@@ -165,6 +165,7 @@ def sm(raw, letto=None, domanda=False, risposta=False, ritorno=False, orbit=None
 
 
 def test_stati_del_messaggio():
+    # la risposta del delegante a una domanda o a un esito di chi esegue
     assert sm(msg())["stato_msg"] == "nuova"
     assert sm(msg(), letto=LETTA)["stato_msg"] == "lavori"
     assert sm(msg(), letto=LETTA, domanda=True)["stato_msg"] == "domanda"
@@ -185,3 +186,17 @@ def test_riga_del_messaggio():
               "title": "Squadra nella banda solo con le eccezioni (Mario 25/10)", "state": "doing", "assignee": "kai"}]
     assert sm(msg(), orbit=orbit)["riga"]["titolo"] == "Squadra nella banda solo con le eccezioni"
     assert [sm(msg(), letto=LETTA)["riga"]["glifo"], sm(msg(), domanda=True)["riga"]["parola"]] == ["◐", "domanda in attesa"]
+
+
+def test_dopo_il_riarma_conta_l_ultima_mossa():
+    riarmata = attesa(description="AM18-F15: x", returns={
+        "r": {"type": "response", "at": "2026-10-17T10:55:00Z", "state": "handled", "handled": "riarma"}})
+    orbit_mario = [{"code": "AM18", "phase": "F15", "phase_title": "Analisi", "step_key": "F15.5",
+                    "title": "Prova in auto", "state": "todo", "assignee": "mario"}]
+    assert sp(riarmata, [KAI_LAVORA], orbit=orbit_mario)["stato_palla"] == "mario"
+    # il delegante ha risposto dopo il riarma: la palla è di chi esegue
+    assert sp(riarmata, [KAI_LAVORA], orbit=orbit_mario, risposta={"letto": None})["stato_palla"] == "coda"
+    assert sp(riarmata, [KAI_LAVORA], orbit=orbit_mario, risposta={"letto": LETTA})["stato_palla"] == "lavora"
+    assert sp(riarmata, [KAI_FERMO], orbit=orbit_mario, risposta={"letto": LETTA})["stato_palla"] == "fermo"
+    assert sp(riarmata, [], orbit=orbit_mario, risposta={"letto": None})["stato_palla"] == "chiusa"
+

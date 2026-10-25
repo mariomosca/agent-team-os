@@ -446,7 +446,8 @@ class Centralino:
         righe_orbit = self.orbit.righe(rifs)  # una query sola per attese e messaggi
         for x in attese:
             x.update(palla.stato_palla(x["raw"], x["letto_at"], vive, host, righe_orbit,
-                                       letto_noto=bool(x.pop("delega_qui")), letto_da=x["letto_da"]))
+                                       letto_noto=bool(x.pop("delega_qui")), letto_da=x["letto_da"],
+                                       risposta=self._risposta_dopo(r, x["raw"])))
         # BR24-F6.8: lo stato di ogni messaggio in casella per chi lo riceve
         for x in messaggi:
             m = x.pop("_m")
@@ -464,6 +465,22 @@ class Centralino:
                 "workspaces": workspaces}
 
     @staticmethod
+    def _risposta_dopo(r, rec: dict) -> dict | None:
+        """L'ultimo messaggio del delegante sul task dopo l'ultimo ritorno, e se chi esegue l'ha
+        letto (letto_at, o già consumato). None se l'ultima mossa è di chi esegue."""
+        rets = [e for e in (rec.get("returns") or {}).values() if isinstance(e, dict) and e.get("at")]
+        if not rets or not rec.get("task_id"):
+            return None
+        ultimo = max(e["at"] for e in rets)
+        # ts al secondo: >= e senza la delega stessa, che è del delegante ma viene prima
+        m = r.execute("SELECT letto_at, state FROM messages WHERE task_id=? AND from_agent=? AND from_slug=? "
+                      "AND ts>=? AND kind IS NOT 'delega' ORDER BY ts DESC, id DESC LIMIT 1",
+                      (rec["task_id"], rec.get("agent") or "", rec.get("slug") or "", ultimo)).fetchone()
+        if m is None:
+            return None
+        return {"letto": m["letto_at"] or ("consumato" if m["state"] != "pending" else None)}
+
+    @staticmethod
     def _stato_messaggio(r, m, raw: dict, righe_orbit: list[dict]) -> dict:
         agent, slug = m["to_agent"], m["to_slug"]
         dalla = "from_agent=? AND (? IS NULL OR from_slug=?)"
@@ -471,8 +488,9 @@ class Centralino:
             f"SELECT 1 FROM messages q WHERE q.type='question' AND q.task_id=? AND {dalla} AND NOT EXISTS "
             "(SELECT 1 FROM messages a WHERE a.in_reply_to=q.id) LIMIT 1",
             (m["task_id"], agent, slug, slug)).fetchone())
+        # una risposta a un messaggio di questa sessione: a una sua domanda, a un suo esito
         risposta_a_me = bool(m["type"] == "response" and m["in_reply_to"] and r.execute(
-            f"SELECT 1 FROM messages WHERE id=? AND type='question' AND {dalla}",
+            f"SELECT 1 FROM messages WHERE id=? AND {dalla}",
             (m["in_reply_to"], agent, slug, slug)).fetchone())
         ritorno_mio = bool(m["kind"] != "delega" and m["task_id"] and r.execute(
             "SELECT 1 FROM waits WHERE task_id=? AND owner_agent=? AND (? IS NULL OR owner_slug=?)",

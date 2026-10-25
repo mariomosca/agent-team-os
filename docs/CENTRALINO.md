@@ -574,7 +574,8 @@ lettura e calcola lo stato, per la banda e per l'Ufficio di Orbit.
 
 **Lettura (schema v4).** `messages.letto_at`, `messages.letto_da`, aggiunte da `MIGRAZIONI`. Prima di
 migrare un database di schema più vecchio, `Store` ne fa una copia accanto con la backup API di SQLite
-(`centralino.db.bak-v3-<ora>`), una volta sola. Una delega (`kind=delega`) conta come letta alla prima di:
+(`centralino.db.bak-v3-<ora>`), una volta sola. Ogni messaggio registra la sua prima lettura (`bus_read` della
+sessione destinataria, sveglia consegnata); una delega (`kind=delega`) conta come letta alla prima di:
 
 - `read` (`bus_read`) della sessione destinataria, o di una sessione dell'agente se è andata alla casella
   comune; non conta la lettura del delegante né di un'altra sessione dello stesso agente;
@@ -603,16 +604,20 @@ non conta (non è un segnale che il centralino veda).
 
 Regole (`centralino/palla.py`, test in `tests/test_palla.py`): scaduta, poi domanda aperta, poi esito
 non gestito, poi `mario` se l'ultimo ritorno è riarmato e in Orbit il passo è di Mario (o Mario ha un
-passo aperto nella fase), poi sessione esecutrice viva al lavoro (`coda` se la delega non è letta,
+passo aperto nella fase) e il delegante non ha più scritto sul task dopo quel ritorno, poi sessione
+esecutrice viva al lavoro (`coda` se la delega non è letta,
 `lavora` se sì), poi `consegnato` se riarmata, `fermo` se viva e ferma, altrimenti `chiusa`. Un'attesa
-senza messaggio di delega (registrata da `bus_expect`) non sa se è letta e resta a `lavora`. Orbit si
+senza messaggio di delega (registrata da `bus_expect`) non sa se è letta e resta a `lavora`. **Ultima
+mossa** (F6.8): se dopo l'ultimo ritorno il delegante ha scritto sul task (risposta a un esito riarmato o a
+una domanda), la palla torna a chi esegue anche con un passo di Mario aperto in Orbit: `coda` finché quel
+messaggio non è letto (o consumato), poi `lavora`; `fermo` o `chiusa` se la sessione è ferma o non c'è. Orbit si
 legge in sola lettura da `~/Library/Application Support/Orbit/orbit.db` (`AB_ORBIT_DB` per cambiarlo),
 una query per tutti i codici, tenuta un minuto; sul mini non c'è e il titolo viene dal summary. Una
 delega a un'altra macchina diventa letta solo al primo ritorno: le sessioni dell'altra macchina non sono
 fra le vive di questa, quindi la riga dice `chiusa` finché non torna qualcosa.
 
 **Messaggi per chi li riceve (BR24-F6.8).** Ogni messaggio pending della vista porta anche `stato_msg` e
-`riga`, lo stato per la sessione destinataria: `risposta` (risposta del delegante a una sua domanda),
+`riga`, lo stato per la sessione destinataria: `risposta` (risposta a un suo messaggio: a una domanda, a un esito),
 `nuova` (delega non letta), `comunicazione` (tutto ciò che non è una delega né una risposta a lei),
 `lavori` (delega letta), `domanda` (delega su cui la sessione ha una domanda senza risposta), `ritorno`
 (ritorno su una delega che la sessione ha dato: sta fra le sue attese, `riga` è `null`). `riga`: glifo

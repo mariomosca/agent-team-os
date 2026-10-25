@@ -129,8 +129,8 @@ class Sveglia:
                 conn = self.c._conn()
                 at = iso_now()
                 for a, s, d in nuove:
-                    if d.decisione == "sveglia":  # consegnata nella casella: la delega è arrivata
-                        conn.execute("UPDATE messages SET letto_at=?, letto_da=? WHERE id=? AND kind='delega' "
+                    if d.decisione == "sveglia":  # consegnata nella casella: il messaggio è arrivato
+                        conn.execute("UPDATE messages SET letto_at=?, letto_da=? WHERE id=? "
                                      "AND letto_at IS NULL AND (to_slug IS NULL OR to_slug=?)",
                                      (at, f"{a}/{s}", d.msg_id, s))
                     conn.execute("INSERT INTO wake_decisions (at, giro, agent, slug, msg_id, task_id, regola, "

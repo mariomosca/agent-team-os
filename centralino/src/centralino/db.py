@@ -286,9 +286,9 @@ class Store:
 
     @staticmethod
     def segna_letta(c: sqlite3.Connection, mid: str, at: str, by: str | None) -> None:
-        """BR24-F6.6: la delega ``mid`` è arrivata a chi la esegue (lettura, sveglia consegnata,
-        primo ritorno). Conta solo la prima volta."""
-        c.execute("UPDATE messages SET letto_at=?, letto_da=? WHERE id=? AND kind='delega' AND letto_at IS NULL",
+        """BR24-F6.6: il messaggio ``mid`` è arrivato a chi lo riceve (lettura, sveglia consegnata,
+        per una delega anche il primo ritorno). Conta solo la prima volta."""
+        c.execute("UPDATE messages SET letto_at=?, letto_da=? WHERE id=? AND letto_at IS NULL",
                   (at, by, mid))
 
     def message(self, mid: str) -> sqlite3.Row | None:

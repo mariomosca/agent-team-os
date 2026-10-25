@@ -154,13 +154,14 @@ class DbBus:
         return data
 
     def segna_lettura(self, agent: str, slug: str, partial_id: str) -> str | None:
-        """BR24-F6.6: la prima lettura di una delega da parte di chi la esegue (la sessione
-        destinataria, o una sessione dell'agente se è andata alla casella comune) ne fissa
-        ``letto_at``. Non conta la lettura di chi l'ha mandata né di un'altra sessione.
+        """BR24-F6.6: la prima lettura di un messaggio (di una delega: da parte di chi la esegue)
+        dalla sessione destinataria, o da una sessione dell'agente se è andato alla casella
+        comune, ne fissa ``letto_at``. Non conta la lettura di chi l'ha mandato né di un'altra
+        sessione. Per le deleghe
         Valgono anche la sveglia consegnata (sveglia.py) e il primo ritorno sul task
         (``_registra_ritorno``). Solo registro: la sveglia non la guarda."""
         r = self._row(agent, partial_id)
-        if (r is None or r["kind"] != "delega" or r["letto_at"] or r["to_host"] != (self.host_self() or "")
+        if (r is None or r["letto_at"] or r["to_host"] != (self.host_self() or "")
                 or r["to_slug"] not in (None, slug)
                 or (r["from_agent"] == agent and r["from_slug"] == slug)):
             return None

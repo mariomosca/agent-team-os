@@ -179,9 +179,12 @@ def _eta(iso_s: str | None) -> str:
 
 def stato_palla(rec: dict, letto_at: str | None, vive: list[dict], host: str,
                 orbit_righe: list[dict] | None = None, *, letto_noto: bool = True,
-                letto_da: str | None = None) -> dict:
+                letto_da: str | None = None, risposta: dict | None = None) -> dict:
     """``stato_palla`` di un'attesa più i campi della riga. ``vive``: dict con agent, slug,
-    host, lavora. ``letto_noto`` False: nessuno dice se la delega è letta (resta "ci lavora")."""
+    host, lavora. ``letto_noto`` False: nessuno dice se la delega è letta (resta "ci lavora").
+    ``risposta``: l'ultimo messaggio del delegante sul task dopo l'ultimo ritorno (``letto``:
+    chi esegue l'ha letto): l'ultima mossa è del delegante e la palla torna a chi esegue, anche
+    se dopo un riarma il passo di Mario in Orbit è ancora aperto."""
     rets = list(_d(rec.get("returns")).items())
     domande = [(k, e) for k, e in _d(rec.get("questions")).items() if isinstance(e, dict)]
     domande += [(k, e) for k, e in rets if isinstance(e, dict) and e.get("type") == "question"]
@@ -190,7 +193,10 @@ def stato_palla(rec: dict, letto_at: str | None, vive: list[dict], host: str,
     esiti = sorted([(k, e) for k, e in rets if isinstance(e, dict) and e.get("type") != "question" and APERTO(e)],
                    key=lambda x: x[1].get("at") or "")
     ultimo = max((e for _, e in rets if isinstance(e, dict)), key=lambda e: e.get("at") or "", default=None)
-    riarmata = ultimo is not None and ultimo.get("handled") == "riarma"
+    # dopo un riarma conta chi ha fatto l'ultima mossa: se è il delegante, la palla è di chi esegue
+    riarmata = ultimo is not None and ultimo.get("handled") == "riarma" and risposta is None
+    if risposta is not None:
+        letto_at, letto_noto = (risposta.get("letto") or None), True
     esecutore = _s(rec.get("executor_session")) or _s(letto_da) or _s(rec.get("delegated_to"))
     rif = rif_piano(rec.get("description") or "")
     orbit = info_orbit(orbit_righe or [], rif) if rif else None
