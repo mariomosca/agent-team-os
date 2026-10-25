@@ -232,4 +232,36 @@ describe('deleghe aperte (BR24-F6.4)', () => {
     const ui = await mount($)
     expect(await ui.find({ text: /stato non noto/ })).toBeDefined()
   })
+
+  test('BR24-F6.8: Da fare above, delegations below, digits go on from one to the other', async ($, on) => {
+    const v = JSON.parse(ALITA_WAITS)
+    v.result.messaggi = [
+      {
+        agent: 'kai', slug: 'portineria', letto: false, stato_msg: 'nuova',
+        raw: { id: 'msg-n', from: 'alita', from_session: 'alita/work-hub', intent: 'br24-f6.7', priority: 'normal', ts: '2026-10-18T08:58:00Z' },
+        riga: { glifo: '✉', parola: 'delega nuova', ordine: 1, codice: 'BR24-F6.7', piano: 'BR24', titolo: 'Squadra nella banda solo con le eccezioni', mittente: 'alita/work-hub', leggi: '/read msg-n' },
+      },
+      {
+        agent: 'kai', slug: 'portineria', letto: false, stato_msg: 'lavori',
+        raw: { id: 'msg-l', from: 'alita', intent: 'br24-f6.6', priority: 'urgent', ts: '2026-10-18T08:52:00Z' },
+        riga: { glifo: '◐', parola: 'ci lavori', ordine: 3, codice: 'BR24-F6.6', piano: 'BR24', titolo: 'Banda: in coda o ci lavora', mittente: 'alita/work-hub', leggi: '/read msg-l' },
+      },
+      {
+        agent: 'kai', slug: 'portineria', letto: false, stato_msg: 'ritorno', riga: null,
+        raw: { id: 'msg-r', from: 'kai', intent: 're', priority: 'normal', ts: '2026-10-18T08:55:00Z' },
+      },
+    ]
+    world(on, {}, true, JSON.stringify(v))
+    await $.session.start(START)
+    const ui = await mount($)
+    expect(await ui.find({ text: 'Da fare · 2' })).toBeDefined()
+    expect(await ui.find({ text: /^◐ ci lavori · urgente {2}$/ })).toBeDefined()
+    expect(await ui.find({ text: /^✉ delega nuova {9}$/ })).toBeDefined()
+    expect(await ui.find({ text: /da alita\/work-hub/ })).toBeDefined()
+    expect(await ui.find({ text: /msg-r|re$/ })).toBeUndefined()
+    // keys 1-2 for Da fare, 3-4 for the delegations
+    expect(await ui.find({ text: /3-4 o clic: apri/ })).toBeDefined()
+    expect(await ui.find({ text: /Bus kai\/portineria/ })).toBeUndefined()
+  })
 })
+

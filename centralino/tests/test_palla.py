@@ -149,3 +149,39 @@ def test_orbit_in_sola_lettura(tmp_path):
     righe = o.righe([rif_piano("BR24-F6.6")])
     assert [(r["step_key"], r["title"]) for r in righe] == [("F6.6", "Banda: in coda o ci lavora")]
     assert palla.Orbit(tmp_path / "manca.db").righe([rif_piano("BR24-F6.6")]) == []
+
+
+# ---------- BR24-F6.8: un messaggio in casella, per chi lo riceve ----------
+
+def msg(**over):
+    return {"id": "msg-1", "from": "alita", "from_session": "alita/work-hub", "intent": "br24-f6.7-squadra",
+            "type": "request", "kind": "delega", "priority": "normal", "ts": "2026-10-17T10:58:00Z",
+            "payload": {"summary": "BR24-F6.7: Squadra solo con le eccezioni. Dettagli."}, **over}
+
+
+def sm(raw, letto=None, domanda=False, risposta=False, ritorno=False, orbit=None):
+    return palla.stato_messaggio(raw, letto_at=letto, domanda_aperta=domanda, risposta_a_me=risposta,
+                                 ritorno_mio=ritorno, orbit_righe=orbit)
+
+
+def test_stati_del_messaggio():
+    assert sm(msg())["stato_msg"] == "nuova"
+    assert sm(msg(), letto=LETTA)["stato_msg"] == "lavori"
+    assert sm(msg(), letto=LETTA, domanda=True)["stato_msg"] == "domanda"
+    assert sm(msg(type="response", kind=None), risposta=True)["stato_msg"] == "risposta"
+    assert sm(msg(type="brief", kind="comunicazione"))["stato_msg"] == "comunicazione"
+    assert sm(msg(type="event", kind=None))["stato_msg"] == "comunicazione"
+    assert sm(msg(type="response", kind=None), ritorno=True) == {"stato_msg": "ritorno", "riga": None}
+
+
+def test_riga_del_messaggio():
+    r = sm(msg())["riga"]
+    assert (r["glifo"], r["parola"], r["codice"], r["titolo"], r["mittente"], r["da"], r["leggi"], r["priorita"]) == (
+        "✉", "delega nuova", "BR24-F6.7", "Squadra solo con le eccezioni.", "alita/work-hub", "2 min", "/read msg-1", None)
+    assert sm(msg(priority="urgent"))["riga"]["priorita"] == "urgente"
+    assert sm(msg(priority="high"))["riga"]["priorita"] == "alta"
+    assert sm(msg(priority="low"))["riga"]["priorita"] is None
+    orbit = [{"code": "BR24", "phase": "F6", "phase_title": "Misura", "step_key": "F6.7",
+              "title": "Squadra nella banda solo con le eccezioni (Mario 25/10)", "state": "doing", "assignee": "kai"}]
+    assert sm(msg(), orbit=orbit)["riga"]["titolo"] == "Squadra nella banda solo con le eccezioni"
+    assert [sm(msg(), letto=LETTA)["riga"]["glifo"], sm(msg(), domanda=True)["riga"]["parola"]] == ["◐", "domanda in attesa"]

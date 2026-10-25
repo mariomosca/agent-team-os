@@ -421,9 +421,10 @@ class Centralino:
             remoti[h] = {"ok": bool(snap.get("ok")), "fetched_at": snap.get("fetched_at"),
                          "sessioni": snap.get("sessions") or []}
         messaggi = [{"agent": x["to_agent"], "slug": x["to_slug"], "letto": x["state"] != "pending",
-                     "state": x["state"], "raw": json.loads(x["raw"])}
+                     "state": x["state"], "raw": json.loads(x["raw"]), "_m": x}
                     for x in r.execute(
-                        "SELECT to_agent, to_slug, state, raw FROM messages WHERE to_host=? AND "
+                        "SELECT id, to_agent, to_slug, state, raw, kind, type, task_id, in_reply_to, letto_at "
+                        "FROM messages WHERE to_host=? AND "
                         "((state='pending' AND ts>=?) OR (state!='pending' AND ts>=?)) ORDER BY ts",
                         (host, cut("pending_s", 7 * 86400), cut("letti_s", 86400)))]
         # BR24-F6.6: accanto all'attesa, quando chi esegue ha letto la delega (null: non ancora,
@@ -439,10 +440,18 @@ class Centralino:
                  "lavora": x.get("onda_state") == "working"
                  or (not isinstance(x.get("onda_state"), str) and x.get("ferma") is False)} for x in sessioni]
         rifs = [rf for x in attese if (rf := palla.rif_piano(x["raw"].get("description") or ""))]
-        righe_orbit = self.orbit.righe(rifs)
+        rifs += [rf for x in messaggi if not x["letto"]
+                 if (rf := palla.rif_piano(x["raw"].get("intent") or "",
+                                           str(palla._d(x["raw"].get("payload")).get("summary") or "")))]
+        righe_orbit = self.orbit.righe(rifs)  # una query sola per attese e messaggi
         for x in attese:
             x.update(palla.stato_palla(x["raw"], x["letto_at"], vive, host, righe_orbit,
                                        letto_noto=bool(x.pop("delega_qui")), letto_da=x["letto_da"]))
+        # BR24-F6.8: lo stato di ogni messaggio in casella per chi lo riceve
+        for x in messaggi:
+            m = x.pop("_m")
+            if not x["letto"]:
+                x.update(self._stato_messaggio(r, m, x["raw"], righe_orbit))
         agenti = [{"agent": k, **{f: (v or {}).get(f) for f in ("display_name", "role", "domain", "workspace_root",
                                                                "voice_id", "avatar_path", "host")}}
                   for k, v in sorted(self.amap.agents().items())]
@@ -453,6 +462,24 @@ class Centralino:
         return {"host": host, "generato_at": iso(adesso), "agenti": agenti,
                 "sessioni": sessioni, "onda": onda, "remoti": remoti, "messaggi": messaggi, "attese": attese,
                 "workspaces": workspaces}
+
+    @staticmethod
+    def _stato_messaggio(r, m, raw: dict, righe_orbit: list[dict]) -> dict:
+        agent, slug = m["to_agent"], m["to_slug"]
+        dalla = "from_agent=? AND (? IS NULL OR from_slug=?)"
+        domanda_aperta = bool(m["kind"] == "delega" and m["task_id"] and r.execute(
+            f"SELECT 1 FROM messages q WHERE q.type='question' AND q.task_id=? AND {dalla} AND NOT EXISTS "
+            "(SELECT 1 FROM messages a WHERE a.in_reply_to=q.id) LIMIT 1",
+            (m["task_id"], agent, slug, slug)).fetchone())
+        risposta_a_me = bool(m["type"] == "response" and m["in_reply_to"] and r.execute(
+            f"SELECT 1 FROM messages WHERE id=? AND type='question' AND {dalla}",
+            (m["in_reply_to"], agent, slug, slug)).fetchone())
+        ritorno_mio = bool(m["kind"] != "delega" and m["task_id"] and r.execute(
+            "SELECT 1 FROM waits WHERE task_id=? AND owner_agent=? AND (? IS NULL OR owner_slug=?)",
+            (m["task_id"], agent, slug, slug)).fetchone())
+        return palla.stato_messaggio(raw, letto_at=m["letto_at"], domanda_aperta=domanda_aperta,
+                                     risposta_a_me=risposta_a_me, ritorno_mio=ritorno_mio,
+                                     orbit_righe=righe_orbit)
 
     # ---------- servizio ----------
 

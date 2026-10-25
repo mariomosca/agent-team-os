@@ -610,3 +610,13 @@ legge in sola lettura da `~/Library/Application Support/Orbit/orbit.db` (`AB_ORB
 una query per tutti i codici, tenuta un minuto; sul mini non c'è e il titolo viene dal summary. Una
 delega a un'altra macchina diventa letta solo al primo ritorno: le sessioni dell'altra macchina non sono
 fra le vive di questa, quindi la riga dice `chiusa` finché non torna qualcosa.
+
+**Messaggi per chi li riceve (BR24-F6.8).** Ogni messaggio pending della vista porta anche `stato_msg` e
+`riga`, lo stato per la sessione destinataria: `risposta` (risposta del delegante a una sua domanda),
+`nuova` (delega non letta), `comunicazione` (tutto ciò che non è una delega né una risposta a lei),
+`lavori` (delega letta), `domanda` (delega su cui la sessione ha una domanda senza risposta), `ritorno`
+(ritorno su una delega che la sessione ha dato: sta fra le sue attese, `riga` è `null`). `riga`: glifo
+(`↩ ✉ ≡ ◐ ?`), parola, ordine, codice, piano, titolo (Orbit, altrimenti la prima frase del summary),
+mittente, da, leggi (`/read <id>`), priorita (`urgente`, `alta`, altrimenti `null`). La banda li disegna
+nella sezione "Da fare".
+

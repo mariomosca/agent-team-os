@@ -7,12 +7,31 @@ export type BusMessage = {
   priority: Priority
   type: string
   ts: string
+  // BR24-F6.8: the state for this session and the row, as the centralino's vista computed them.
+  state: string | null
+  row: Record<string, unknown> | null
+}
+
+// One message to do (BR24-F6.8), drawn like a delegation row.
+export type TodoRow = {
+  key: string
+  state: string
+  glyph: string
+  label: string
+  code: string | null
+  plan: string | null
+  title: string
+  from: string
+  since: string
+  read: string
+  pressing: boolean
 }
 
 export type BusSnapshot = {
   agent: string
   slug: string
   messages: BusMessage[]
+  rows: TodoRow[]
   elsewhere: number
 }
 

@@ -192,6 +192,33 @@ def test_letta_al_primo_ritorno_dell_esecutore(bus):
     assert a["letto_at"] and a["letto_da"] == "kai/s1"
 
 
+def test_vista_dell_esecutore(bus):
+    # BR24-F6.8: delega nuova, ci lavori, domanda in attesa, risposta ricevuta, comunicazione
+    sock = bus / "centralino.sock"
+    kai, alita = _caller(bus, "kai"), _caller(bus, "alita")
+    stato = lambda: {m["raw"]["id"]: m.get("stato_msg") for m in call("vista", sock=sock)["result"]["messaggi"]  # noqa: E731
+                     if m["agent"] == "kai" and not m["letto"]}
+    mid = call("send", {"to": "kai/s1", "intent": "br24-f6.8-x", "summary": "BR24-F6.8: fai X.",
+                        "message_type": "request", "kind": "delega"}, caller=alita, sock=sock)["result"]["id"]
+    info = call("send", {"to": "kai/s1", "intent": "info", "summary": "solo per sapere",
+                         "message_type": "brief", "kind": "comunicazione"}, caller=alita, sock=sock)["result"]["id"]
+    assert stato() == {mid: "nuova", info: "comunicazione"}
+    call("read", {"message_id": mid}, caller=kai, sock=sock)
+    assert stato()[mid] == "lavori"
+    q = call("reply", {"message_id": mid, "summary": "A o B?", "message_type": "question"},
+             caller=kai, sock=sock)["result"]["sent"]["id"]
+    assert stato()[mid] == "domanda"
+    risp = call("reply", {"message_id": q, "summary": "A"}, caller=alita, sock=sock)["result"]["sent"]["id"]
+    s = stato()
+    assert s[mid] == "lavori" and s[risp] == "risposta"
+    riga = next(m["riga"] for m in call("vista", sock=sock)["result"]["messaggi"] if m["raw"]["id"] == mid)
+    assert riga["codice"] == "BR24-F6.8" and riga["mittente"] == "alita/s1"
+    # l'esito di kai torna ad alita: fra le sue deleghe, non nella sua lista da fare
+    e = call("reply", {"message_id": mid, "summary": "fatto"}, caller=kai, sock=sock)["result"]["sent"]["id"]
+    esito = next(m for m in call("vista", sock=sock)["result"]["messaggi"] if m["raw"]["id"] == e)
+    assert esito["stato_msg"] == "ritorno" and esito["riga"] is None
+
+
 def test_migrazione_v4_con_backup(tmp_path):
     import sqlite3
     from centralino.db import Store

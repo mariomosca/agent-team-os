@@ -1,21 +1,25 @@
 # bus-band
 
-A [Claude Code mod](https://code.claude.com/docs/en/plugins/mods/overview) (Claude Code 2.1.287+) that draws a band above the prompt with the messages waiting for **this session** on the Agent Team OS bus.
+A [Claude Code mod](https://code.claude.com/docs/en/plugins/mods/overview) (Claude Code 2.1.287+) that draws a band above the prompt with what **this session** has to do on the Agent Team OS bus, the delegations it waits for, and the sibling sessions that need Mario.
+
+## Da fare (BR24-F6.8)
 
 ```
-Bus alita/work-hub: 2 in attesa, 1 urgenti o alta (+1 di altri workspace)  [Nascondi]
-!! [ALTA] da kai: crewmoor-stato-piano-v1
-   [normale] da vera: content-brief
+Da fare · 2                                                                 [-]
+1: ✉ delega nuova   BR24-F6.7  Squadra nella banda solo con le eccezioni  da alita/work-hub  2 min
+2: ◐ ci lavori      BR24-F6.6  Banda: in coda o ci lavora                  da alita/work-hub  8 min
 ```
 
-- A second section, **Squadra**, shows only the sibling sessions that need Mario (see below).
-- UI text is in Italian (the agents' working language). Shows only when something is pending; disappears when the inbox is empty.
-- Same scoping as the shell lib (v1.4): agent from `AGENT_MAP.json` by cwd prefix, slug = workspace basename, shared root `inboxes/<agent>/` plus `inboxes/<agent>/@<slug>/`, messages whose `context.project_path` belongs to another workspace counted apart.
-- Priority is spelled out (`URGENTE`, `ALTA`, a `!!` marker), never colour alone.
-- A toast when a new `urgent`/`high` message arrives. Polls every 20 s and at the end of every turn.
-- `/bus-band` toggles it; the **Nascondi** button hides it until the next new message.
-- Read-only on messages: it never moves, archives or writes a message (the only thing it ever writes is the Onda request file above). `/read`, `/inbox` and the MCP tools stay the way to act on them.
-- Honours `AB_HOME` like the shell lib (default `~/.agent-team-os`).
+On the model of the delegations below: one aligned line per message waiting for this session.
+
+- **State for this session**, computed by the centralino (`stato_msg` and `riga` on each pending message of the vista, `centralino/palla.py`, CENTRALINO.md §18), in glyph and word, never colour alone: `↩ risposta ricevuta` (the delegator answered your question), `✉ delega nuova` (not read yet), `≡ comunicazione da leggere`, `◐ ci lavori` (read), `? domanda in attesa` (your question has no answer yet). Rows in this order, `urgent`/`high` first with the priority in a word (`· urgente`, `· alta`), then the oldest.
+- Plan code and title like the delegations (Orbit's step title, else the first sentence of the summary), the sender, the age.
+- A return on a delegation of this session is not here: it is in "Deleghe aperte" (`✉ esito da leggere`, `? domanda per te`).
+- `1`-`9` or a click on a row puts `/read <msg>` in the prompt box, a click on the code `/orbit <plan>`; the digits go on in "Deleghe aperte", so a key is never taken twice. At most 5 rows, then `+N, /inbox per la lista`.
+- Scoping: agent from `AGENT_MAP.json` by cwd (longest rule), slug = workspace basename, the shared box plus this session's; messages whose `context.project_path` belongs to another workspace are counted apart (`+N di altri workspace`).
+- A toast when a new `urgent`/`high` message arrives. Polls every 20 s and at the end of every turn. `/bus-band` toggles the band.
+- Read-only on messages: it never moves, archives or writes a message (the only thing it ever writes is the Onda request file below). `/read`, `/inbox` and the MCP tools stay the way to act on them.
+- UI text is in Italian (the agents' working language). Honours `AB_HOME` like the shell lib (default `~/.agent-team-os`).
 
 ## Fonte: il centralino (BR24-F4.3)
 

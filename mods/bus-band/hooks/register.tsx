@@ -9,6 +9,8 @@ import {
   parseMessage,
   slugForCwd,
   sortMessages,
+  todoHeadline,
+  todoRows,
   workspaceMatch,
 } from './bus'
 import {
@@ -40,7 +42,7 @@ const fallback = atom({ plugin: 'bus-band', key: 'fallback' } as const, null)
 
 const POLL_MS = 20_000
 const VISTA_TIMEOUT_MS = 2_000
-const SHOWN = 3
+const TODO_SHOWN = 5
 const TEAM_SHOWN = 4
 const WAITS_SHOWN = 5
 
@@ -218,7 +220,9 @@ const scan = async ($: EngineInterface, vista: Vista | null): Promise<BusSnapsho
     }
   }
 
-  return { agent, slug, messages: sortMessages(messages), elsewhere }
+  const sorted = sortMessages(messages)
+
+  return { agent, slug, messages: sorted, rows: todoRows(sorted, Date.now()), elsewhere }
 }
 
 // Ids already seen, so only a message that arrives later raises a toast.
@@ -308,7 +312,7 @@ export const register: Register = on => {
     const snap = await read($, snapshot)
     const squadra = await read($, team)
     const showTeam = squadra !== null && !(await read($, isTeamHidden))
-    const showMessages = snap !== null && snap.messages.length > 0
+    const showMessages = snap !== null && snap.rows.length > 0
     const attese = await read($, waits)
     const showWaits = attese !== null
     const isQuiet =
@@ -322,8 +326,10 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
-        {showMessages ? messagesBlock($, snap, Box, Button, Text) : null}
-        {showWaits ? waitsBlock($, attese, e.props.bodyColumns, Box, Button, Text) : null}
+        {showMessages ? todoBlock($, snap, e.props.bodyColumns, Box, Button, Text) : null}
+        {showWaits
+          ? waitsBlock($, attese, e.props.bodyColumns, showMessages ? Math.min(TODO_SHOWN, snap.rows.length) : 0, Box, Button, Text)
+          : null}
         {showTeam ? teamBlock($, squadra, Box, Button, Text) : null}
         {viaFile !== null ? <Text dimColor>{viaFile}</Text> : null}
       </Box>
@@ -333,32 +339,62 @@ export const register: Register = on => {
 
 type Els = ReturnType<EngineInterface['ui']['resolve']>
 
-const messagesBlock = (
+// BR24-F6.8, like the delegations: what this session has to do, one aligned line
+// per message (state in glyph and word, plan code, title, sender, age). A digit or a
+// click puts `/read <msg>` in the prompt; a click on the code puts `/orbit <plan>`.
+// The digits go on in "Deleghe aperte" below, so a key is never taken twice.
+const todoBlock = (
   $: EngineInterface,
   snap: BusSnapshot,
+  columns: number | undefined,
   Box: Els['Box'],
   Button: Els['Button'],
   Text: Els['Text'],
 ) => {
-  const pressing = snap.messages.filter(isPressing).length
-  const rest = snap.messages.length - SHOWN
+  const width = Math.max(40, columns ?? 100)
+  const rows = snap.rows.slice(0, TODO_SHOWN)
+  const rest = snap.rows.length - rows.length
+  const labelW = Math.max(...rows.map(r => cells(r.label)))
+  const stateW = labelW + 4
+  const codeW = Math.max(0, ...rows.map(r => cells(r.code ?? '')))
+  const sinceW = Math.max(...rows.map(r => cells(r.since)))
+  const fromW = width >= 80 ? Math.min(24, Math.max(...rows.map(r => cells(r.from)))) : 0
+  const gaps = 2 + (codeW > 0 ? 2 : 0) + (fromW > 0 ? 2 : 0) + 1
+  const titleW = Math.max(8, width - stateW - codeW - fromW - sinceW - gaps)
 
   return (
     <Box flexDirection="column">
-      <Box>
-        <Text bold>
-          Bus {snap.agent}/{snap.slug}: {snap.messages.length} in attesa
-          {pressing > 0 ? `, ${pressing} urgenti o alta` : ''}
-          {snap.elsewhere > 0 ? ` (+${snap.elsewhere} di altri workspace)` : ''}{' '}
-        </Text>
-        <Button key="hide" label="Nascondi" onPress={() => update($, isHidden, () => true)} />
-      </Box>
-      {snap.messages.slice(0, SHOWN).map(m => (
-        <Text key={m.id} dimColor={!isPressing(m)} wrap="truncate-end">
-          {isPressing(m) ? '!! ' : '   '}[{PRIORITY_LABEL[m.priority]}] da {m.from}: {m.intent}
-        </Text>
-      ))}
-      {rest > 0 ? <Text dimColor>   ...altri {rest}, /inbox per la lista</Text> : null}
+      <Text bold>{todoHeadline(snap.rows, snap.elsewhere)}</Text>
+      {rows.map((r, i) => {
+        const open = () => void openInPrompt($, r.read)
+        const tone = TODO_COLOR[r.state]
+
+        return (
+          <Box key={r.key}>
+            <Button key={`read-${r.key}`} plain {...(i < 9 ? { hotkey: String(i + 1) } : {})} onPress={open}>
+              <Text bold={r.pressing || r.state === 'nuova' || r.state === 'risposta'} {...(tone !== undefined ? { color: tone } : { dimColor: true })}>
+                {r.glyph} {pad(r.label, labelW)}{'  '}
+              </Text>
+            </Button>
+            {codeW > 0 ? (
+              r.plan !== null ? (
+                <Button key={`plan-${r.key}`} plain onPress={() => void openInPrompt($, `/orbit ${r.plan}`)}>
+                  {pad(r.code ?? '', codeW)}
+                </Button>
+              ) : (
+                <Text>{' '.repeat(codeW)}</Text>
+              )
+            ) : null}
+            <Button key={`title-${r.key}`} plain onPress={open}>
+              {codeW > 0 ? '  ' : ''}
+              {pad(r.title, titleW)}
+              {fromW > 0 ? <Text dimColor>{`  ${pad(r.from, fromW)}`}</Text> : null}
+              <Text dimColor>{` ${r.since.padStart(sinceW)}`}</Text>
+            </Button>
+          </Box>
+        )
+      })}
+      {rest > 0 ? <Text dimColor>{`  +${rest}, /inbox per la lista`}</Text> : null}
     </Box>
   )
 }
@@ -380,6 +416,12 @@ const pad = (text: string, width: number) => {
   return cut + ' '.repeat(Math.max(0, width - cells(cut)))
 }
 
+const TODO_COLOR: Partial<Record<string, string>> = {
+  nuova: 'warning',
+  risposta: 'warning',
+  lavori: 'success',
+}
+
 const STATE_COLOR: Partial<Record<WaitRow['state'], string>> = {
   domanda: 'warning',
   esito: 'warning',
@@ -396,6 +438,7 @@ const waitsBlock = (
   $: EngineInterface,
   attese: WaitsSnapshot,
   columns: number | undefined,
+  first: number,
   Box: Els['Box'],
   Button: Els['Button'],
   Text: Els['Text'],
@@ -412,7 +455,8 @@ const waitsBlock = (
   const gaps = 2 + (codeW > 0 ? 2 : 0) + (whoW > 0 ? 2 : 0) + 1
   const titleW = Math.max(8, width - stateW - codeW - whoW - sinceW - gaps)
   const rule = <Text color="subtle">{'─'.repeat(width)}</Text>
-  const hint = `${rows.length > 1 ? `1-${Math.min(9, rows.length)}` : '1'} o clic: apri · clic sul codice: piano in Orbit`
+  const keys = Math.max(0, Math.min(9, first + rows.length) - first)
+  const hint = `${keys > 1 ? `${first + 1}-${first + keys}` : keys === 1 ? `${first + 1}` : ''}${keys > 0 ? ' o ' : ''}clic: apri · clic sul codice: piano in Orbit`
 
   return (
     <Box flexDirection="column">
@@ -424,7 +468,7 @@ const waitsBlock = (
 
         return (
           <Box key={r.key}>
-            <Button key={`read-${r.key}`} plain {...(i < 9 ? { hotkey: String(i + 1) } : {})} onPress={open}>
+            <Button key={`read-${r.key}`} plain {...(first + i < 9 ? { hotkey: String(first + i + 1) } : {})} onPress={open}>
               <Text bold={r.alert || r.state === 'mario'} {...(tone !== undefined ? { color: tone } : { dimColor: true })}>
                 {r.glyph} {pad(r.label, labelW)}{'  '}
               </Text>

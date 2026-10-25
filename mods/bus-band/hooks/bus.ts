@@ -1,4 +1,4 @@
-import type { BusMessage, Priority } from '../types'
+import type { BusMessage, Priority, TodoRow } from '../types'
 
 // Pure logic of the Agent Team OS bus, mirrored from
 // ~/.claude/scripts/agent-team-os-lib.sh (v1.4): agent from cwd, session slug,
@@ -56,6 +56,8 @@ export const parseMessage = (text: string, fallbackId: string): Parsed | null =>
         priority,
         type: String(raw.type ?? ''),
         ts: String(raw.ts ?? ''),
+        state: typeof raw.stato_msg === 'string' ? raw.stato_msg : null,
+        row: typeof raw.riga === 'object' && raw.riga !== null ? raw.riga : null,
       },
       projectPath: typeof raw.context?.project_path === 'string' ? raw.context.project_path : '',
     }
@@ -81,3 +83,57 @@ export const PRIORITY_LABEL: Record<Priority, string> = {
   normal: 'normale',
   low: 'bassa',
 }
+
+// ---- BR24-F6.8: "Da fare", what this session has to do, one row per message ----
+// The centralino says the state of each message for this session (centralino/palla.py,
+// `stato_msg` and `riga`); here only the drawing data. A return on a delegation of this
+// session (`ritorno`) is not here: it is in "Deleghe aperte".
+
+export const isTodo = (m: BusMessage) => m.state !== 'ritorno'
+
+const age = (iso: string, now: number) => {
+  const t = Date.parse(iso)
+  const min = Number.isNaN(t) ? 0 : Math.max(0, Math.floor((now - t) / 60_000))
+
+  return min < 1 ? 'meno di 1 min' : min < 120 ? `${min} min` : `${Math.floor(min / 60)} h`
+}
+
+const text = (v: unknown) => (typeof v === 'string' && v !== '' ? v.replace(/\s+/g, ' ').trim() : null)
+
+export const toTodoRow = (m: BusMessage, now: number): TodoRow => {
+  const r = m.row ?? {}
+  const word = text(r.parola) ?? (m.type === '' ? 'messaggio' : m.type)
+  // Priority only when it matters, in a word.
+  const priority = m.priority === 'urgent' ? 'urgente' : m.priority === 'high' ? 'alta' : null
+
+  return {
+    key: m.id,
+    state: m.state ?? 'ignoto',
+    glyph: text(r.glifo) ?? '·',
+    label: priority === null ? word : `${word} · ${priority}`,
+    code: text(r.codice),
+    plan: text(r.piano),
+    title: text(r.titolo) ?? m.intent,
+    from: `da ${text(r.mittente) ?? m.from}`,
+    since: age(m.ts, now),
+    read: text(r.leggi) ?? `/read ${m.id}`,
+    pressing: isPressing(m),
+  }
+}
+
+const order = (m: BusMessage) => (typeof m.row?.ordine === 'number' ? m.row.ordine : 99)
+
+// Urgent and high first, then by state (what sets this session going first), then the oldest.
+export const todoRows = (messages: readonly BusMessage[], now: number) =>
+  messages
+    .filter(isTodo)
+    .map(m => ({ m, r: toTodoRow(m, now) }))
+    .sort(
+      (a, b) =>
+        Number(b.r.pressing) - Number(a.r.pressing) || order(a.m) - order(b.m) || a.m.ts.localeCompare(b.m.ts),
+    )
+    .map(x => x.r)
+
+export const todoHeadline = (rows: readonly TodoRow[], elsewhere: number) =>
+  `Da fare · ${rows.length}${elsewhere > 0 ? ` (+${elsewhere} di altri workspace)` : ''}`
+

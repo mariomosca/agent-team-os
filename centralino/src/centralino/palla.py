@@ -237,3 +237,42 @@ def stato_palla(rec: dict, letto_at: str | None, vive: list[dict], host: str,
                  "allerta": stato in ("domanda", "esito", "scaduta") or tetto,
                  "nota": TETTI.get(motivo, motivo) if tetto else None},
     }
+
+
+# ---------- la vista di chi esegue: un messaggio in casella (BR24-F6.8) ----------
+
+# Stato di un messaggio pending per la sessione che lo riceve, in glifo e parola.
+GLIFO_MSG = {"risposta": "↩", "nuova": "✉", "comunicazione": "≡", "lavori": "◐", "domanda": "?"}
+PAROLA_MSG = {"risposta": "risposta ricevuta", "nuova": "delega nuova", "comunicazione": "comunicazione da leggere",
+              "lavori": "ci lavori", "domanda": "domanda in attesa"}
+# Prima ciò che rimette in moto chi esegue, per ultima la palla che è altrove.
+ORDINE_MSG = list(GLIFO_MSG)
+PRIORITA = {"urgent": "urgente", "high": "alta"}
+
+
+def stato_messaggio(raw: dict, *, letto_at: str | None, domanda_aperta: bool, risposta_a_me: bool,
+                    ritorno_mio: bool, orbit_righe: list[dict] | None = None) -> dict:
+    """``stato_msg`` di un messaggio in casella più i campi della riga. ``ritorno_mio``: è un
+    ritorno su una delega che questa sessione ha dato (la banda lo mostra fra le deleghe aperte,
+    non qui)."""
+    if ritorno_mio:
+        return {"stato_msg": "ritorno", "riga": None}
+    if raw.get("kind") == "delega":
+        stato = "domanda" if domanda_aperta else "nuova" if letto_at is None else "lavori"
+    elif risposta_a_me:
+        stato = "risposta"
+    else:
+        stato = "comunicazione"
+    summary = _s(_d(raw.get("payload")).get("summary")) or ""
+    rif = rif_piano(raw.get("intent") or "", summary)
+    orbit = info_orbit(orbit_righe or [], rif) if rif else None
+    return {
+        "stato_msg": stato,
+        "riga": {"glifo": GLIFO_MSG[stato], "parola": PAROLA_MSG[stato], "ordine": ORDINE_MSG.index(stato),
+                 "codice": rif.codice if rif else None, "piano": rif.piano if rif else None,
+                 "titolo": titolo_breve(summary or raw.get("intent") or "", orbit["titolo"] if orbit else None)
+                 or raw.get("intent") or raw.get("id"),
+                 "mittente": _s(raw.get("from_session")) or _s(raw.get("from")) or "?",
+                 "da": _eta(raw.get("ts")), "leggi": f"/read {raw.get('id')}",
+                 "priorita": PRIORITA.get(raw.get("priority") or "")},
+    }

@@ -7,7 +7,14 @@ import { parseSessionList } from './team'
 // are. The mod engine cannot speak line-JSON on a socket ($.http speaks HTTP),
 // so register.tsx sends the request through `nc -U`. No `$` here.
 
-export type VistaMessage = { agent: string; slug: string | null; letto: boolean; raw: unknown }
+export type VistaMessage = {
+  agent: string
+  slug: string | null
+  letto: boolean
+  raw: unknown
+  stato_msg?: unknown
+  riga?: unknown
+}
 // BR24-F6.7: stato_palla and riga, who holds the ball and the row to draw (centralino/palla.py).
 export type VistaWait = { agent: string; slug: string | null; raw: unknown; stato_palla?: unknown; riga?: unknown }
 // A bus session as the centralino sees it (only the fields the band reads).
@@ -60,8 +67,13 @@ export const inboxOf = (v: Vista, agent: string, slug: string): [string, string]
     .filter(m => m.agent === agent && !m.letto && (m.slug === null || m.slug === slug))
     .map(m => {
       const id = (m.raw as { id?: unknown } | null)?.id
+      // BR24-F6.8: the state for this session and the row, beside the record.
+      const raw =
+        'stato_msg' in m && typeof m.raw === 'object' && m.raw !== null
+          ? { ...m.raw, stato_msg: m.stato_msg, riga: m.riga }
+          : m.raw
 
-      return [JSON.stringify(m.raw), typeof id === 'string' ? `${id}.json` : 'msg-.json']
+      return [JSON.stringify(raw), typeof id === 'string' ? `${id}.json` : 'msg-.json']
     })
 
 // The waits of this session, as texts for parseWait, with who holds the ball.
