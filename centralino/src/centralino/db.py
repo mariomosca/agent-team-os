@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -136,6 +136,8 @@ CREATE TABLE IF NOT EXISTS thread_legacy (
 MIGRAZIONI = [
     ("sessions", "waiting_agent", "TEXT"),          # v2: domanda in attesa di risposta (era nel registro)
     ("sessions", "drain_blocks", "INTEGER NOT NULL DEFAULT 0"),  # v2: blocchi consecutivi dello Stop
+    ("messages", "letto_at", "TEXT"),               # v4 (BR24-F6.6): prima lettura della delega da chi la esegue
+    ("messages", "letto_da", "TEXT"),               # v4: la sessione che l'ha letta
 ]
 
 
@@ -160,6 +162,7 @@ class Store:
         self._w = self._connect()
         self._local = threading.local()
         with self._wlock:
+            self._backup_prima_di_migrare()
             self._w.executescript(SCHEMA)
             for table, col, decl in MIGRAZIONI:
                 cols = {r["name"] for r in self._w.execute(f"PRAGMA table_info({table})")}
@@ -168,6 +171,23 @@ class Store:
             self._v3()
             self._w.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
                             (str(SCHEMA_VERSION),))
+
+    def _backup_prima_di_migrare(self) -> None:
+        """Un database di uno schema più vecchio si copia accanto prima di toccarlo:
+        ``centralino.db.bak-v<vecchio>-<ora>``, con la backup API (coerente anche in WAL)."""
+        try:
+            r = self._w.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        except sqlite3.OperationalError:
+            return  # database nuovo, niente da salvare
+        if r is None or int(r["value"]) >= SCHEMA_VERSION:
+            return
+        import time
+        dest = self.path.with_name(f"{self.path.name}.bak-v{r['value']}-{time.strftime('%Y%m%d-%H%M%S')}")
+        out = sqlite3.connect(dest)
+        try:
+            self._w.backup(out)
+        finally:
+            out.close()
 
     def _v3(self) -> None:
         """v3 (F5.5): niente più modo ombra. Via la tabella dei confronti e le decisioni solo

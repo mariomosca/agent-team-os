@@ -9,7 +9,9 @@ import type { Live } from './waits'
 // so register.tsx sends the request through `nc -U`. No `$` here.
 
 export type VistaMessage = { agent: string; slug: string | null; letto: boolean; raw: unknown }
-export type VistaWait = { agent: string; slug: string | null; raw: unknown }
+// BR24-F6.6: letto_at/letto_da, when the executor first read the delegation
+// (absent from a centralino before schema v4).
+export type VistaWait = { agent: string; slug: string | null; raw: unknown; letto_at?: unknown; letto_da?: unknown }
 // A bus session as the centralino sees it (only the fields the band reads).
 export type VistaSession = {
   agent?: unknown
@@ -62,9 +64,17 @@ export const inboxOf = (v: Vista, agent: string, slug: string): [string, string]
       return [JSON.stringify(m.raw), typeof id === 'string' ? `${id}.json` : 'msg-.json']
     })
 
-// The waits of this session, as texts for parseWait.
+// The waits of this session, as texts for parseWait, with the reading of the delegation.
 export const waitsOf = (v: Vista, agent: string, slug: string): string[] =>
-  (v.attese ?? []).filter(w => w.agent === agent && w.slug === slug).map(w => JSON.stringify(w.raw))
+  (v.attese ?? [])
+    .filter(w => w.agent === agent && w.slug === slug)
+    .map(w =>
+      JSON.stringify(
+        'letto_at' in w && typeof w.raw === 'object' && w.raw !== null
+          ? { ...w.raw, letto_at: w.letto_at ?? null, letto_da: w.letto_da ?? null }
+          : w.raw,
+      ),
+    )
 
 // Onda's sessions as the centralino sees them; null when it says sessions.json
 // is not valid (stale, or Onda not running): the section is absent, as with the file.

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import {
+  agentElsewhere,
   ballState,
   executorLive,
   oneLine,
@@ -119,11 +120,49 @@ describe('one row per delegation (BR24-F6.4)', () => {
       since: '12 min',
       read: '/read msg-d',
     })
-    expect(toDelegationRow(w, NOW, null, KAI_WORKING).label).toBe('Kai lavora')
+    expect(toDelegationRow(w, NOW, null, KAI_WORKING).label).toBe('Kai ci lavora')
     const back = parseWait(
       wait({ delegation: { msg_id: 'msg-d' }, returns: { 'msg-r': { type: 'response', at: '2026-10-17T10:55:00Z', state: 'woken' } } }),
     )!
     expect(toDelegationRow(back, NOW, null, null)).toMatchObject({ label: 'esito da leggere', glyph: '✉', read: '/read msg-r' })
+  })
+
+  test('queued or working: the executor read the delegation or not (BR24-F6.6)', () => {
+    const unread = parseWait(wait({ delegation: { msg_id: 'msg-d' }, letto_at: null, letto_da: null }))!
+    const read = parseWait(
+      wait({ delegation: { msg_id: 'msg-d' }, letto_at: '2026-10-17T10:50:00Z', letto_da: 'kai/f3' }),
+    )!
+    expect(ballState(unread, null, KAI_WORKING)).toBe('coda')
+    expect(ballState(read, null, KAI_WORKING)).toBe('lavora')
+    expect(ballState(unread, null, KAI_IDLE)).toBe('fermo')
+    expect(ballState(read, null, KAI_IDLE)).toBe('fermo')
+    expect(toDelegationRow(unread, NOW, null, KAI_WORKING)).toMatchObject({ glyph: '⧗', label: 'in coda: Kai occupato' })
+    expect(toDelegationRow(read, NOW, null, KAI_WORKING)).toMatchObject({ glyph: '◐', label: 'Kai ci lavora' })
+    expect(toDelegationRow(read, NOW, null, KAI_IDLE)).toMatchObject({ glyph: '◌', label: 'Kai fermo' })
+    // who read it is the executor until a return names one
+    expect(parseWait(wait({ delegated_to: 'kai', letto_at: '2026-10-17T10:50:00Z', letto_da: 'kai/f3' }))!.executor).toBe(
+      'kai/f3',
+    )
+    // a centralino before v4 says nothing: working stays working
+    expect(ballState(parseWait(wait({}))!, null, KAI_WORKING)).toBe('lavora')
+  })
+
+  test('not open here, alive elsewhere (BR24-F6.6)', () => {
+    const live: Live[] = [
+      { agent: 'kai', slug: 'onda', host: 'laptop', working: false },
+      { agent: 'kai', slug: 'alita-mobile', host: 'laptop', working: true },
+      { agent: 'kai', slug: 'x', host: 'mini', working: true },
+      { agent: 'vera', slug: 'f3', host: 'laptop', working: true },
+    ]
+    expect(agentElsewhere('kai/f3', live, 'laptop')).toEqual(['alita-mobile', 'onda'])
+    expect(agentElsewhere('kai/f3', live.slice(0, 1), 'laptop')).toEqual(['onda'])
+    expect(agentElsewhere('nico/f3', live, 'laptop')).toEqual([])
+    const w = parseWait(wait({ executor_session: 'kai/f3', letto_at: null }))!
+    expect(toDelegationRow(w, NOW, null, null, ['onda']).label).toBe('Kai non aperto qui · vivo in onda')
+    expect(toDelegationRow(w, NOW, null, null, ['alita-mobile', 'onda']).label).toBe(
+      'Kai non aperto qui · vivo in alita-mobile +1',
+    )
+    expect(toDelegationRow(w, NOW, null, null, [])).toMatchObject({ glyph: '○', label: 'Kai non aperto' })
   })
 
   test('the executor: same agent and slug, on the same host', () => {

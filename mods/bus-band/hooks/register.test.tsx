@@ -176,9 +176,10 @@ describe('deleghe aperte (BR24-F6.4)', () => {
     const ui = await $.ui.mount({ plugin: 'bus-band', surface: 'terminal', component: 'AbovePrompt', requestId: 'band', props: { hasSurvey: false, bodyColumns: 110 } as never })
     expect(await ui.find({ text: 'Deleghe aperte · 2' })).toBeDefined()
     expect(await ui.find({ text: /tocca a Mario/ })).toBeDefined()
-    expect(await ui.find({ text: /Kai non aperto/ })).toBeDefined()
+    expect(await ui.find({ text: /Kai non aperto qui · vivo in onda-electron/ })).toBeDefined()
     expect(await ui.find({ text: /^ON24-F3/ })).toBeDefined()
-    expect(await ui.find({ text: /Hairline nella schermata del workspace vuoto/ })).toBeDefined()
+    // the longer state ("non aperto qui · vivo in ...", BR24-F6.6) leaves the title less room
+    expect(await ui.find({ text: /Hairline nella schermata d…/ })).toBeDefined()
     expect(await ui.find({ text: /Analisi notturna del 24\/10/ })).toBeDefined()
     expect(await ui.find({ text: /\n/ })).toBeUndefined()
     expect(await ui.find({ text: /Report:/ })).toBeUndefined()
@@ -189,8 +190,54 @@ describe('deleghe aperte (BR24-F6.4)', () => {
     await $.session.start(START)
     const ui = await $.ui.mount({ plugin: 'bus-band', surface: 'terminal', component: 'AbovePrompt', requestId: 'band', props: { hasSurvey: false, bodyColumns: 110 } as never })
     expect(await ui.find({ text: /Kai ha consegnato/ })).toBeDefined()
-    expect(await ui.find({ text: /^ {2}Hairline nella schermata del workspace vuoto\. / })).toBeDefined()
+    expect(await ui.find({ text: /^ {2}Hairline nella schermata d/ })).toBeDefined()
     expect(await ui.find({ text: /Richiesta di Mario|Piano ON24/ })).toBeUndefined()
-    expect(await ui.find({ text: /^○ Kai non aperto {5}$/ })).toBeDefined()
+    expect(await ui.find({ text: /^○ Kai non aperto qui · vivo in onda-electron {2}$/ })).toBeDefined()
+  })
+
+  test('BR24-F6.6: in coda while the executor has not read the delegation', async ($, on) => {
+    const vista = (letto: string | null) =>
+      JSON.stringify({
+        v: 1,
+        id: 'r',
+        ok: true,
+        result: {
+          host: 'laptop',
+          sessioni: [{ agent: 'kai', slug: 'f3', host: 'laptop', viva: true, ferma: false, onda_state: 'working' }],
+          messaggi: [],
+          attese: [
+            {
+              agent: 'kai',
+              slug: 'portineria',
+              letto_at: letto,
+              letto_da: letto === null ? null : 'kai/f3',
+              raw: {
+                task_id: 't-1',
+                state: 'expected',
+                created_at: '2026-10-25T08:16:00Z',
+                delegated_to: 'kai/f3',
+                delegation: { msg_id: 'msg-d' },
+                description: 'br24-f6.6: BR24-F6.6: lettura della delega.',
+              },
+            },
+          ],
+        },
+      })
+    world(on, {}, true, vista(null), '')
+    await $.session.start(START)
+    const ui = await $.ui.mount({ plugin: 'bus-band', surface: 'terminal', component: 'AbovePrompt', requestId: 'band', props: { hasSurvey: false, bodyColumns: 110 } as never })
+    expect(await ui.find({ text: /^⧗ in coda: Kai occupato {2}$/ })).toBeDefined()
+    expect(await ui.find({ text: /ci lavora/ })).toBeUndefined()
+  })
+
+  test('BR24-F6.6: ci lavora once read', async ($, on) => {
+    const v = JSON.parse(ALITA_WAITS)
+    v.result.sessioni = [{ agent: 'kai', slug: 'alita-mobile', host: 'laptop', viva: true, ferma: false, onda_state: 'working' }]
+    v.result.attese = [{ ...v.result.attese[1], letto_at: '2026-10-25T08:20:00Z', letto_da: 'kai/alita-mobile' }]
+    world(on, {}, true, JSON.stringify(v), '')
+    await $.session.start(START)
+    const ui = await $.ui.mount({ plugin: 'bus-band', surface: 'terminal', component: 'AbovePrompt', requestId: 'band', props: { hasSurvey: false, bodyColumns: 110 } as never })
+    expect(await ui.find({ text: /^◐ Kai ci lavora {2}$/ })).toBeDefined()
+    expect(await ui.find({ text: /in coda/ })).toBeUndefined()
   })
 })

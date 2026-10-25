@@ -250,6 +250,7 @@ class Centralino:
             return self.op_thread(caller, a, warnings)
         me = self._who(caller)
         data = self.bus.read_message(me.agent, a.get("message_id") or "")
+        self.bus.segna_lettura(me.agent, me.slug, data["_location"]["path"].partition(":")[2])
         data["_reply_to"] = self.bus.reply_address(data)
         link = data.get("task_link") or {}
         tid = data.get("task_id")
@@ -423,9 +424,13 @@ class Centralino:
                         "SELECT to_agent, to_slug, state, raw FROM messages WHERE to_host=? AND "
                         "((state='pending' AND ts>=?) OR (state!='pending' AND ts>=?)) ORDER BY ts",
                         (host, cut("pending_s", 7 * 86400), cut("letti_s", 86400)))]
-        attese = [{"agent": x["owner_agent"], "slug": x["owner_slug"], "raw": json.loads(x["raw"])}
-                  for x in r.execute("SELECT owner_agent, owner_slug, raw FROM waits WHERE "
-                                     "state IN ('expected','expired') OR created_at>=? ORDER BY created_at",
+        # BR24-F6.6: accanto all'attesa, quando chi esegue ha letto la delega (null: non ancora,
+        # o la delega è su un'altra macchina e la lettura resta là)
+        attese = [{"agent": x["owner_agent"], "slug": x["owner_slug"], "raw": json.loads(x["raw"]),
+                   "letto_at": x["letto_at"], "letto_da": x["letto_da"]}
+                  for x in r.execute("SELECT w.owner_agent, w.owner_slug, w.raw, m.letto_at, m.letto_da "
+                                     "FROM waits w LEFT JOIN messages m ON m.id = w.delegation_msg WHERE "
+                                     "w.state IN ('expected','expired') OR w.created_at>=? ORDER BY w.created_at",
                                      (cut("attese_s", 86400),))]
         agenti = [{"agent": k, **{f: (v or {}).get(f) for f in ("display_name", "role", "domain", "workspace_root",
                                                                "voice_id", "avatar_path", "host")}}

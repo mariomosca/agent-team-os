@@ -33,6 +33,7 @@ import {
   waitsFooter,
   waitsHeadline,
   executorLive,
+  agentElsewhere,
 } from './waits'
 import type { Live, OrbitRow, PlanRef, Wait } from './waits'
 import { fallbackText, inboxOf, liveOf, parseVista, sessionsOf, vistaRequest, waitsOf } from './vista'
@@ -205,6 +206,7 @@ const scanWaits = async ($: EngineInterface, vista: Vista | null): Promise<Waits
         now,
         ref === null || ref === undefined ? null : orbitInfo(orbit, ref),
         executorLive(w.executor, live, typeof host === 'string' ? host : 'laptop'),
+        agentElsewhere(w.executor, live, typeof host === 'string' ? host : 'laptop'),
       )
     }),
   )

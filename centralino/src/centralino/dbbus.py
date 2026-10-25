@@ -153,6 +153,21 @@ class DbBus:
                              "state": "pending" if r["state"] == "pending" else "archived"}
         return data
 
+    def segna_lettura(self, agent: str, slug: str, partial_id: str) -> str | None:
+        """BR24-F6.6: la prima lettura di una delega da parte di chi la esegue (la sessione
+        destinataria, o una sessione dell'agente se è andata alla casella comune) ne fissa
+        ``letto_at``. Non conta la lettura di chi l'ha mandata né di un'altra sessione.
+        Solo registro: la sveglia non la guarda."""
+        r = self._row(agent, partial_id)
+        if (r is None or r["kind"] != "delega" or r["letto_at"] or r["to_host"] != (self.host_self() or "")
+                or r["to_slug"] not in (None, slug)
+                or (r["from_agent"] == agent and r["from_slug"] == slug)):
+            return None
+        at = iso_now()
+        self._tx(lambda c: c.execute("UPDATE messages SET letto_at=?, letto_da=? WHERE id=? AND letto_at IS NULL",
+                                     (at, f"{agent}/{slug}", r["id"])))
+        return at
+
     def _set_state(self, conn, mid: str, state: str, record: dict | None = None) -> None:
         if record is None:
             conn.execute("UPDATE messages SET state=? WHERE id=?", (state, mid))

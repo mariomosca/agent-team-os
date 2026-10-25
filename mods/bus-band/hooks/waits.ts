@@ -32,6 +32,9 @@ export type Wait = {
   msgId: string | null
   executor: string | null
   lastHandled: string | null
+  // BR24-F6.6: when the executor first read the delegation (centralino `letto_at`);
+  // null: not yet; undefined: nobody says (a centralino before v4, the files).
+  readAt: string | null | undefined
 }
 
 const str = (v: unknown) => (typeof v === 'string' && v !== '' ? v : null)
@@ -96,8 +99,9 @@ export const parseWait = (text: string): Wait | null => {
       unhandled: unhandledReturns(raw.returns).length,
       firstUnhandled: unhandledReturns(raw.returns)[0] ?? null,
       msgId: str(raw.delegation?.msg_id),
-      executor: str(raw.executor_session) ?? str(raw.delegated_to),
+      executor: str(raw.executor_session) ?? str(raw.letto_da) ?? str(raw.delegated_to),
       lastHandled: lastHandled(raw.returns),
+      readAt: raw.letto_at === undefined ? undefined : str(raw.letto_at),
     }
   } catch {
     return null
@@ -223,7 +227,28 @@ export const executorLive = (address: string | null, live: readonly Live[], host
   return found.find(s => s.working) ?? found[0] ?? null
 }
 
-export type BallState = 'domanda' | 'esito' | 'scaduta' | 'mario' | 'consegnato' | 'fermo' | 'chiusa' | 'lavora'
+// BR24-F6.6: the executor's agent alive in other folders on the same host, for
+// "non aperto qui · vivo in <slug>". Working sessions first, then by slug.
+export const agentElsewhere = (address: string | null, live: readonly Live[], host: string): string[] => {
+  const a = address === null ? null : parseAddress(address)
+  if (a === null) return []
+
+  return live
+    .filter(s => s.agent === a.agent && s.host === (a.host ?? host) && s.slug !== a.slug)
+    .sort((x, y) => Number(y.working) - Number(x.working) || x.slug.localeCompare(y.slug))
+    .map(s => s.slug)
+}
+
+export type BallState =
+  | 'domanda'
+  | 'esito'
+  | 'scaduta'
+  | 'mario'
+  | 'consegnato'
+  | 'fermo'
+  | 'chiusa'
+  | 'coda'
+  | 'lavora'
 
 // A glyph per state, never colour alone: the shape says it too.
 export const BALL_GLYPH: Record<BallState, string> = {
@@ -234,16 +259,31 @@ export const BALL_GLYPH: Record<BallState, string> = {
   consegnato: '✓',
   fermo: '◌',
   chiusa: '○',
+  coda: '⧗',
   lavora: '◐',
 }
 
 // Rows that ask something of this session (or of Mario) come first.
-const BALL_ORDER: BallState[] = ['domanda', 'esito', 'scaduta', 'mario', 'consegnato', 'fermo', 'chiusa', 'lavora']
+const BALL_ORDER: BallState[] = [
+  'domanda',
+  'esito',
+  'scaduta',
+  'mario',
+  'consegnato',
+  'fermo',
+  'chiusa',
+  'coda',
+  'lavora',
+]
 
 const capital = (s: string) => (s === '' ? s : s[0]!.toUpperCase() + s.slice(1))
 
+// Where the executor's agent is alive when not here: the first folder, `+N` for the others.
+const elsewhereText = (slugs: readonly string[]) =>
+  slugs.length === 0 ? '' : ` qui · vivo in ${slugs[0]}${slugs.length > 1 ? ` +${slugs.length - 1}` : ''}`
+
 // Who holds the ball, in words.
-export const ballLabel = (state: BallState, executor: string | null) => {
+export const ballLabel = (state: BallState, executor: string | null, elsewhere: readonly string[] = []) => {
   const who = capital(parseAddress(executor ?? '')?.agent ?? 'chi esegue')
   switch (state) {
     case 'domanda':
@@ -259,9 +299,11 @@ export const ballLabel = (state: BallState, executor: string | null) => {
     case 'fermo':
       return `${who} fermo`
     case 'chiusa':
-      return `${who} non aperto`
+      return `${who} non aperto${elsewhereText(elsewhere)}`
+    case 'coda':
+      return `in coda: ${who} occupato`
     case 'lavora':
-      return `${who} lavora`
+      return `${who} ci lavora`
   }
 }
 
@@ -270,7 +312,8 @@ export const ballState = (w: Wait, orbit: OrbitInfo | null, exec: Live | null): 
   if (w.asks.length > 0) return 'domanda'
   if (w.unhandled > 0) return 'esito'
   if (w.lastHandled === 'riarma' && orbit?.mario === true) return 'mario'
-  if (exec?.working === true) return 'lavora'
+  // Working, but on something else until it reads the delegation (BR24-F6.6).
+  if (exec?.working === true) return w.readAt === null ? 'coda' : 'lavora'
   // Delivered and re-armed: the executor is done for now, the ball is outside it.
   if (w.lastHandled === 'riarma') return 'consegnato'
   if (exec !== null) return 'fermo'
@@ -309,6 +352,7 @@ export const toDelegationRow = (
   now: number,
   orbit: OrbitInfo | null,
   exec: Live | null,
+  elsewhere: readonly string[] = [],
 ): WaitRow => {
   const ref = planRef(w.description)
   const state = ballState(w, orbit, exec)
@@ -319,7 +363,7 @@ export const toDelegationRow = (
     key: w.taskId,
     state,
     glyph: BALL_GLYPH[state],
-    label: ballLabel(state, w.executor),
+    label: ballLabel(state, w.executor, elsewhere),
     code: ref?.code ?? null,
     plan: ref?.plan ?? null,
     title: shortTitle(w.description, orbit?.title ?? null) || w.taskId,

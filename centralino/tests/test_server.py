@@ -142,3 +142,58 @@ def test_stop_non_blocca_l_esecutore_in_attesa_della_risposta(bus):
     assert stop() is True                       # e la delega torna azionabile
     call("reply", {"message_id": mid, "summary": "fatto con A"}, caller=kai, sock=sock)
     assert stop() is False
+
+
+def test_letto_at_alla_prima_lettura_dell_esecutore(bus):
+    # BR24-F6.6: la banda distingue "in coda" (non letta) da "ci lavora" (letta)
+    sock = bus / "centralino.sock"
+    kai, alita = _caller(bus, "kai"), _caller(bus, "alita")
+    (bus / "ws" / "kai" / "s2").mkdir()
+    kai2 = {"cwd": str(bus / "ws" / "kai" / "s2")}
+    mid = call("send", {"to": "kai/s1", "intent": "x", "summary": "fai X", "message_type": "request",
+                        "kind": "delega"}, caller=alita, sock=sock)["result"]["id"]
+    attesa = lambda: call("vista", sock=sock)["result"]["attese"][0]  # noqa: E731
+    assert attesa()["letto_at"] is None
+    # il delegante non la trova nella sua casella; un'altra sessione di kai la legge ma non conta
+    assert not call("read", {"message_id": mid}, caller=alita, sock=sock)["ok"]
+    assert call("read", {"message_id": mid}, caller=kai2, sock=sock)["ok"]
+    assert attesa()["letto_at"] is None
+    assert call("read", {"message_id": mid}, caller=kai, sock=sock)["ok"]
+    prima = attesa()
+    assert prima["letto_at"] and prima["letto_da"] == "kai/s1"
+    # solo la prima lettura
+    time.sleep(1.1)
+    call("read", {"message_id": mid}, caller=kai, sock=sock)
+    assert attesa()["letto_at"] == prima["letto_at"]
+    # una comunicazione letta non segna nulla
+    m2 = call("send", {"to": "kai/s1", "intent": "y", "summary": "info", "message_type": "brief",
+                       "kind": "comunicazione"}, caller=alita, sock=sock)["result"]["id"]
+    call("read", {"message_id": m2}, caller=kai, sock=sock)
+    from centralino.db import Store
+    st = Store(bus / "centralino.db")
+    assert st.message(m2)["letto_at"] is None
+    st.close()
+
+
+def test_migrazione_v4_con_backup(tmp_path):
+    import sqlite3
+    from centralino.db import Store
+    db = tmp_path / "centralino.db"
+    Store(db).close()
+    c = sqlite3.connect(db)
+    c.execute("UPDATE meta SET value='3' WHERE key='schema_version'")
+    c.execute("ALTER TABLE messages DROP COLUMN letto_da")
+    c.execute("ALTER TABLE messages DROP COLUMN letto_at")
+    c.commit()
+    c.close()
+    st = Store(db)
+    cols = {r["name"] for r in st.read().execute("PRAGMA table_info(messages)")}
+    assert {"letto_at", "letto_da"} <= cols
+    st.close()
+    baks = list(tmp_path.glob("centralino.db.bak-v3-*"))
+    assert len(baks) == 1
+    vecchio = sqlite3.connect(baks[0])
+    assert vecchio.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "3"
+    vecchio.close()
+    Store(db).close()  # già v4: nessun altro backup
+    assert len(list(tmp_path.glob("centralino.db.bak-*"))) == 1

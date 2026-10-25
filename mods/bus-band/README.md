@@ -45,9 +45,10 @@ On the model of the Orbit pane: a title, rules, one aligned line per delegation,
   - `✉ esito da leggere`: a return is in the box with no outcome;
   - `! scaduta`: the deadline passed;
   - `● tocca a Mario`: the last return was handled with `riarma` and in Orbit the linked step is Mario's, or Mario has an open step in the same phase;
-  - `◐ Kai lavora`, `◌ Kai fermo`: the executor's session is alive, working or not (centralino `sessioni`, else Onda's `sessions.json`);
+  - `⧗ in coda: Kai occupato`: the executor's session is alive and working, but has not read the delegation yet (centralino `letto_at`, BR24-F6.6): it is on something else;
+  - `◐ Kai ci lavora`, `◌ Kai fermo`: the executor's session is alive, working (and has read the delegation) or not (centralino `sessioni`, else Onda's `sessions.json`);
   - `✓ Kai ha consegnato`: the last return was re-armed, the executor is not working and Orbit names no step of Mario's: the executor is done for now, the ball is outside it;
-  - `○ Kai non aperto`: no live session of the executor.
+  - `○ Kai non aperto`: no live session of the executor; `○ Kai non aperto qui · vivo in onda-electron` (`+1`, `+2` for more) when the agent is alive in other folders on the same machine.
   Rows in this order, then by age.
 - **Plan code** from the intent or the summary (`ON24-F3`, `am18-f15`, `BR24-F6.4`, `wh17-f8.3b`; any case). The title is the step's (or phase's) in Orbit, first clause only, read with one `sqlite3 -readonly` query for all the waits and kept a minute; without Orbit (the mini, no code) the first sentence of the summary, without the intent and Alita's opening `Piano ON24, fase F3, nuova:`.
 - **Keys and clicks**: ctrl+x tab gives the band the keys; `1`-`9` or a click on a row puts `/read <msg>` in the prompt box (the open question, the first unread return, else the delegation); a click on the code puts `/orbit <plan>`. A draft already in the box is never overwritten: a toast says what to type. The engine's `[-]` (ctrl+x ctrl+a) collapses the band.

@@ -84,7 +84,7 @@ mostrato così com'è al modello.
 | `close` | `task_id, esito (chiuso\|annullato), note?` | `{task_id, state, closed_at}` | **nuova**: chiude un'attesa della propria sessione anche senza messaggi pending (caso iv, INV §7). La espone la tool che il passo 0 introduce per F2.3 |
 | `archive` | `message_id, state (done\|read)` | `{archived, state, path, remaining}` | |
 | `inbox` | `all_sessions, unread_only` | `{agent, slug, count, messages[]}` | stesse righe di `_summarize` di oggi |
-| `read` | `message_id, archive` | messaggio intero + `_reply_to`, `_task_hint`, `_location` | |
+| `read` | `message_id, archive` | messaggio intero + `_reply_to`, `_task_hint`, `_location` | la prima lettura di una delega da parte di chi la esegue ne fissa `letto_at` (§18) |
 | `thread` | `thread_id` | `{thread_id, count, entries[]}` | unisce i due formati di oggi (`.json` e `.jsonl`) |
 | `waits` | `include_closed, all_sessions` | come `bus_waits` di oggi | |
 | `status` | `agent?` | come `bus_status` di oggi | sessioni vive con la regola unica (§5) |
@@ -133,7 +133,9 @@ CREATE TABLE IF NOT EXISTS messages (
   delivery          TEXT NOT NULL,
   origin            TEXT NOT NULL,
   path              TEXT,
-  raw               TEXT NOT NULL
+  raw               TEXT NOT NULL,
+  letto_at          TEXT,   -- v4 (BR24-F6.6, §18)
+  letto_da          TEXT    -- v4
 );
 CREATE INDEX IF NOT EXISTS messages_inbox  ON messages(to_agent, to_slug, state);
 CREATE INDEX IF NOT EXISTS messages_task   ON messages(task_id);
@@ -563,3 +565,23 @@ centralino, degli hook v3, del MCP e di `lib.sh`/`wake.py`/`collect.sh` più gli
 | `feat/br24-centralino` (ombra) | 4.593 | 236 | 1.892 | 3.990 | 10.711 |
 | dopo F5.5, laptop | 3.388 | 236 | 391 | 3.990 | 8.005 |
 | dopo F5.7 | 3.425 | 260 | 391 | 0 | **4.076** |
+
+## 18. Delega letta: "in coda" o "ci lavora" (BR24-F6.6, 25/10/2026)
+
+La banda diceva "Kai lavora" anche quando la sessione esecutrice lavorava su altro e la delega non
+l'aveva ancora aperta. Ora il centralino registra la lettura.
+
+- **Schema v4**: `messages.letto_at`, `messages.letto_da` (colonne aggiunte da `MIGRAZIONI`). Prima di
+  migrare un database di schema più vecchio, `Store` ne fa una copia accanto con la backup API di SQLite
+  (`centralino.db.bak-v3-<ora>`), una volta sola.
+- **Chi segna**: `read` (`bus_read`) su un messaggio `kind=delega`, la prima volta, dalla sessione
+  destinataria (o da una sessione dell'agente, se la delega è andata alla casella comune). Non segna la
+  lettura del delegante né di un'altra sessione dello stesso agente. È solo un registro: la sveglia non lo
+  guarda e non cambia.
+- **Vista**: ogni attesa porta `letto_at` e `letto_da` della sua delega (`waits.delegation_msg`), `null`
+  finché non è letta. Una delega a un'altra macchina resta `null`: la lettura avviene sul centralino di là.
+- **Banda**: sessione esecutrice viva e al lavoro, delega non letta → `⧗ in coda: Kai occupato`; letta →
+  `◐ Kai ci lavora`; senza sessione esecutrice ma con l'agente vivo in altre cartelle →
+  `○ Kai non aperto qui · vivo in <slug>` (`+N` se più d'una). Con un centralino prima della v4 (campo
+  assente) la banda resta a "ci lavora".
+

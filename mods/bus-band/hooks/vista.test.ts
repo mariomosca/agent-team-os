@@ -43,6 +43,13 @@ describe('vista', () => {
     expect(waitsOf(V, 'kai', 'orbit')).toEqual([JSON.stringify({ task_id: 't-1' })])
   })
 
+  test('the reading of the delegation goes into the wait (BR24-F6.6)', () => {
+    const v = { attese: [{ agent: 'kai', slug: 'orbit', raw: { task_id: 't-1' }, letto_at: 'T', letto_da: 'nico/x' }] }
+    expect(JSON.parse(waitsOf(v, 'kai', 'orbit')[0]!)).toEqual({ task_id: 't-1', letto_at: 'T', letto_da: 'nico/x' })
+    const unread = { attese: [{ agent: 'kai', slug: 'orbit', raw: { task_id: 't-1' }, letto_at: null, letto_da: null }] }
+    expect(JSON.parse(waitsOf(unread, 'kai', 'orbit')[0]!).letto_at).toBe(null)
+  })
+
   test('Onda sessions only when the centralino says the file is valid', () => {
     expect(sessionsOf(V)?.sessions.map(s => s.slug)).toEqual(['orbit'])
     expect(sessionsOf({ ...V, onda: { valido: false, sessioni: V.onda.sessioni } })).toBe(null)
