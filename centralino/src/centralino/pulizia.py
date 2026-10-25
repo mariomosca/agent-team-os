@@ -56,6 +56,8 @@ class Pulizia:
                 c.execute("DELETE FROM waits WHERE task_id=?", (tid,))
             out["attese"] = len(vecchie)
             c.execute("DELETE FROM wake_decisions WHERE at<?", (da,))
+            # BR24-F6.14: i blocchi dello Stop dei messaggi già consumati non servono più
+            c.execute("DELETE FROM stop_blocks WHERE msg_id NOT IN (SELECT id FROM messages WHERE state='pending')")
             for agent, slug in morte:
                 dest = self.c.bus.slug_nudo(agent)
                 for r in c.execute("SELECT id, raw FROM messages WHERE to_agent=? AND to_slug=? AND state='pending' "

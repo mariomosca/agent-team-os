@@ -656,3 +656,17 @@ indirizzo scritto a mano come `kai/Orbit` apriva una casella `Orbit` che nessuna
   `wake_decisions.slug`, `sessions.slug`); due sessioni che diventano la stessa lasciano la più recente.
   Backup accanto prima di migrare (`centralino.db.bak-v4-<ora>`).
 
+## 21. Tetto dello Stop per messaggio (BR24-F6.14, 25/10/2026)
+
+Il contatore dei blocchi era per sessione (`sessions.drain_blocks`) e tornava a zero dopo il terzo: ogni
+turno nuovo, anche nato da una sveglia o dalla notifica di un task in background, ne concedeva altri tre.
+Nella prova del 25/10 (sessione kai/agent-team-os-prova-f66) una sola delega lasciata apposta senza risposta
+ha dato quattro giri da tre blocchi.
+
+- Tabella `stop_blocks` (agent, slug, host, msg_id, n, at): ogni Stop che blocca conta +1 su ciascun
+  messaggio che lo trattiene. Dopo `cap` blocchi (3) quel messaggio non trattiene più lo Stop, in nessun
+  turno, finché sul suo task non arriva un messaggio nuovo (ts dopo l'ultimo blocco): allora riparte da zero.
+- Un messaggio nuovo che chiede un'azione blocca con il suo contatore; lo Stop mostra solo i messaggi che
+  contano ancora. `sessions.drain_blocks` resta nello schema ma non si usa più.
+- La pulizia toglie i blocchi dei messaggi già consumati. Scenario `att_stop` nel banco di prova.
+

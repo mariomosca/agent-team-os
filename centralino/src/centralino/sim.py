@@ -456,9 +456,20 @@ def att_stop(b: Banco) -> None:
     s = b.op("kai/orbit", "hook.stop")
     _check(s["block"] is False, f"una comunicazione non blocca lo Stop: {s}")
     b.op("alita/work-hub", "send", to="kai/orbit", intent="y", summary="y", message_type="request", kind="delega")
+    d = next(m for m in b.op("kai/orbit", "inbox")["messages"] if m["intent"] == "y")
     blocchi = [b.op("kai/orbit", "hook.stop")["block"] for _ in range(4)]
     _check(blocchi == [True, True, True, False], f"blocca 3 volte, poi allenta: {blocchi}")
-    _check(b.op("kai/orbit", "hook.stop")["block"] is True, "il contatore riparte dopo aver allentato")
+    # BR24-F6.14: il tetto è del messaggio, non del turno: altri turni (sveglie, notifiche) non lo riaprono
+    _check([b.op("kai/orbit", "hook.stop")["block"] for _ in range(3)] == [False] * 3, "non riparte a ogni turno")
+    b.avanza(5)
+    b.op("alita/work-hub", "send", to="kai/orbit", intent="z", summary="altra", message_type="request", kind="delega")
+    s = b.op("kai/orbit", "hook.stop")
+    _check(s["block"] is True and s["pending"] == 1, f"una delega nuova blocca, la vecchia no: {s}")
+    b.avanza(5)
+    b.op("alita/work-hub", "send", to="kai/orbit", intent="w", summary="novità", message_type="event",
+         task_id=d["task_id"])
+    s = b.op("kai/orbit", "hook.stop")
+    _check(s["block"] is True and s["pending"] == 2, f"una novità sul task rimette in conto la vecchia: {s}")
 
 
 def att_hook_start(b: Banco) -> None:

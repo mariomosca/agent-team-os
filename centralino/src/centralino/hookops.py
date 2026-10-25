@@ -119,29 +119,46 @@ class HookOps:
             if regole.blocca_stop(regola):
                 bloccano.append((mid, m))
         host = me.host or ""
-        row = self.c.store.read().execute("SELECT drain_blocks FROM sessions WHERE agent=? AND slug=? AND host=?",
-                                          (me.agent, me.slug, host)).fetchone()
-        n = (row["drain_blocks"] if row else 0) or 0
+        r = self.c.store.read()
+        # BR24-F6.14: il tetto vale per messaggio. Dopo ``cap`` blocchi un messaggio non trattiene
+        # più lo Stop, in nessun turno (anche nato da una sveglia o da una notifica), finché sul suo
+        # task non arriva qualcosa di nuovo; allora riparte da zero.
+        contati: dict[str, int] = {}
+        validi = []
+        for mid, m in bloccano:
+            row = r.execute("SELECT n, at FROM stop_blocks WHERE agent=? AND slug=? AND host=? AND msg_id=?",
+                            (me.agent, me.slug, host, mid)).fetchone()
+            n = row["n"] if row else 0
+            if n >= cap and m.get("task_id") and r.execute(
+                    "SELECT 1 FROM messages WHERE task_id=? AND id<>? AND ts>? LIMIT 1",
+                    (m["task_id"], mid, row["at"])).fetchone():
+                n = 0  # novità sul task: il messaggio torna a contare
+            if n < cap:
+                contati[mid] = n
+                validi.append((mid, m))
+        now = iso_now()
 
-        def setta(v):
-            def f():
-                Store.heartbeat(self.c._conn(), me.agent, me.slug, host, iso_now(), workspace=caller.get("cwd"),
-                                caller=caller, event="stop")
-                self.c._conn().execute("UPDATE sessions SET drain_blocks=? WHERE agent=? AND slug=? AND host=?",
-                                       (v, me.agent, me.slug, host))
-            self.c._write(f)
-        if not bloccano or n >= cap:
-            setta(0)
+        def scrivi():
+            c = self.c._conn()
+            Store.heartbeat(c, me.agent, me.slug, host, now, workspace=caller.get("cwd"), caller=caller, event="stop")
+            for mid, n in contati.items():
+                c.execute("INSERT INTO stop_blocks (agent, slug, host, msg_id, n, at) VALUES (?,?,?,?,?,?) "
+                          "ON CONFLICT(agent, slug, host, msg_id) DO UPDATE SET n=excluded.n, at=excluded.at",
+                          (me.agent, me.slug, host, mid, n + 1, now))
+        if not validi:
+            contati = {}
+            self.c._write(scrivi)
             self.c.bus.scrivi_registro(me.agent, me.slug)
             return {"block": False, "pending": len(bloccano), "allentato": bool(bloccano)}
-        setta(n + 1)
+        self.c._write(scrivi)
         self.c.bus.scrivi_registro(me.agent, me.slug)
+        primo = max(contati.values()) + 1
         lista = "\n".join(f"  {mid}  from={m.get('from_session') or m.get('from')}  intent={m.get('intent') or m.get('type')}"
-                          for mid, m in bloccano[:5])
-        reason = (f"{len(bloccano)} message(s) asking for an action not handled yet (block {n + 1}/{cap}). "
+                          for mid, m in validi[:5])
+        reason = (f"{len(validi)} message(s) asking for an action not handled yet (block {primo}/{cap}). "
                   "Read each one and consume it before stopping: bus_reply to answer, bus_close with "
                   "chiuso (done), riarma (keep waiting on your delegation) or letto.\n" + lista)
-        return {"block": True, "reason": reason, "pending": len(bloccano)}
+        return {"block": True, "reason": reason, "pending": len(validi)}
 
     def _domanda_aperta(self, me, tid, delega_id: str) -> bool:
         """L'esecutore ha fatto una domanda sul task e da allora non gli è tornato niente."""

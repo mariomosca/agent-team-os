@@ -124,6 +124,17 @@ CREATE TABLE IF NOT EXISTS remote_queue (
   last_error TEXT
 );
 
+-- BR24-F6.14: blocchi dello Stop per messaggio (il tetto non riparte a ogni turno)
+CREATE TABLE IF NOT EXISTS stop_blocks (
+  agent  TEXT NOT NULL,
+  slug   TEXT NOT NULL,
+  host   TEXT NOT NULL,
+  msg_id TEXT NOT NULL,
+  n      INTEGER NOT NULL DEFAULT 0,
+  at     TEXT NOT NULL,
+  PRIMARY KEY (agent, slug, host, msg_id)
+);
+
 CREATE TABLE IF NOT EXISTS thread_legacy (
   thread_id TEXT NOT NULL,
   id        TEXT NOT NULL,
@@ -135,7 +146,7 @@ CREATE TABLE IF NOT EXISTS thread_legacy (
 # Colonne aggiunte dopo la v1: (tabella, colonna, definizione). Si aggiungono se mancano.
 MIGRAZIONI = [
     ("sessions", "waiting_agent", "TEXT"),          # v2: domanda in attesa di risposta (era nel registro)
-    ("sessions", "drain_blocks", "INTEGER NOT NULL DEFAULT 0"),  # v2: blocchi consecutivi dello Stop
+    ("sessions", "drain_blocks", "INTEGER NOT NULL DEFAULT 0"),  # v2, non più usata da F6.14 (stop_blocks)
     ("messages", "letto_at", "TEXT"),               # v4 (BR24-F6.6): prima lettura della delega da chi la esegue
     ("messages", "letto_da", "TEXT"),               # v4: la sessione che l'ha letta
 ]
