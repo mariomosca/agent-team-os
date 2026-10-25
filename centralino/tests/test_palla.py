@@ -200,3 +200,9 @@ def test_dopo_il_riarma_conta_l_ultima_mossa():
     assert sp(riarmata, [KAI_FERMO], orbit=orbit_mario, risposta={"letto": LETTA})["stato_palla"] == "fermo"
     assert sp(riarmata, [], orbit=orbit_mario, risposta={"letto": None})["stato_palla"] == "chiusa"
 
+
+def test_attesa_chiusa_senza_palla():
+    # BR24-F6.6: 12 attese chiuse su 34 avevano "lavora" o "fermo" (nota di Kai di Orbit)
+    for stato in ("closed", "woken", "seen"):
+        assert sp(attesa(state=stato), [KAI_LAVORA]) == {"stato_palla": None, "riga": None}
+

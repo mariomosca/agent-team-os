@@ -185,6 +185,9 @@ def stato_palla(rec: dict, letto_at: str | None, vive: list[dict], host: str,
     ``risposta``: l'ultimo messaggio del delegante sul task dopo l'ultimo ritorno (``letto``:
     chi esegue l'ha letto): l'ultima mossa è del delegante e la palla torna a chi esegue, anche
     se dopo un riarma il passo di Mario in Orbit è ancora aperto."""
+    # un'attesa chiusa non ha palla: niente stato e niente riga (la vista dà anche quelle del giorno)
+    if rec.get("state") not in ("expected", "expired"):
+        return {"stato_palla": None, "riga": None}
     rets = list(_d(rec.get("returns")).items())
     domande = [(k, e) for k, e in _d(rec.get("questions")).items() if isinstance(e, dict)]
     domande += [(k, e) for k, e in rets if isinstance(e, dict) and e.get("type") == "question"]

@@ -598,9 +598,11 @@ non conta (non è un segnale che il centralino veda).
 | `riga.ordine` | posizione dello stato, prima ciò che chiede qualcosa a chi ha delegato |
 | `riga.codice`, `riga.piano` | codice del piano dall'intent o dal summary (`BR24-F6.6`), e il piano |
 | `riga.titolo` | titolo del passo (o della fase) in Orbit, prima clausola; senza Orbit la prima frase del summary |
-| `riga.esecutore`, `riga.vivo_in` | la sessione che esegue (dal ritorno, da chi ha letto, o l'indirizzo della delega) e, se non è viva, le cartelle dove l'agente è vivo |
+| `riga.esecutore`, `riga.vivo_in` | la sessione che esegue (dal ritorno, da chi ha letto, o l'indirizzo della delega) e, se non è viva, le cartelle dove l'agente è vivo: `riga.parola` le dice già (`qui · vivo in …`), chi disegna non le aggiunge una seconda volta |
 | `riga.da`, `riga.leggi` | età della delega; `/read <id>` della domanda aperta, del primo esito non gestito o della delega |
 | `riga.allerta`, `riga.nota` | da guardare subito; il tetto che trattiene una sveglia, in parola |
+
+Un'attesa chiusa (la vista dà anche quelle dell'ultimo giorno) ha `stato_palla` e `riga` a `null`.
 
 Regole (`centralino/palla.py`, test in `tests/test_palla.py`): scaduta, poi domanda aperta, poi esito
 non gestito, poi `mario` se l'ultimo ritorno è riarmato e in Orbit il passo è di Mario (o Mario ha un
