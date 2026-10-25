@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -170,6 +170,7 @@ class Store:
                     self._w.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
             self._v3()
             self._v4()
+            self._v5()
             self._w.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
                             (str(SCHEMA_VERSION),))
 
@@ -219,6 +220,29 @@ class Store:
             "UPDATE messages SET letto_at=COALESCE((SELECT MIN(w.at) FROM wake_decisions w WHERE "
             "w.msg_id=messages.id AND w.decisione='sveglia'), ?) WHERE kind='delega' AND letto_at IS NULL",
             (iso_now(),))
+
+    def _v5(self) -> None:
+        """v5 (BR24-F6.12): gli slug in minuscolo ovunque (kai/Orbit è kai/orbit). Due sessioni
+        che diventano la stessa: resta la più recente."""
+        r = self._w.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        if r is None or int(r["value"]) >= 5:
+            return
+        for table, col in (("messages", "to_slug"), ("messages", "from_slug"), ("waits", "owner_slug"),
+                           ("wake_decisions", "slug")):
+            self._w.execute(f"UPDATE {table} SET {col}=lower({col}) WHERE {col} != lower({col})")
+        for x in self._w.execute("SELECT agent, slug, host, last_heartbeat FROM sessions "
+                                 "WHERE slug != lower(slug)").fetchall():
+            gemella = self._w.execute("SELECT last_heartbeat FROM sessions WHERE agent=? AND slug=? AND host=?",
+                                      (x["agent"], x["slug"].lower(), x["host"])).fetchone()
+            if gemella is not None and (gemella["last_heartbeat"] or "") >= (x["last_heartbeat"] or ""):
+                self._w.execute("DELETE FROM sessions WHERE agent=? AND slug=? AND host=?",
+                                (x["agent"], x["slug"], x["host"]))
+                continue
+            if gemella is not None:
+                self._w.execute("DELETE FROM sessions WHERE agent=? AND slug=? AND host=?",
+                                (x["agent"], x["slug"].lower(), x["host"]))
+            self._w.execute("UPDATE sessions SET slug=? WHERE agent=? AND slug=? AND host=?",
+                            (x["slug"].lower(), x["agent"], x["slug"], x["host"]))
 
     def _connect(self) -> sqlite3.Connection:
         c = sqlite3.connect(self.path, timeout=10, isolation_level=None, check_same_thread=False)

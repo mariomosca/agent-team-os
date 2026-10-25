@@ -247,6 +247,45 @@ def test_dopo_il_riarma_la_risposta_del_delegante_ridà_la_palla(bus):
     assert palla() == "lavora"
 
 
+def test_slug_senza_maiuscole(bus):
+    # BR24-F6.12: kai/Orbit e kai/orbit sono la stessa sessione (cartella ~/Projects/01-Building/Orbit)
+    sock = bus / "centralino.sock"
+    (bus / "ws" / "kai" / "Orbit").mkdir()
+    orbit = {"cwd": str(bus / "ws" / "kai" / "Orbit")}
+    assert call("session.event", {"event": "start"}, caller=orbit, sock=sock)["ok"]
+    r = call("send", {"to": "kai/Orbit", "intent": "x", "summary": "per Orbit", "message_type": "request",
+                      "kind": "delega"}, caller=_caller(bus, "alita"), sock=sock)["result"]
+    assert r["delivered_to"] == "kai/orbit"
+    assert [m["id"] for m in call("inbox", {}, caller=orbit, sock=sock)["result"]["messages"]] == [r["id"]]
+    assert call("read", {"message_id": r["id"]}, caller=orbit, sock=sock)["ok"]
+    assert call("send", {"to": "KAI/ORBIT", "intent": "y", "summary": "ancora", "message_type": "event"},
+                caller=_caller(bus, "alita"), sock=sock)["result"]["delivered_to"] == "kai/orbit"
+    over = {"cwd": str(bus / "ws" / "kai" / "s1"), "slug": "Prova"}
+    assert call("session.event", {"event": "start"}, caller=over, sock=sock)["result"]["address"] == "kai/prova"
+
+
+def test_migrazione_v5_slug_in_minuscolo(tmp_path):
+    import sqlite3
+    from centralino.db import Store
+    db = tmp_path / "centralino.db"
+    Store(db).close()
+    c = sqlite3.connect(db)
+    c.execute("UPDATE meta SET value='4' WHERE key='schema_version'")
+    c.execute("INSERT INTO messages (id, ts, from_agent, to_agent, to_slug, to_host, type, thread_id, state, "
+              "delivery, origin, raw) VALUES ('m', 't', 'alita', 'kai', 'Orbit', 'laptop', 'event', 'th', "
+              "'pending', 'local', 'x', '{}')")
+    c.execute("INSERT INTO sessions (agent, slug, host, last_heartbeat) VALUES ('kai', 'Orbit', 'laptop', 'a')")
+    c.execute("INSERT INTO sessions (agent, slug, host, last_heartbeat) VALUES ('kai', 'orbit', 'laptop', 'b')")
+    c.execute("INSERT INTO sessions (agent, slug, host, last_heartbeat) VALUES ('kai', 'Solo', 'laptop', 'c')")
+    c.commit()
+    c.close()
+    st = Store(db)
+    assert st.message("m")["to_slug"] == "orbit"
+    assert sorted((r["slug"], r["last_heartbeat"]) for r in st.sessions()) == [("orbit", "b"), ("solo", "c")]
+    st.close()
+    assert len(list(tmp_path.glob("centralino.db.bak-v4-*"))) == 1
+
+
 def test_migrazione_v4_con_backup(tmp_path):
     import sqlite3
     from centralino.db import Store

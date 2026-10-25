@@ -16,6 +16,8 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from .indirizzi import norm_slug
+
 from .tempo import age_s
 
 ONDA_FRESH_S = 60       # sessions.json più vecchio di così: Onda non è affidabile
@@ -75,7 +77,9 @@ class OndaView:
     def entries(self) -> list[dict]:
         if not self.valid():
             return []
-        return [s for s in self.doc().get("sessions") or [] if isinstance(s, dict)]
+        # BR24-F6.12: lo slug di Onda si confronta senza maiuscole, come quello del bus
+        return [{**s, "slug": norm_slug(s["slug"])} if isinstance(s.get("slug"), str) else s
+                for s in self.doc().get("sessions") or [] if isinstance(s, dict)]
 
     def find(self, agent: str, slug: str, host: str | None = None,
              claude_session_id: str | None = None) -> dict | None:

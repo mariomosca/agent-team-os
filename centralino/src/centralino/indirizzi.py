@@ -31,6 +31,12 @@ class ErroreIndirizzo(ValueError):
         self.code = code
 
 
+def norm_slug(slug: str) -> str:
+    """BR24-F6.12: uno slug non distingue maiuscole e minuscole (kai/Orbit è kai/orbit), in
+    invio, in registrazione e in lettura: minuscolo, il resto piegato in ``-`` come da cwd."""
+    return SLUG_SAFE.sub("-", slug.strip().lower())
+
+
 def slug_for_path(path: str | os.PathLike[str]) -> str:
     p = Path(path).expanduser()
     try:
@@ -50,8 +56,8 @@ def parse_addr(addr: str) -> tuple[str, str | None, str | None]:
         head, _, host = head.partition("@")
     elif "@" in tail:
         tail, _, host = tail.rpartition("@")
-    slug = tail.strip() if sep else ""
-    return head.strip(), (slug or None), ((host or "").strip() or None)
+    slug = norm_slug(tail) if sep and tail.strip() else ""
+    return head.strip().lower(), (slug or None), ((host or "").strip() or None)
 
 
 def _under(path: str, prefix: str) -> bool:
@@ -189,13 +195,13 @@ class AgentMap:
     def identify(self, caller: dict) -> Identita:
         """Identità di chi chiama dal suo ``caller`` (cwd + override AB_AGENT/AB_SESSION_SLUG)."""
         cwd = (caller or {}).get("cwd") or ""
-        agent = (caller or {}).get("agent") or (self.agent_for_cwd(cwd) if cwd else None)
+        agent = ((caller or {}).get("agent") or "").strip().lower() or (self.agent_for_cwd(cwd) if cwd else None)
         if not agent:
             raise ErroreIndirizzo(
                 "no_identity",
                 f"nessun agente per {cwd or '(cwd assente)'}: imposta AB_AGENT, oppure lavora in una "
                 "cartella elencata nelle rules di AGENT_MAP.json.")
-        slug = (caller or {}).get("slug") or (slug_for_path(cwd) if cwd else None)
+        slug = norm_slug((caller or {}).get("slug") or "") or (slug_for_path(cwd) if cwd else None)
         if not slug:
             raise ErroreIndirizzo("no_identity", "slug della sessione non ricavabile: imposta AB_SESSION_SLUG")
         return Identita(agent, slug, self.host_self())

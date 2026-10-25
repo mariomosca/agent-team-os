@@ -641,3 +641,16 @@ l'heartbeat dopo l'evento `end` azzerava `ended_at` e la sessione tornava viva.
 - Viva per Onda resta com'è (il pannello è la prova). Il processo bg-spare non si tocca: è del daemon di
   Claude Code. Scenario `caso_bg_spare` nel banco di prova.
 
+## 20. Slug senza maiuscole (BR24-F6.12, 25/10/2026)
+
+Lo slug di una sessione viene dalla cartella in minuscolo (`~/Projects/01-Building/Orbit` → `orbit`), ma un
+indirizzo scritto a mano come `kai/Orbit` apriva una casella `Orbit` che nessuna sessione legge: il 24 e il
+25/10 due messaggi per Kai di Orbit sono finiti lì.
+
+- `indirizzi.norm_slug`: minuscolo, il resto piegato in `-` come per la cwd. Lo usano `parse_addr` (invio:
+  `kai/Orbit`, `KAI/ORBIT` → `kai/orbit`; anche l'agente va in minuscolo), `identify` (registrazione e
+  lettura, compreso `AB_SESSION_SLUG`) e la vista di Onda (`OndaView.entries`).
+- Schema v5: gli slug già scritti passano in minuscolo (`messages.to_slug`/`from_slug`, `waits.owner_slug`,
+  `wake_decisions.slug`, `sessions.slug`); due sessioni che diventano la stessa lasciano la più recente.
+  Backup accanto prima di migrare (`centralino.db.bak-v4-<ora>`).
+
