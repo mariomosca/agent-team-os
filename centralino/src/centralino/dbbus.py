@@ -235,10 +235,11 @@ class DbBus:
     # ---------- agente nudo (decisione 2 di Alita) ----------
 
     def slug_nudo(self, agent: str) -> str | None:
-        """Dove va un messaggio a un agente senza sessione: l'unica sessione viva se ce n'è
-        una sola, altrimenti la sessione di casa (workspace_root) se è viva, altrimenti la
-        casella condivisa (None), che non sveglia nessuno e chi apre una sessione vede."""
-        vive = self.c.vivo.slug_vivi(agent)
+        """Dove va un messaggio a un agente senza sessione: l'unica sessione viva con un canale
+        se ce n'è una sola, altrimenti la sessione di casa (workspace_root) se ha un canale,
+        altrimenti la casella condivisa (None), che chi apre una sessione vede. AM26-F2.2: una
+        sessione viva senza canale non si sceglie, il messaggio ci resterebbe muto (kai/lighthouse, 26/10)."""
+        vive = self.c.vivo.slug_con_canale(agent)
         if len(vive) == 1:
             return vive[0]
         casa = self.amap.home_slug(agent)

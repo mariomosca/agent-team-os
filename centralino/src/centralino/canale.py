@@ -165,3 +165,10 @@ def via_tmux(pane: str, text: str) -> str:
     box = read_prompt_box("\n".join(after.split("\n")[-40:]))
     ok = bool(BUSY_RE.search(after)) or (box is not None and text[:20] not in box)
     return "tmux" if ok else "tmux:non_confermato"
+
+
+def notifica_sistema(titolo: str, testo: str) -> None:
+    """Notifica di macOS, per quando l'hub stesso non ha un canale (AM26-F2.2)."""
+    esc = lambda t: t.replace("\\", "\\\\").replace('"', '\\"')  # noqa: E731
+    subprocess.run(["osascript", "-e", f'display notification "{esc(testo[:240])}" with title "{esc(titolo)}"'],
+                   capture_output=True, timeout=5, check=False)

@@ -78,27 +78,31 @@ def _messaggio_senza_canale(c, eta_giorni: int) -> str:
                           "args": {"to": "vera/s1", "intent": "x", "summary": "brief", "message_type": "brief",
                                    "kind": "delega"}})
     mid = r["result"]["id"]
-    vecchio = iso(now() - timedelta(minutes=10))
-    def f():
-        conn = c._conn()
-        conn.execute("UPDATE messages SET ts=? WHERE id=?", (iso(now() - timedelta(days=eta_giorni)), mid))
-        conn.execute("INSERT INTO wake_decisions (at, giro, agent, slug, msg_id, regola, decisione, motivo) "
-                     "VALUES (?,?,?,?,?,?,?,?)", (vecchio, 1, "vera", "s1", mid, "delega", "coda", "nessun_canale"))
-    c._write(f)
+    eta = timedelta(days=eta_giorni) if eta_giorni else timedelta(minutes=11)
+    c._write(lambda: c._conn().execute("UPDATE messages SET ts=? WHERE id=?", (iso(now() - eta), mid)))
     return mid
 
 
-def test_avviso_senza_canale_solo_per_sessioni_vive(c):
+def _sveglia(c, notifiche):
+    return Sveglia(c, notifica=lambda titolo, testo: notifiche.append(testo))
+
+
+def test_avviso_senza_canale_anche_a_sessione_chiusa(c):
+    # AM26-F2.2: un messaggio azionabile per una stanza chiusa è fermo lo stesso; nessun hub qui: notifica
     _messaggio_senza_canale(c, 0)
     c.handle_request({"v": 1, "id": "3", "op": "hook.end", "args": {}, "caller": {"cwd": str(c.ws / "vera" / "s1")}})
-    assert Sveglia(c).avvisi_senza_canale() == []
+    notifiche = []
+    assert len(_sveglia(c, notifiche).avvisi_senza_canale()) == 1 and "per vera/s1" in notifiche[0]
 
 
 def test_avviso_senza_canale_non_per_messaggi_vecchi(c):
     _messaggio_senza_canale(c, 40)
-    assert Sveglia(c).avvisi_senza_canale() == []
+    assert _sveglia(c, []).avvisi_senza_canale() == []
 
 
 def test_avviso_senza_canale_resta_per_il_caso_vero(c):
     _messaggio_senza_canale(c, 0)
-    assert len(Sveglia(c).avvisi_senza_canale()) == 1
+    notifiche = []
+    s = _sveglia(c, notifiche)
+    assert len(s.avvisi_senza_canale()) == 1
+    assert s.avvisi_senza_canale() == [] and len(notifiche) == 1   # una volta per gruppo

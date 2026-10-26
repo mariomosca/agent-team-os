@@ -496,27 +496,110 @@ def att_scadenza(b: Banco) -> None:
     w = b.c.store.wait(d["task_id"])
     _check(w["state"] == "expired", f"deadline passata senza ritorni: scaduta ({w['state']})")
     ib = b.op("alita/work-hub", "inbox")["messages"]
-    _check([m["intent"] for m in ib] == ["task-scaduto"], f"avviso a chi aspetta: {ib}")
-    _check(not b.prompt_a("alita/work-hub"), "l'avviso non sveglia")
+    _check(sorted(m["intent"] for m in ib) == ["messaggi-fermi-senza-canale", "task-scaduto"],
+           f"avviso a chi aspetta, e la delega a kai/orbit ferma senza canale (AM26-F2.2): {ib}")
+    _check(not b.prompt_a("alita/work-hub"), "l'avviso di scadenza non sveglia")
 
 
 def att_senza_canale(b: Banco) -> None:
-    b.op("alita/work-hub", "session.event", event="start")
-    b.op("alita/work-hub", "session.heartbeat")
-    out = b.op("kai/orbit", "send", to="alita/work-hub", intent="x", summary="x", message_type="request",
+    """Una delega a una sessione viva ma senza canale: in coda, e dopo 10 minuti un solo avviso
+    azionabile all'hub (che ha un canale), che lo sveglia."""
+    b.onda("alita/work-hub", "idle")
+    b.op("kai/orbit", "session.event", event="start")
+    b.op("kai/orbit", "session.heartbeat")
+    out = b.op("alita/work-hub", "send", to="kai/orbit", intent="x", summary="x", message_type="request",
                kind="delega")
     b.giro()
+    _check(b.decisioni("kai/orbit")[out["id"]][1:] == ("coda", "nessun_canale"), "in coda, nessun canale")
+    fermi = lambda: [m for m in b.op("alita/work-hub", "inbox")["messages"]  # noqa: E731
+                     if m["intent"] == "messaggi-fermi-senza-canale"]
     b.avanza(301)
-    b.op("alita/work-hub", "session.heartbeat")
+    b.op("kai/orbit", "session.heartbeat")
     b.giro()
-    hub = [m for m in b.op("alita/work-hub", "inbox")["messages"] if m["intent"] == "sveglia-senza-canale"]
-    _check(len(hub) == 1, f"un avviso all'hub dopo 5 minuti senza canale: {hub}")
+    _check(not fermi(), "a 5 minuti ancora niente")
+    b.avanza(301)
+    b.op("kai/orbit", "session.heartbeat")
+    b.onda("alita/work-hub", "idle")
+    b.giro()
+    _check(len(fermi()) == 1 and "kai/orbit" in fermi()[0]["summary"], f"un avviso dopo 10 minuti: {fermi()}")
     b.avanza(60)
-    b.op("alita/work-hub", "session.heartbeat")
+    b.op("kai/orbit", "session.heartbeat")
+    b.onda("alita/work-hub", "idle")
     b.giro()
-    hub = [m for m in b.op("alita/work-hub", "inbox")["messages"] if m["intent"] == "sveglia-senza-canale"]
-    _check(len(hub) == 1, "uno solo per messaggio")
-    _check(out["id"], "")
+    _check(len(fermi()) == 1, "uno solo per gruppo")
+    _check(any("URGENTE" in t for t in b.prompt_a("alita/work-hub")), "l'avviso sveglia l'hub")
+
+
+def caso_am26_cloud_a_kai_nudo(b: Banco) -> None:
+    """AM26-F2.2, 26/10: quattro richieste di Mario da alita/cloud a `kai` (nudo). L'unica sessione
+    viva di Kai era kai/lighthouse, viva per battito ma senza pannello: le richieste sono rimaste
+    ferme 4 ore e ad Alita arrivavano solo eventi "sveglia senza canale"."""
+    b.onda("alita/work-hub", "idle")
+    b.op("kai/lighthouse", "session.event", event="start")
+    b.op("kai/lighthouse", "session.heartbeat")
+    ids = []
+    for i, intent in enumerate(("alita-mobile-fix", "alita-mobile-nuova-sessione",
+                                "alita-mobile-android-auto", "alita-mobile-android-auto")):
+        rec = _msg(f"msg-20261024T16000{i}Z-am26cl0{i}", "alita/cloud", "kai", "request", tempo.iso(b.t),
+                   intent=intent, requires_response=True, context={"host": "cloud"})
+        ids.append(b.consegna("kai", rec))
+    # un invio a `kai` nudo da questa macchina: lighthouse non si sceglie, resta nella casella condivisa
+    nudo = b.op("alita/work-hub", "send", to="kai", intent="y", summary="y", message_type="request",
+                kind="comunicazione")
+    _check(nudo["delivered_to"] == "kai", f"nudo senza sessioni con canale: casella condivisa ({nudo['delivered_to']})")
+    b.giro()
+    _check(not b.decisioni("kai/lighthouse"), "kai/lighthouse senza canale non riceve niente")
+    _check(b.sveglia.blocca_stop("kai", "lighthouse") == [], "lo Stop di lighthouse non si blocca")
+    for _ in range(2):
+        b.avanza(301)
+        b.op("kai/lighthouse", "session.heartbeat")
+        b.onda("alita/work-hub", "idle")
+        b.giro()
+    fermi = [m for m in b.op("alita/work-hub", "inbox")["messages"] if m["intent"] == "messaggi-fermi-senza-canale"]
+    _check(len(fermi) == 1, f"un solo avviso per il gruppo kai da alita/cloud: {fermi}")
+    sm = fermi[0]["summary"]
+    _check(sm.startswith("4 messaggi per kai da alita/cloud@cloud fermi da 10 min")
+           and "vive senza canale: lighthouse" in sm and all(i in sm for i in ids), sm)
+    _check(fermi[0]["priority"] == "urgent", "azionabile: sveglia Alita e ne tiene lo Stop")
+    b.avanza(30)
+    b.onda("alita/work-hub", "idle")
+    b.giro()
+    _check(any("URGENTE" in t for t in b.prompt_a("alita/work-hub")), "Alita svegliata")
+    # Mario apre kai/alita-mobile in Onda: la prima sessione con canale le riceve tutte e quattro
+    b.onda("kai/alita-mobile", "idle")
+    b.giro()
+    dec = b.decisioni("kai/alita-mobile")
+    _check(all(dec.get(i, ("", ""))[1] == "sveglia" for i in ids), f"svegliata con le quattro: {dec}")
+    ib = {m["id"] for m in b.op("kai/alita-mobile", "inbox")["messages"]}
+    _check(set(ids) <= ib, "le vede in bus_inbox")
+
+
+def caso_am26_tmux_e_hub_muto(b: Banco) -> None:
+    """AM26-F2.2 sul mini: tmux è un canale come Onda. E se l'hub stesso non ha canale, una notifica
+    di sistema al posto del messaggio."""
+    notifiche: list[tuple[str, str]] = []
+    b.sveglia.notifica = lambda titolo, testo: notifiche.append((titolo, testo))
+    b.c.handle_request({"v": 1, "id": "t", "op": "hook.start", "args": {},
+                        "caller": {**b.caller("kai/crewmoor"), "tmux_pane": "%9"}})
+    _check(b.c.vivo.slug_con_canale("kai") == ["crewmoor"], "tmux conta come canale")
+    out = b.op("leo/x", "send", to="kai", intent="z", summary="z", message_type="request", kind="comunicazione")
+    _check(out["delivered_to"] == "kai/crewmoor", f"l'unica con canale (tmux): {out['delivered_to']}")
+    b.op("alita/work-hub", "session.event", event="start")  # Alita viva ma senza canale
+    rec = _msg("msg-20261024T160500Z-am26hub0", "alita/cloud", "leo", "request", tempo.iso(b.t),
+               requires_response=True, context={"host": "cloud"})
+    b.consegna("leo", rec)
+    for _ in range(2):
+        b.avanza(301)
+        b.op("alita/work-hub", "session.heartbeat")
+        b.c.handle_request({"v": 1, "id": "h", "op": "session.heartbeat", "args": {},
+                            "caller": {**b.caller("kai/crewmoor"), "tmux_pane": "%9"}})
+        b.giro()
+    _check(len(notifiche) == 1 and "per leo da alita/cloud@cloud" in notifiche[0][1], f"notifica: {notifiche}")
+    _check(not [m for m in b.op("alita/work-hub", "inbox")["messages"]
+                if m["intent"] == "messaggi-fermi-senza-canale"], "niente messaggio a un hub muto")
+    b.avanza(60)
+    b.giro()
+    _check(len(notifiche) == 1, "una notifica per gruppo")
 
 
 def att_agente_nudo(b: Banco) -> None:
@@ -572,7 +655,7 @@ def att_pulizia(b: Banco) -> None:
 SCENARI = [caso_irjocy, caso_orbit_non_viva, caso_xn9lv0, caso_attese_non_chiudibili, caso_passaggio_attesa,
            caso_delega_completa, caso_mini_irraggiungibile, caso_due_sessioni, caso_heartbeat_senza_canale, caso_bg_spare,
            att_delega_completa, att_stop, att_hook_start, att_scadenza, att_senza_canale, att_agente_nudo,
-           att_cloud, att_pulizia]
+           att_cloud, att_pulizia, caso_am26_cloud_a_kai_nudo, caso_am26_tmux_e_hub_muto]
 
 
 def esegui(scenario, base: Path | None = None) -> None:

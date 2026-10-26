@@ -251,7 +251,8 @@ Altrimenti è **chiusa**. Nient'altro: niente TTL di 240 minuti, niente pid del 
   `hosts/<h>/status.json`), con l'età dello stato riportata in `status`.
 - **Viva non vuol dire raggiungibile**: il canale di sveglia è Onda (pannello in `sessions.json`),
   oppure tmux se l'attesa ha un `tmux_pane`. Una sessione viva senza canale (Alita in `claude attach`
-  il 24/10, INV §5.5.11) dà `nessun_canale` finché Mario non decide BR24-F1.5.
+  il 24/10, INV §5.5.11) dà `nessun_canale` per i messaggi indirizzati a lei, e dal 26/10 non riceve
+  quelli della casella condivisa né quelli a un agente nudo (§22).
 
 Nel passo 1 questa regola alimenta `status`, l'avviso "no live session" di `send` e le decisioni ombra
 della sveglia. Il registro `registry/` continua a essere scritto dagli hook come oggi.
@@ -261,7 +262,7 @@ della sveglia. Il registro `registry/` continua a essere scritto dagli hook come
 ## 6. Tabella di sveglia e blocco dello Stop
 
 Calcolata per ogni messaggio pending destinato a una sessione `S` (o alla casella condivisa: in quel
-caso a ogni sessione viva dell'agente, come oggi). "S ferma" = Onda dice `idle` e senza testo nella
+caso a ogni sessione viva **con un canale** dell'agente, §22). "S ferma" = Onda dice `idle` e senza testo nella
 casella (`hasText == false`) da almeno 5 s.
 
 | # | Messaggio | Riconoscimento | S ferma | S al lavoro | Blocca lo Stop |
@@ -381,8 +382,8 @@ Casi minimi, quelli del 24/10 come regressione:
 1. **Interruttore `AB_CENTRALINO`**: sì, **spento di default**. Si accende prima su una sola sessione
    di prova, poi su tutte, mai senza l'ok di Alita.
 2. **Agente nudo** (dal passo 2; nel passo 1 resta la casella condivisa di oggi): l'unica sessione viva
-   se ce n'è una sola; altrimenti la sessione di casa (`workspace_root`) se è viva; altrimenti la
-   casella condivisa.
+   con un canale se ce n'è una sola; altrimenti la sessione di casa (`workspace_root`) se ha un canale;
+   altrimenti la casella condivisa (§22).
 3. **Heartbeat del MCP ogni 60 s**: sì. In `status` una sessione viva solo per heartbeat e senza
    pannello si legge chiaramente: `"viva per heartbeat, canale: nessuno"`.
 4. **Esito**: ogni `response` con il `task_id` di un'attesa `expected` sveglia senza tetto, **con
@@ -669,4 +670,38 @@ ha dato quattro giri da tre blocchi.
 - Un messaggio nuovo che chiede un'azione blocca con il suo contatore; lo Stop mostra solo i messaggi che
   contano ancora. `sessions.drain_blocks` resta nello schema ma non si usa più.
 - La pulizia toglie i blocchi dei messaggi già consumati. Scenario `att_stop` nel banco di prova.
+
+## 22. Niente consegne a sessioni senza canale (AM26-F2.2, 26/10/2026)
+
+**Il caso.** Fra le 17:44 e le 18:16 alita/cloud ha mandato a `kai` (nudo) quattro richieste di Mario
+per Alita Mobile. Sono entrate nella casella condivisa di Kai, giusto; ma l'unica sessione viva di Kai
+era kai/lighthouse, viva per battito e senza pannello. La sveglia le ha assegnate a lei (`coda`,
+`nessun_canale`) e ad Alita sono arrivati quattro eventi "sveglia senza canale", non azionabili: nessuno
+li ha letti per quattro ore, finché Mario non ha aperto kai/alita-mobile. Con `bus_send` a `kai` nudo
+andava anche peggio: `slug_nudo` metteva il messaggio direttamente nella casella di lighthouse, e una
+sessione aperta dopo non lo vedeva.
+
+**Regole.**
+
+- Una sessione viva senza canale (né Onda né tmux) resta viva per il battito, ma non entra nella scelta:
+  `slug_nudo` e i destinatari della casella condivisa guardano solo `Vivacita.slug_con_canale`. Il
+  messaggio resta nella casella condivisa e lo riceve la prima sessione con canale che si apre (sveglia
+  al primo giro, e lo vede in `bus_inbox`). Lo Stop di una sessione senza canale non si blocca per i
+  messaggi della casella condivisa. Un messaggio indirizzato esplicitamente a quella sessione resta suo
+  (`coda`, `nessun_canale`) come prima.
+- **Avviso all'hub.** Un messaggio che chiede un'azione (regole che svegliano, §6), fermo da più di
+  10 minuti (`FERMO_S`) e senza nessuna sessione con canale che lo possa ricevere (stanza chiusa o muta,
+  oppure nessuna sessione con canale per la casella condivisa), entra in un gruppo per destinatario
+  (agente, stanza o casella condivisa) e mittente. Per ogni gruppo arriva **un** messaggio
+  `messaggi-fermi-senza-canale`, priorità `urgent`, alla sessione dell'hub con canale (casa se possibile):
+  "4 messaggi per kai da alita/cloud@cloud fermi da 10 min: nessuna sessione di kai con canale (vive senza
+  canale: lighthouse). Intent: …". È azionabile: sveglia Alita e ne tiene lo Stop finché non lo chiude.
+  La chiave in `meta` è il gruppo più il suo messaggio più vecchio: lo stesso gruppo non riavvisa, un gruppo
+  nuovo sì.
+- Se l'hub non ha un canale, o il gruppo è per l'hub stesso, al posto del messaggio una notifica di sistema
+  (`osascript`), una per gruppo.
+- Sostituisce gli eventi `sveglia-senza-canale` (uno per messaggio, priorità `high`, dopo 5 minuti).
+
+Regressioni: `caso_am26_cloud_a_kai_nudo` e `caso_am26_tmux_e_hub_muto` nel banco (tmux conta come canale,
+per il mini), `att_senza_canale`, `tests/test_f55e.py`.
 

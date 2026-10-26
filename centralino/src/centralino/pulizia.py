@@ -4,7 +4,7 @@
 - attese chiuse, scadute o annullate da oltre 30 giorni: via, con i loro ritorni;
 - decisioni di sveglia oltre 30 giorni: via;
 - caselle di sessioni chiuse da più di 24 ore: i messaggi che chiedono un'azione passano
-  all'indirizzo dell'agente nudo (unica sessione viva, poi casa, poi casella condivisa),
+  all'indirizzo dell'agente nudo (unica sessione viva con canale, poi casa, poi casella condivisa),
   gli altri si archiviano come letti; la sessione esce dal registro.
 
 I file di oggi non si toccano: restano come archivio in sola lettura.

@@ -35,7 +35,7 @@ allo slug dal pid leggendolo.
 |---|---|
 | `kai/crewmoor` | la sessione `crewmoor` di Kai (lo slug è il nome della cartella, o `AB_SESSION_SLUG`) |
 | `kai@mini/crewmoor` | stessa sessione, su un altro host (anche `kai/crewmoor@mini`) |
-| `kai` | l'unica sessione viva di Kai; se sono più di una, la sua sessione di casa (`workspace_root`) se è viva; altrimenti la casella condivisa, visibile a tutte le sue sessioni |
+| `kai` | l'unica sessione viva di Kai con un canale (Onda o tmux); se sono più di una, la sua sessione di casa (`workspace_root`) se ha un canale; altrimenti la casella condivisa, visibile a tutte le sue sessioni e consegnata alla prima con canale. Un messaggio che chiede un'azione e resta fermo 10 minuti senza sessioni con canale fa un avviso ad Alita (CENTRALINO.md §22) |
 | `kai@mini` | come sopra, sul mini |
 
 L'agente si ricava dalla cwd con la regola di `AGENT_MAP.rules` dal prefisso più lungo, sul confine di cartella
@@ -128,7 +128,7 @@ Un giro ogni 6 ore:
 - attese chiuse, scadute o annullate oltre 30 giorni: via, con i loro ritorni;
 - decisioni di sveglia oltre 30 giorni: via;
 - caselle di sessioni chiuse da più di 24 ore: i messaggi che chiedono un'azione passano alla sessione di casa
-  dell'agente (unica sessione viva, poi casa, poi casella condivisa), gli altri si archiviano come letti; la
+  dell'agente (unica sessione viva con canale, poi casa, poi casella condivisa), gli altri si archiviano come letti; la
   sessione esce dal registro.
 
 ## 11. Cosa è stato tolto e perché

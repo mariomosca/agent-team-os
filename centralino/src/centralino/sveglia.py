@@ -8,8 +8,13 @@ Un giro ogni 10 s (e subito dopo un invio):
    suoi messaggi del giro, scritto nel prompt via Onda o tmux;
 3. il motivo di un rinvio finisce sul ritorno dell'attesa (``pending_wake``), così la
    band e ``bus_inbox`` lo mostrano;
-4. una sessione viva senza canale da più di 5 minuti: un avviso all'agente hub, una volta
-   per messaggio.
+4. AM26-F2.2: messaggi che chiedono un'azione fermi da più di 10 minuti senza una sessione
+   con canale che li possa ricevere: un messaggio azionabile all'hub, uno per gruppo
+   (destinatario e mittente); se l'hub stesso non ha canale, una notifica di sistema.
+
+Le sessioni vive senza canale non ricevono i messaggi della casella condivisa: restano vive
+per il battito, ma una consegna lì resterebbe muta (kai/lighthouse, 26/10, quattro richieste
+di Mario ferme quattro ore).
 """
 
 from __future__ import annotations
@@ -26,7 +31,8 @@ from .dbbus import msg_id, with_pending_wake
 from .tempo import age_s, iso, iso_now, now, parse_iso
 
 WAIT_IDLE_H = 72
-NOCHANNEL_S = 300
+FERMO_S = 600           # un messaggio azionabile fermo da tanto, senza canale, fa l'avviso all'hub
+INTENT_FERMI = "messaggi-fermi-senza-canale"
 VECCHIO_GG = 30          # un messaggio pending più vecchio non genera l'avviso senza canale
 GESTISCI = "gestisci con bus_close (chiuso, riarma o letto) o rispondi con bus_reply"
 
@@ -48,9 +54,10 @@ def attese_di(store) -> dict[str, regole.Attesa]:
 
 
 class Sveglia:
-    def __init__(self, central, onda_call=None):
+    def __init__(self, central, onda_call=None, notifica=None):
         self.c = central
         self.onda_call = onda_call or canale.onda_call
+        self.notifica = notifica or canale.notifica_sistema
         self.ultimo_giro: list = []
 
     # ---------- la tabella: chi riceve cosa ----------
@@ -69,7 +76,7 @@ class Sveglia:
             rec = json.loads(r["raw"])
             agent = r["to_agent"]
             if agent not in vive_cache:
-                vive_cache[agent] = self.c.vivo.slug_vivi(agent)
+                vive_cache[agent] = self.c.vivo.slug_con_canale(agent)
             for slug in regole.destinatari(rec, agent, r["to_slug"], attese, vive_cache[agent]):
                 out[(agent, slug)].append((r["id"], regole.classifica(rec, agent, slug, attese),
                                            rec.get("from_session") or rec.get("from")))
@@ -303,34 +310,77 @@ class Sveglia:
                 Store.put_wait(c, with_pending_wake(rec), origin="centralino")
             self.c.bus._tx(scrivi)
 
+    def _bloccati(self, attese) -> dict[tuple[str, str | None, str], list[dict]]:
+        """Messaggi azionabili di questa macchina fermi da più di FERMO_S senza una sessione
+        con canale che li riceva, per (agente, slug o None per la casella condivisa, mittente)."""
+        host = self.c.amap.host_self() or ""
+        canali: dict[str, list[str]] = {}
+        gruppi: dict[tuple[str, str | None, str], list[dict]] = defaultdict(list)
+        for r in self.c.store.read().execute(
+                "SELECT id, ts, to_agent, to_slug, raw FROM messages WHERE state='pending' AND to_host=? "
+                "AND ts >= ? AND ts <= ? ORDER BY id",
+                (host, iso(now() - timedelta(days=VECCHIO_GG)), iso(now() - timedelta(seconds=FERMO_S)))):
+            rec = json.loads(r["raw"])
+            if rec.get("intent") == INTENT_FERMI:
+                continue
+            agent = r["to_agent"]
+            if agent not in canali:
+                canali[agent] = self.c.vivo.slug_con_canale(agent)
+            dest = regole.destinatari(rec, agent, r["to_slug"], attese, canali[agent])
+            if any(s in canali[agent] for s in dest):
+                continue
+            regola = regole.classifica(rec, agent, dest[0] if dest else "", attese)
+            if regola not in regole.SVEGLIANO:
+                continue
+            slug = r["to_slug"] or (dest[0] if dest else None)
+            mittente = rec.get("from_session") or rec.get("from") or "?"
+            host_m = (rec.get("context") or {}).get("host") if isinstance(rec.get("context"), dict) else None
+            if host_m and host_m != host:
+                mittente = f"{mittente}@{host_m}"
+            gruppi[(agent, slug, mittente)].append({"id": r["id"], "ts": r["ts"], "intent": rec.get("intent") or ""})
+        return gruppi
+
     def avvisi_senza_canale(self) -> list[str]:
+        """AM26-F2.2: al posto di un evento per messaggio, un messaggio azionabile (urgente, sveglia
+        l'hub) per gruppo fermo, una volta finché il gruppo non si svuota."""
         r = self.c.store.read()
-        limite = iso(now() - timedelta(seconds=NOCHANNEL_S))
         hub = (self.c.amap.data().get("cc_awareness") or {}).get("hub")
+        hub = hub if hub and self.c.amap.agent_exists(hub) else None
         inviati = []
-        righe = r.execute(
-            "SELECT w.agent, w.slug, w.msg_id, MIN(w.at) AS dal FROM wake_decisions w "
-            "JOIN messages m ON m.id=w.msg_id AND m.state='pending' AND m.ts >= ? "
-            "WHERE w.motivo='nessun_canale' GROUP BY w.agent, w.slug, w.msg_id "
-            "HAVING MIN(w.at) <= ?", (iso(now() - timedelta(days=VECCHIO_GG)), limite)).fetchall()
-        for x in righe:
-            key = f"nochannel:{x['agent']}/{x['slug']}:{x['msg_id']}"
+        for (agent, slug, mittente), msgs in self._bloccati(self._attese()).items():
+            key = f"fermi:{agent}/{slug or '*'}:{mittente}:{msgs[0]['id']}"
             if r.execute("SELECT 1 FROM meta WHERE key=?", (key,)).fetchone():
                 continue
-            # ancora viva e senza canale adesso? (BR24-F5.5e: una sessione chiusa non si avvisa)
-            st = self.c.vivo.stato(x["agent"], x["slug"])
-            if not st.viva or st.canale != "nessuno":
-                continue
-            dest = hub if hub and self.c.amap.agent_exists(hub) else x["agent"]
-            ev = self._evento(dest, f"{dest}/sveglia", "sveglia-senza-canale", "high",
-                              f"Sveglia senza canale: {x['agent']}/{x['slug']} ha un messaggio da svegliare "
-                              f"({x['msg_id']}) ma dal {x['dal']} non ha un pannello di Onda né tmux. "
-                              "Va svegliata a mano o riaperta in Onda.",
-                              {"session": f"{x['agent']}/{x['slug']}", "messages": [x["msg_id"]]})
-            self.c.bus.accogli(ev, dest, None, origin="centralino")
+            minuti = int((age_s(msgs[0]["ts"]) or 0) // 60)
+            vive = [s.slug for s in self.c.vivo.vive(agent) if s.canale == "nessuno"]
+            dove = (f"{agent}/{slug} non ha una sessione con canale" if slug else
+                    f"nessuna sessione di {agent} con canale")
+            if vive:
+                dove += f" (vive senza canale: {', '.join(vive)})"
+            intents = ", ".join(sorted({m["intent"] for m in msgs if m["intent"]}))
+            n = len(msgs)
+            testo = (f"{n} {'messaggio' if n == 1 else 'messaggi'} per {agent}{'/' + slug if slug else ''} "
+                     f"da {mittente} {'fermo' if n == 1 else 'fermi'} da {minuti} min: {dove}"
+                     + (f". Intent: {intents}" if intents else "") + ". Apri una sessione in Onda o reinstrada "
+                     f"({', '.join(m['id'] for m in msgs)}).")
+            casa = self.c.amap.home_slug(hub) if hub else None
+            canali_hub = self.c.vivo.slug_con_canale(hub) if hub and hub != agent else []
+            if canali_hub:
+                hub_slug = casa if casa in canali_hub else canali_hub[0]
+                ev = self._evento(hub, f"{hub}/sveglia", INTENT_FERMI, "urgent", testo,
+                                  {"agent": agent, "slug": slug, "mittente": mittente,
+                                   "messages": [m["id"] for m in msgs]})
+                self.c.bus.accogli(ev, hub, hub_slug, origin="centralino")
+                inviati.append(ev["id"])
+            else:
+                try:
+                    self.notifica("Bus: messaggi fermi", testo)
+                except Exception as exc:  # noqa: BLE001 — una notifica mancata non ferma il giro
+                    self.c.log("warn", "notifica_fallita", errore=str(exc))
+                inviati.append(f"notifica:{key}")
+            self.c.log("info", "messaggi_fermi", gruppo=key, n=n)
             self.c._write(lambda key=key: self.c._conn().execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, iso_now())))
-            inviati.append(ev["id"])
         return inviati
 
     # ---------- giro ----------

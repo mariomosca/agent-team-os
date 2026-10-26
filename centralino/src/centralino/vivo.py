@@ -182,3 +182,8 @@ class Vivacita:
 
     def slug_vivi(self, agent: str) -> list[str]:
         return [s.slug for s in self.vive(agent)]
+
+    def slug_con_canale(self, agent: str) -> list[str]:
+        """AM26-F2.2: le sole sessioni vive che si possono svegliare (Onda o tmux). Una sessione
+        viva senza canale resta viva per il battito ma non riceve consegne nuove."""
+        return [s.slug for s in self.vive(agent) if s.canale != "nessuno"]
