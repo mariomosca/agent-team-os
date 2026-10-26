@@ -352,6 +352,7 @@ class Sveglia:
             if r.execute("SELECT 1 FROM meta WHERE key=?", (key,)).fetchone():
                 continue
             minuti = int((age_s(msgs[0]["ts"]) or 0) // 60)
+            da_quando = f"{minuti} min" if minuti < 120 else f"{minuti // 60} ore"
             vive = [s.slug for s in self.c.vivo.vive(agent) if s.canale == "nessuno"]
             dove = (f"{agent}/{slug} non ha una sessione con canale" if slug else
                     f"nessuna sessione di {agent} con canale")
@@ -360,7 +361,7 @@ class Sveglia:
             intents = ", ".join(sorted({m["intent"] for m in msgs if m["intent"]}))
             n = len(msgs)
             testo = (f"{n} {'messaggio' if n == 1 else 'messaggi'} per {agent}{'/' + slug if slug else ''} "
-                     f"da {mittente} {'fermo' if n == 1 else 'fermi'} da {minuti} min: {dove}"
+                     f"da {mittente} {'fermo' if n == 1 else 'fermi'} da {da_quando}: {dove}"
                      + (f". Intent: {intents}" if intents else "") + ". Apri una sessione in Onda o reinstrada "
                      f"({', '.join(m['id'] for m in msgs)}).")
             casa = self.c.amap.home_slug(hub) if hub else None
