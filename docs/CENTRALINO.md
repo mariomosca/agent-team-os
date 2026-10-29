@@ -435,6 +435,8 @@ Gli hook diventano sottili e chiamano `~/.claude/scripts/agent-team-os-centralin
 | Stop | `stop` | blocca solo con messaggi della tabella §6 colonna Stop, massimo 3 blocchi di fila |
 | SessionEnd | `evento end` | sessione chiusa |
 | PreToolUse onda_agent_prompt | (onda-prompt.py) | l'attesa si registra con `expect` sul centralino |
+| PreToolUse onda_agent_spawn (con `worktree`) | (onda-spawn.py `pre`) | `delega.orfani` sul repo, al più 2,5 s (§24) |
+| PostToolUse onda_agent_spawn | (onda-spawn.py `post`) | `delega.spawn`: lo spawn entra nel registro deleghe (§24) |
 
 Se il centralino non risponde, gli hook non bloccano nulla e non stampano errori nel prompt.
 
@@ -763,4 +765,68 @@ dai rami remoti; una cartella non git conta come pulita e la proposta lo dice). 
 delega come evento `sessione-da-chiudere` (riga 6: non sveglia, non blocca lo Stop; nella banda e nel banner
 fra i messaggi), una volta per sessione Claude (`meta` `chiudi:<agente>/<slug>:<session_id>`), con il
 `terminalId` per `onda_agent_close` + `killPty`. Nessuna chiusura automatica.
+
+## 24. Deleghe che si chiudono da sole (DC29-F4, 29/10/2026)
+
+Contratto C3 di `onda-electron/docs/proposals/DC29-chiudi-delega.md` (approvato da Alita il 29/10).
+Codice in `centralino/deleghe.py`, test in `tests/test_deleghe.py` e scenario `caso_dc29_delega_si_chiude`.
+
+**Registro**: tabella `deleghe` (schema v6). Una riga per spawn non ancora legato (`task_id` NULL),
+per delega del bus non ancora legata (`spawned_at` NULL) o per le due cose legate. Campi: passo
+(`step_ref`), delegante, sessione (agente, slug, sessione Claude), terminale, sessione e workspace di
+Onda, repo, worktree, branch, `labels`, e la chiusura (`closure_state` open | pending | closed | kept,
+motivo, dettaglio, ora, ultimo motivo notificato, `orbit_dirty`).
+
+**Op sul socket**:
+
+| Op | Chi la chiama | Cosa fa |
+|---|---|---|
+| `delega.spawn {result, input}` | hook PostToolUse `onda_agent_spawn` | registra lo spawn (terminalId, sessionId, workspaceId, worktree, labels, cwd → agente/slug dalla AGENT_MAP); spawn rifiutato (senza terminalId) ignorato; stesso terminale = stessa riga |
+| `delega.chiudi {step_ref \| task_id, reason, attendi?}` | Orbit (passo a done), a mano | chiudi_delega; torna subito, `attendi=true` aspetta l'esito |
+| `delega.orfani {repo_root, attendi_s?}` | hook PreToolUse `onda_agent_spawn` con `worktree` | rete sugli orfani; aspetta al più `attendi_s` (2,5 s), poi finisce in un thread |
+
+**Legame in entrambi gli ordini**. A ogni evento (spawn, `bus_send` kind delega consegnato su questa
+macchina, SessionStart nel terminale di uno spawn) si legano gli spawn liberi alle deleghe libere degli
+ultimi 30 minuti. Punteggio, serve almeno 2, una sessione diversa vale 0:
+stessa sessione (agente e slug, presi dal cwd dello spawn o dal SessionStart nel suo terminale) 3,
+`labels.ref` uguale al passo della delega 2, stesso delegante verso lo stesso agente 2. A parità vince
+lo spawn più recente. Il passo viene da `rif_piano` sull'intent e sul summary della delega (solo con il
+numero di passo, `DC29-F4.1`), altrimenti da `labels.ref`. Una seconda delega alla stessa sessione già
+legata eredita terminale e worktree. Vale per qualunque coppia di agenti (Alita → Kai, Leo → Nico).
+
+**chiudi_delega (b2)**, una procedura sola per tutti i trigger, lock per repo, idempotente (`closed` non
+si rifà):
+
+1. sessione: si chiude con Onda `agent.close {terminalId, sessionId, killPty: true}` solo se è nata per
+   la delega (spawn legato, o `sessions.delegata=1` con un pannello), è ferma per Onda (idle o waiting,
+   casella vuota, assestata da 5 s) e non ha altre deleghe aperte non finite. Una sessione che non è nata
+   per la delega non si chiude mai. Al lavoro, o vista di Onda non valida → `pending`;
+2. worktree: `worktree.retire {path, workspaceId?, archiveTagPrefix: "archivio/", deleteBranch: true}`
+   (prefisso da `AB_ARCHIVE_TAG_PREFIX`). Ritirato → `closed`; `fetch_failed`, `tag_push_failed`,
+   `git_error`, Onda giù → `pending`; ogni altro motivo (dirty, not_integrated, not_pushed, in_use,
+   no_remote...) → `kept`. `in_use` subito dopo aver chiuso la sessione: un secondo tentativo dopo 2 s;
+3. altre deleghe aperte sulla stessa sessione: questa si chiude (`altre_deleghe`), sessione e worktree
+   restano per l'ultima; senza worktree basta la sessione (`senza_worktree`);
+4. esito sul passo: `delega_set` sul MCP HTTP di Orbit (`127.0.0.1:7331/mcp`, streamable HTTP con
+   initialize e sessione); `closure_at` in epoch ms come lo dichiara Orbit (nel centralino resta ISO). Il token si legge come fa `mcp-headers.sh` (`mcp-secrets.py headers orbit`),
+   resta in memoria, non si stampa né si scrive. Orbit giù → `orbit_dirty=1`, si riscrive al prossimo evento;
+5. `kept` → messaggio `brief` kind `comunicazione` (intent `delega-tenuta`) dalla sessione delegata al
+   delegante, senza task_id (non è un ritorno, non sveglia), una volta per motivo.
+
+**Trigger**: `bus_close` esito chiuso (con message_id o solo task_id, quando l'attesa diventa `closed`);
+`delega.chiudi` da Orbit; SessionEnd di una sessione con spawn legato (chiude le sue deleghe con attesa
+chiusa o passo done in `orbit.db`, poi rete orfani dei suoi repo); PreToolUse dello spawn con worktree.
+Ogni evento delle deleghe riprova le `pending` (al più una volta al minuto per riga) e riscrive su Orbit
+le righe con `orbit_dirty`. Nessun calendario. Il lavoro con Onda e Orbit gira in thread propri: il
+`bus_close` non aspetta git.
+
+**Rete sugli orfani** (`worktree.list` di Onda, senza fetch): si salta il main tree e ogni worktree con
+qualcosa di vivo. Con una delega aperta nel registro: chiudi_delega solo se l'attesa è chiusa o il passo
+è done, altrimenti si tiene. Senza registro ma con `labels.ref`: retire solo con il passo done. Padrone
+chiuso, o nessun padrone ma `integratedInto`: retire (che rifiuta comunque ciò che non è integrato).
+Nessun padrone e non integrato: solo segnalato nel risultato e nel log. In dubbio si tiene.
+
+**Sicurezza dei test**: Onda e Orbit veri si chiamano solo dal centralino di `~/.agent-team-os` (o con
+`AB_DELEGHE_ESTERNI=1`). Su un AB_HOME di prova le chiamate esterne sono sempre "giù": test e banco non
+toccano mai repo, Onda o Orbit veri. Fuori perimetro (F6): il mini, dove non ci sono Onda né Orbit.
 

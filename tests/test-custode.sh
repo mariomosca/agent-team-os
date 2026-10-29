@@ -276,4 +276,13 @@ inst --daemon >/dev/null
 ck "headless: reinstall non duplica" "$(grep -c 'centralino serve' "$FAKE_CRONTAB")/$(grep -c altro "$FAKE_CRONTAB")" "1/1"
 ck "opzioni del bus a file rifiutate" "$(inst --file-bus)" "1"
 
+echo "── install.sh --register-hooks (DC29-F4: hook su onda_agent_spawn)"
+inst --register-hooks >/dev/null; inst --register-hooks >/dev/null
+S="$IC/settings.json"
+ck "PreToolUse spawn una volta" "$(jq '[.hooks.PreToolUse[] | select(.matcher == "mcp__onda__onda_agent_spawn")] | length' "$S")" "1"
+ck "PostToolUse spawn una volta" "$(jq '[.hooks.PostToolUse[] | select(.matcher == "mcp__onda__onda_agent_spawn")] | length' "$S")" "1"
+ck "post con la fase" "$(jq -r '.hooks.PostToolUse[0].hooks[0].command' "$S" | grep -c 'onda-spawn.py post$')" "1"
+ck "onda_agent_prompt resta" "$(jq '[.hooks.PreToolUse[] | select(.matcher == "mcp__onda__onda_agent_prompt")] | length' "$S")" "1"
+ck "script copiato" "$([[ -x $IC/hooks/agent-team-os-onda-spawn.py ]] && echo si)" "si"
+
 echo; echo "PASS=$P FAIL=$F"; rm -rf "$T"; [[ $F -eq 0 ]]

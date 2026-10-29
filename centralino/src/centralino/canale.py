@@ -132,9 +132,9 @@ def onda_socket_path() -> str:
     return os.environ.get("ONDA_SOCKET") or str(Path.home() / ".config" / "onda" / "onda.sock")
 
 
-def onda_call(method: str, params: dict) -> dict:
+def onda_call(method: str, params: dict, timeout: float = SOCKET_TIMEOUT_S) -> dict:
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(SOCKET_TIMEOUT_S)
+    s.settimeout(timeout)
     try:
         s.connect(onda_socket_path())
         rid = random.randint(1, 1 << 30)

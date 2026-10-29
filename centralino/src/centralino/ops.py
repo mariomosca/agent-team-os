@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from . import __version__, palla
 from .db import Store
+from .deleghe import Deleghe
 from .dbbus import BusError, DbBus
 from .indirizzi import AgentMap, ErroreIndirizzo
 from .log import Log
@@ -44,6 +45,9 @@ class Centralino:
         self.sveglia_ora = threading.Event()
         self.orbit = palla.Orbit(Path(os.environ["AB_ORBIT_DB"]) if os.environ.get("AB_ORBIT_DB") else palla.ORBIT_DB)
         self.started = time.time()
+        # DC29-F4: registro spawn/deleghe e chiusura automatica (Onda e Orbit veri solo da ~/.agent-team-os)
+        self.deleghe = Deleghe(self)
+        self.deleghe.registra()
 
     # ---------- transazione corrente (per thread) ----------
 
@@ -129,6 +133,8 @@ class Centralino:
             kind=kind, target=_target(caller), live_slugs=self._live))
         if kind != "delega":
             self.sveglia_ora.set()
+        else:
+            self._su_deleghe("su_delega", me, a, out)
         return out
 
     def op_reply(self, caller: dict, a: dict, warnings: list) -> dict:
@@ -192,6 +198,7 @@ class Centralino:
             if not a.get("task_id") or a.get("esito") != "chiuso":
                 raise BusError("without message_id: task_id and esito='chiuso' close a delegation's wait")
             out = self._write(lambda: self.bus.close_wait(me.agent, me.slug, a["task_id"]))
+            self._attesa_chiusa(out)
             out["remaining"] = self.bus.count_inbox(me.agent, me.slug)
             return out
         out = self._write(lambda: self.bus.handle(me.agent, me.slug, a.get("message_id") or "",
@@ -199,6 +206,7 @@ class Centralino:
                                                     reply=a.get("reply"), live_slugs=self._live))
         if out.get("sent") and not out["sent"].get("queued"):
             self.sveglia_ora.set()
+        self._attesa_chiusa(out)
         out["remaining"] = self.bus.count_inbox(me.agent, me.slug)
         return out
 
@@ -218,6 +226,7 @@ class Centralino:
             out = self._write(lambda: self.bus.close_wait(me.agent, me.slug, a["task_id"], a.get("note")))
         else:
             raise BusError("bus_close: serve message_id oppure task_id")
+        self._attesa_chiusa(out)
         out["remaining"] = self.bus.count_inbox(me.agent, me.slug)
         return out
 
@@ -530,6 +539,20 @@ class Centralino:
     }
 
     # ---------- utilità ----------
+
+    def _su_deleghe(self, nome: str, *args) -> None:
+        """DC29-F4: un errore del registro deleghe non tocca mai l'operazione del bus."""
+        try:
+            getattr(self.deleghe, nome)(*args)
+        except Exception as exc:  # noqa: BLE001
+            self.log("error", "deleghe_errore", evento=nome, error=repr(exc))
+
+    def _attesa_chiusa(self, out: dict) -> None:
+        """bus_close esito chiuso: se l'attesa è chiusa adesso, parte chiudi_delega."""
+        w = out.get("wait") or {}
+        tid, state = (w.get("task_id"), w.get("state")) if w else (out.get("task_id"), out.get("state"))
+        if tid and state == "closed":
+            self._su_deleghe("su_attesa_chiusa", tid)
 
     def raccolta(self) -> list[dict]:
         """Giro periodico verso gli altri host: consegna la coda, tira giù quello che hanno

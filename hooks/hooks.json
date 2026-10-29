@@ -40,6 +40,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "mcp__onda__onda_agent_spawn",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 -I \"${CLAUDE_PLUGIN_ROOT}\"/hooks/agent-team-os-onda-spawn.py pre",
+            "timeout": 6
+          }
+        ]
       }
     ],
     "SessionEnd": [
@@ -48,6 +58,18 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/agent-team-os-end.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "mcp__onda__onda_agent_spawn",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 -I \"${CLAUDE_PLUGIN_ROOT}\"/hooks/agent-team-os-onda-spawn.py post",
+            "timeout": 5
           }
         ]
       }
