@@ -183,8 +183,13 @@ def _epoch_ms(s: str | None) -> int | None:
 
 
 def _step_ref(*testi: str) -> str | None:
-    rif = palla.rif_piano(*testi)
-    return rif.codice if rif and rif.passo else None
+    # Testo per testo: un intent come "dc29-f1-disegno" dà solo la fase e non deve
+    # nascondere il passo scritto nel summary ("DC29-F1.1").
+    for t in testi:
+        rif = palla.rif_piano(t)
+        if rif and rif.passo:
+            return rif.codice
+    return None
 
 
 def _norm_ref(v) -> str | None:

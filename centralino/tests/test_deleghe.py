@@ -542,3 +542,11 @@ def test_closure_at_in_epoch_ms(b):
     assert s["closure_state"] == "closed" and s["closure_at"] == int(b.t.timestamp() * 1000)
     assert _righe(b)[0]["closure_at"] == tempo.iso(b.t)  # nel centralino resta ISO
     assert "closure_at" not in b.forbit.scritte[0]  # delega aperta: niente closure_at
+
+
+def test_step_ref_dal_summary_se_l_intent_ha_solo_la_fase():
+    # Prova reale DC29-F5.1: intent "dcp29-f1-1-..." (fase senza passo) e passo nel summary.
+    from centralino.deleghe import _step_ref
+    assert _step_ref("dcp29-f1-1-prova-pulita", "DCP29-F1.1 (prova). Crea il file") == "DCP29-F1.1"
+    assert _step_ref("dc29-f1-disegno-chiudi-delega", "DC29-F1.1 (piano Orbit DC29)") == "DC29-F1.1"
+    assert _step_ref("bug-fix", "niente codice qui") is None
