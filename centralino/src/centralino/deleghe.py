@@ -35,7 +35,7 @@ from typing import Any, Callable
 from . import __version__, canale, palla
 from .dbbus import BusError
 from .indirizzi import ErroreIndirizzo, parse_addr
-from .tempo import age_s, iso, iso_now, now
+from .tempo import age_s, iso, iso_now, now, parse_iso
 
 FINESTRA_S = 30 * 60        # legame: l'altro lato si cerca negli ultimi 30 minuti
 RIPROVA_S = 60              # una delega pending si riprova al più una volta al minuto
@@ -174,6 +174,12 @@ def _labels(row) -> dict:
         return v if isinstance(v, dict) else {}
     except ValueError:
         return {}
+
+
+def _epoch_ms(s: str | None) -> int | None:
+    """Orbit vuole closure_at in epoch ms (C2, delega_set)."""
+    dt = parse_iso(s)
+    return int(dt.timestamp() * 1000) if dt else None
 
 
 def _step_ref(*testi: str) -> str | None:
@@ -440,7 +446,7 @@ class Deleghe:
                 "host": r["host"], "workspace_id": r["workspace_id"], "repo_root": r["repo_root"],
                 "worktree_path": r["worktree_path"], "branch": r["branch"], "labels": _labels(r) or None,
                 "closure_state": r["closure_state"], "closure_reason": r["closure_reason"],
-                "closure_detail": r["closure_detail"], "closure_at": r["closure_at"]}
+                "closure_detail": r["closure_detail"], "closure_at": _epoch_ms(r["closure_at"])}
         try:
             self.orbit.chiama("delega_set", {k: v for k, v in args.items() if v is not None})
         except EsternoGiu as exc:
@@ -572,7 +578,7 @@ class Deleghe:
         return "chiusa", None
 
     def _retire(self, path: str, workspace_id: str | None, appena_chiusa: bool) -> dict:
-        params: dict[str, Any] = {"worktreePath": path, "archiveTagPrefix": TAG_PREFIX, "deleteBranch": True}
+        params: dict[str, Any] = {"path": path, "archiveTagPrefix": TAG_PREFIX, "deleteBranch": True}
         if workspace_id:
             params["workspaceId"] = workspace_id
         res = self._onda("worktree.retire", params, RETIRE_TIMEOUT_S)

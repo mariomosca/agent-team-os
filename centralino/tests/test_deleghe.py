@@ -33,6 +33,7 @@ class FintaOnda:
         if method == "agent.close":
             return {"closed": True}
         if method == "worktree.retire":
+            assert "path" in params and "worktreePath" not in params, params  # methods.ts legge path
             if self.retire:
                 return self.retire.pop(0)
             return {"retired": True, "integratedBy": "tree", "tag": "archivio/feat-x", "branchDeleted": True}
@@ -53,6 +54,7 @@ class FintoOrbit:
         if self.giu:
             raise EsternoGiu("Orbit non risponde")
         assert tool == "delega_set"
+        assert args.get("closure_at") is None or isinstance(args["closure_at"], int), args  # epoch ms
         self.scritte.append(args)
         return {"ok": True}
 
@@ -364,7 +366,7 @@ def test_rete_orfani(b, tmp_path):
         {"path": "/finto/repo-feat-nessuno", "branch": "feat/d", "live": False, "integratedInto": None},
     ]
     out = b.op("alita/work-hub", "delega.orfani", repo_root=repo, attendi_s=0)
-    ritirati = [x["worktreePath"] for x in b.fonda.metodi("worktree.retire")]
+    ritirati = [x["path"] for x in b.fonda.metodi("worktree.retire")]
     assert ritirati == [p("finita"), "/finto/repo-feat-ref-done", "/finto/repo-feat-integrato"]
     assert {x["path"] for x in out["tenuti"]} == {p("viva"), p("aperta"), "/finto/repo-feat-ref-aperto"}
     assert [x["path"] for x in out["segnalati"]] == ["/finto/repo-feat-nessuno"]
@@ -516,3 +518,27 @@ def test_hook_mai_bloccante_senza_centralino(tmp_path):
         p = subprocess.run(["/usr/bin/python3", "-I", str(HOOK), fase], input=json.dumps(ev), text=True,
                            capture_output=True, env=env, timeout=10)
         assert p.returncode == 0 and p.stdout == ""
+
+
+# ---------- nomi veri dei contratti (Onda develop 3c7c404, Orbit main 4dff82d) ----------
+
+def test_retire_manda_path_anche_senza_workspace_id(b):
+    b.onda("kai/senzaws", "idle")
+    res = _spawn_res(b, "kai/senzaws")
+    del res["workspaceId"]
+    b.op("alita/work-hub", "delega.spawn", result=res, input={})
+    tid = _delega(b, "alita/work-hub", "kai/senzaws", "fai")
+    b.op("alita/work-hub", "close", task_id=tid)
+    p = b.fonda.metodi("worktree.retire")[0]
+    assert p["path"] == str(b.cwd("kai/senzaws")) and "workspaceId" not in p and "worktreePath" not in p
+    assert _righe(b)[0]["closure_state"] == "closed"
+
+
+def test_closure_at_in_epoch_ms(b):
+    from centralino import tempo
+    tid = _pronta(b)
+    b.op("alita/work-hub", "close", task_id=tid)
+    s = b.forbit.scritte[-1]
+    assert s["closure_state"] == "closed" and s["closure_at"] == int(b.t.timestamp() * 1000)
+    assert _righe(b)[0]["closure_at"] == tempo.iso(b.t)  # nel centralino resta ISO
+    assert "closure_at" not in b.forbit.scritte[0]  # delega aperta: niente closure_at

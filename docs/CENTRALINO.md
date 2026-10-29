@@ -801,14 +801,14 @@ si rifà):
    la delega (spawn legato, o `sessions.delegata=1` con un pannello), è ferma per Onda (idle o waiting,
    casella vuota, assestata da 5 s) e non ha altre deleghe aperte non finite. Una sessione che non è nata
    per la delega non si chiude mai. Al lavoro, o vista di Onda non valida → `pending`;
-2. worktree: `worktree.retire {worktreePath, workspaceId, archiveTagPrefix: "archivio/", deleteBranch: true}`
+2. worktree: `worktree.retire {path, workspaceId?, archiveTagPrefix: "archivio/", deleteBranch: true}`
    (prefisso da `AB_ARCHIVE_TAG_PREFIX`). Ritirato → `closed`; `fetch_failed`, `tag_push_failed`,
    `git_error`, Onda giù → `pending`; ogni altro motivo (dirty, not_integrated, not_pushed, in_use,
    no_remote...) → `kept`. `in_use` subito dopo aver chiuso la sessione: un secondo tentativo dopo 2 s;
 3. altre deleghe aperte sulla stessa sessione: questa si chiude (`altre_deleghe`), sessione e worktree
    restano per l'ultima; senza worktree basta la sessione (`senza_worktree`);
 4. esito sul passo: `delega_set` sul MCP HTTP di Orbit (`127.0.0.1:7331/mcp`, streamable HTTP con
-   initialize e sessione). Il token si legge come fa `mcp-headers.sh` (`mcp-secrets.py headers orbit`),
+   initialize e sessione); `closure_at` in epoch ms come lo dichiara Orbit (nel centralino resta ISO). Il token si legge come fa `mcp-headers.sh` (`mcp-secrets.py headers orbit`),
    resta in memoria, non si stampa né si scrive. Orbit giù → `orbit_dirty=1`, si riscrive al prossimo evento;
 5. `kept` → messaggio `brief` kind `comunicazione` (intent `delega-tenuta`) dalla sessione delegata al
    delegante, senza task_id (non è un ritorno, non sveglia), una volta per motivo.
