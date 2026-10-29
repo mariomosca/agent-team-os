@@ -34,6 +34,8 @@ WAIT_IDLE_H = 72
 FERMO_S = 600           # un messaggio azionabile fermo da tanto, senza canale, fa l'avviso all'hub
 INTENT_FERMI = "messaggi-fermi-senza-canale"
 VECCHIO_GG = 30          # un messaggio pending più vecchio non genera l'avviso senza canale
+TESTO_AVVISO_S = 1800   # rinvio per testo nella casella da tanto: avviso a chi ha delegato
+INTENT_TESTO = "sveglia-rinviata-testo"
 RIPROVA_LOG_S = 600     # un rinvio del canale che si ripete identico torna nel log ogni tanto
 GESTISCI = "gestisci con bus_close (chiuso, riarma o letto) o rispondi con bus_reply"
 
@@ -396,6 +398,60 @@ class Sveglia:
                 "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, iso_now())))
         return inviati
 
+    def avvisi_testo(self) -> list[str]:
+        """Una sveglia rinviata per testo nella casella (``tmux:has_text``, ``onda:has_text``) da più
+        di TESTO_AVVISO_S: un evento a chi ha delegato (``from_session`` del messaggio), una volta per
+        attesa. Evento: non sveglia e non blocca lo Stop (riga 6); non va ad Alita."""
+        r = self.c.store.read()
+        righe: dict[tuple, list] = defaultdict(list)
+        for x in r.execute("SELECT w.msg_id, w.agent, w.slug, w.decisione, w.motivo, w.at FROM wake_decisions w "
+                           "JOIN messages m ON m.id=w.msg_id WHERE m.state='pending' AND w.msg_id IN "
+                           "(SELECT msg_id FROM wake_decisions WHERE motivo LIKE '%:has_text') ORDER BY w.id"):
+            righe[(x["msg_id"], x["agent"], x["slug"])].append(x)
+        inviati = []
+        for (mid, agent, slug), rows in righe.items():
+            inizio = None
+            for x in reversed(rows):  # la serie finale di rinvii per testo
+                if x["decisione"] != "coda" or not (x["motivo"] or "").endswith(":has_text"):
+                    break
+                inizio = x["at"]
+            eta = age_s(inizio)
+            if eta is None or eta < TESTO_AVVISO_S:
+                continue
+            row = self.c.store.message(mid)
+            if row is None or not row["task_id"]:
+                continue
+            m = json.loads(row["raw"])
+            tid = row["task_id"]
+            key = f"testo:{tid}"
+            if r.execute("SELECT 1 FROM meta WHERE key=?", (key,)).fetchone():
+                continue
+            frm = m.get("from_session") or ""
+            f_agent, _, f_slug = frm.partition("/")
+            if not f_agent or not f_slug or (f_agent, f_slug) == (agent, slug):
+                continue
+            f_host = (m.get("context") or {}).get("host") if isinstance(m.get("context"), dict) else None
+            me = self.c.amap.host_self()
+            to = f"{f_agent}@{f_host}/{f_slug}" if f_host and f_host != me else f"{f_agent}/{f_slug}"
+            dove = f"{agent}@{me}/{slug}" if me and f_host and f_host != me else f"{agent}/{slug}"
+            motivo = rows[-1]["motivo"]
+            minuti = int(eta // 60)
+            testo = (f"La sveglia per il task {tid} su {dove} è ferma da {minuti} minuti: nella casella di "
+                     f"quella sessione c'è testo scritto e non ancora inviato ({motivo}), quindi il messaggio "
+                     f"{mid} non è stato scritto nel prompt. Il centralino riprova da solo; se serve, sblocca "
+                     "la sessione a mano. Avviso unico per questo task.")
+            try:
+                out = self.c.bus.send(agent, to, "event", INTENT_TESTO,
+                                      {"summary": testo, "msg_id": mid, "sessione": dove, "motivo": motivo},
+                                      sender_session=slug, task_id=tid)
+                inviati.append(out["id"])
+                self.c.log("info", "avviso_testo", task_id=tid, a=to, minuti=minuti)
+            except Exception as exc:  # noqa: BLE001 — un avviso mancato non ferma il giro
+                self.c.log("warn", "avviso_testo_fallito", task_id=tid, errore=str(exc))
+            self.c._write(lambda key=key: self.c._conn().execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, iso_now())))
+        return inviati
+
     # ---------- giro ----------
 
     def giro(self) -> dict:
@@ -403,4 +459,5 @@ class Sveglia:
         decs = self.giro_sveglia()
         self._pending_wake(self.ultimo_giro)
         avvisi = self.avvisi_senza_canale()
+        avvisi += self.avvisi_testo()
         return {"scadute": scadute, "decisioni": len(decs), "avvisi": avvisi}

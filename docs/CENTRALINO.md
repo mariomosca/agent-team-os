@@ -551,7 +551,10 @@ domanda aperta: rinvio). Test in `tests/test_tmux.py`. Lo schermo si legge con `
 `Try "…"` (misurato sul mini il 29/10: t-20261029-gsmn19 e audit-plan-fe del 27/10 rinviati per `has_text`
 con nella casella solo il suggerimento grigio). Un rinvio del canale (`tmux:*`, `onda:*`) si riprova a ogni
 giro; in `wake_decisions` si riscrive identico ogni 10 minuti (`RIPROVA_LOG_S`), così si vede che la
-sveglia è ancora in prova.
+sveglia è ancora in prova. Dopo 30 minuti di rinvio continuo per testo nella casella (`tmux:has_text` o
+`onda:has_text`, `TESTO_AVVISO_S`) il centralino manda un evento `sveglia-rinviata-testo` a chi ha delegato
+(il `from_session` del messaggio fermo, anche sull'altra macchina), una volta per attesa (chiave `testo:<task_id>`
+in `meta`). È un evento: riga 6, non sveglia e non blocca lo Stop; ad Alita non va.
 
 **Migrazione del 24/10.** Backup del mini in `~/.agent-team-os-backup/f57-20261024-224050`. I 22 messaggi
 pending (2 prove di kai del 14/10, 20 eventi `otto-giro` di leo) sono entrati nel centralino del mini con

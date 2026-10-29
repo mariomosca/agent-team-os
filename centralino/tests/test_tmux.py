@@ -157,3 +157,61 @@ def test_rinvio_per_testo_si_riprova_e_torna_nel_log(tmux, tmp_path):
     finally:
         tempo.imposta(None)
         c.store.close()
+
+
+def test_rinvio_per_testo_da_30_minuti_avvisa_chi_ha_delegato(tmux, tmp_path):
+    """Dopo TESTO_AVVISO_S di has_text un evento (non sveglia, non blocca lo Stop) va a chi ha
+    delegato, una volta per attesa; Alita (hub) non riceve niente."""
+    from datetime import datetime, timedelta, timezone
+
+    from centralino import regole, tempo
+    from centralino.sveglia import INTENT_TESTO, TESTO_AVVISO_S
+
+    t = [datetime(2026, 10, 29, 11, 19, tzinfo=timezone.utc)]
+    tempo.imposta(lambda: t[0])
+    home = tmp_path / "mini"
+    ws = home / "ws"
+    for a in ("nico", "leo", "alita"):
+        (ws / a / "s1").mkdir(parents=True)
+    (home / "AGENT_MAP.json").write_text(json.dumps({
+        "rules": [{"pattern": str(ws / a), "agent": a} for a in ("nico", "leo", "alita")],
+        "agents": {"nico": {}, "leo": {}, "alita": {}}, "cc_awareness": {"hub": "alita"},
+        "hosts": {"laptop": {"hub": True}, "mini": {}}}))
+    (home / "HOST").write_text("mini\n")
+    c = Centralino(home)
+    HookOps(c).registra()
+    try:
+        nico = {"cwd": str(ws / "nico" / "s1"), "tmux_pane": "%38"}
+        assert c.handle_request({"v": 1, "id": "1", "op": "hook.start", "caller": nico, "args": {}})["ok"]
+        assert c.handle_request({"v": 1, "id": "1", "op": "hook.stop", "caller": nico, "args": {}})["ok"]
+        r = c.handle_request({"v": 1, "id": "2", "op": "send", "caller": {"cwd": str(ws / "leo" / "s1")},
+                              "args": {"to": "nico/s1", "intent": "x", "summary": "fai X",
+                                       "message_type": "request", "kind": "delega"}})
+        assert r["ok"], r
+        tid = r["result"]["task_id"]
+        sv = Sveglia(c)
+        (tmux / "screen").write_text(SCRITTO)
+
+        def giro(dopo_s: float):
+            t[0] += timedelta(seconds=dopo_s)
+            c._write(lambda: c._conn().execute("UPDATE sessions SET last_heartbeat=? WHERE agent='nico'",
+                                               (tempo.iso_now(),)))
+            return sv.giro()["avvisi"]
+
+        avvisi = lambda: c.store.read().execute(  # noqa: E731
+            "SELECT to_agent, to_slug, raw FROM messages WHERE intent=?", (INTENT_TESTO,)).fetchall()
+        assert giro(0) == []
+        for _ in range(int(TESTO_AVVISO_S // 300) - 1):
+            assert giro(300) == []
+        assert avvisi() == []
+        assert len(giro(301)) == 1
+        rows = avvisi()
+        assert [(x["to_agent"], x["to_slug"]) for x in rows] == [("leo", "s1")]
+        rec = json.loads(rows[0]["raw"])
+        assert rec["type"] == "event" and rec["task_id"] == tid and "nico/s1" in rec["payload"]["summary"]
+        assert regole.classifica(rec, "leo", "s1", {}) == "nessuna"  # non sveglia, non blocca lo Stop
+        assert giro(600) == [] and len(avvisi()) == 1  # una volta sola per attesa
+        assert not c.store.read().execute("SELECT 1 FROM messages WHERE to_agent='alita'").fetchone()
+    finally:
+        tempo.imposta(None)
+        c.store.close()
