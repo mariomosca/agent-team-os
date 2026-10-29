@@ -546,7 +546,12 @@ host con `ssh` ma senza `centralino` non riceve: il messaggio resta in coda e l'
 **Sveglia sul mini.** Il canale è tmux: il pannello lo dichiara l'hook (`TMUX_PANE`). Fino a F5.7 una
 sessione su tmux non risultava mai `ferma` (lo stato veniva solo da Onda) e quindi non si sarebbe mai
 svegliata: ora per il canale tmux decide `via_tmux` leggendo lo schermo (occupata, testo nella casella o una
-domanda aperta: rinvio). Test in `tests/test_tmux.py`.
+domanda aperta: rinvio). Test in `tests/test_tmux.py`. Lo schermo si legge con `capture-pane -e`: le celle in SGR 2
+(dim) non contano come testo, perché Claude Code disegna così il suggerimento del prompt e il placeholder
+`Try "…"` (misurato sul mini il 29/10: t-20261029-gsmn19 e audit-plan-fe del 27/10 rinviati per `has_text`
+con nella casella solo il suggerimento grigio). Un rinvio del canale (`tmux:*`, `onda:*`) si riprova a ogni
+giro; in `wake_decisions` si riscrive identico ogni 10 minuti (`RIPROVA_LOG_S`), così si vede che la
+sveglia è ancora in prova.
 
 **Migrazione del 24/10.** Backup del mini in `~/.agent-team-os-backup/f57-20261024-224050`. I 22 messaggi
 pending (2 prove di kai del 14/10, 20 eventi `otto-giro` di leo) sono entrati nel centralino del mini con

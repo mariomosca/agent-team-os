@@ -34,6 +34,7 @@ WAIT_IDLE_H = 72
 FERMO_S = 600           # un messaggio azionabile fermo da tanto, senza canale, fa l'avviso all'hub
 INTENT_FERMI = "messaggi-fermi-senza-canale"
 VECCHIO_GG = 30          # un messaggio pending più vecchio non genera l'avviso senza canale
+RIPROVA_LOG_S = 600     # un rinvio del canale che si ripete identico torna nel log ogni tanto
 GESTISCI = "gestisci con bus_close (chiuso, riarma o letto) o rispondi con bus_reply"
 
 TIPO = {"esito": "return", "domanda": "question", "da_agganciare": "return", "risposta": "answer",
@@ -96,8 +97,10 @@ class Sveglia:
         gia = {(x["msg_id"], x["agent"], x["slug"]) for x in r.execute(
             "SELECT msg_id, agent, slug FROM wake_decisions WHERE decisione='sveglia'")}
         ultime: dict[tuple, tuple] = {}
-        for x in r.execute("SELECT msg_id, agent, slug, decisione, motivo FROM wake_decisions ORDER BY id"):
+        quando: dict[tuple, str] = {}
+        for x in r.execute("SELECT msg_id, agent, slug, decisione, motivo, at FROM wake_decisions ORDER BY id"):
             ultime[(x["msg_id"], x["agent"], x["slug"])] = (x["decisione"], x["motivo"])
+            quando[(x["msg_id"], x["agent"], x["slug"])] = x["at"]
         ora_fa = iso(now() - timedelta(hours=1))
         quarto_fa = iso(now() - timedelta(seconds=regole.URGENTI_COPPIA_S))
         tutte: list[tuple[str, str, regole.Decisione]] = []
@@ -125,7 +128,16 @@ class Sveglia:
                             if d.decisione == "sveglia" else d for d in decs]
             for d in decs:
                 tutte.append((agent, slug, d))
-        nuove = [(a, s, d) for a, s, d in tutte if ultime.get((d.msg_id, a, s)) != (d.decisione, d.motivo)]
+        def da_scrivere(a: str, s: str, d) -> bool:
+            k = (d.msg_id, a, s)
+            if ultime.get(k) != (d.decisione, d.motivo):
+                return True
+            # il rinvio di un canale (tmux:has_text, onda:busy, ...) si riprova a ogni giro: ogni
+            # RIPROVA_LOG_S lo si riscrive, così il log mostra che la sveglia è ancora in prova
+            age = age_s(quando.get(k))
+            return (d.decisione == "coda" and (d.motivo or "").startswith(("tmux:", "onda:"))
+                    and age is not None and age >= RIPROVA_LOG_S)
+        nuove = [(a, s, d) for a, s, d in tutte if da_scrivere(a, s, d)]
         if nuove:
             task_of = {}
             for a, s, d in nuove:

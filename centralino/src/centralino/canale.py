@@ -34,6 +34,48 @@ ASK_MARKERS = ("doyouwantto", "allowonce", "allowalways", "doyoutrustthe", "quic
                "trustthisfolder", "entertoselect", "askuserquestion")
 
 
+CSI_RE = re.compile(r"\x1b\[([0-9;:?]*)([@-~])|\x1b[@-_]")
+
+
+def testi_schermo(screen: str) -> tuple[str, str]:
+    """Da ``capture-pane -e``: (testo intero, testo senza le celle attenuate).
+
+    Claude Code disegna il suggerimento del prompt (prompt suggestion, "rebase su develop...")
+    e il placeholder ("Try \"edit ...\"") in SGR 2 (dim) dentro la casella; il testo scritto
+    dall'utente esce senza attributi (misurato sul mini il 29/10/2026 con Claude Code in tmux:
+    ``❯ \x1b[2mTry "edit <filepath> to..."\x1b[0m`` contro ``❯ testo scritto a mano``).
+    Le sequenze non-SGR si scartano; le righe restano allineate fra i due testi.
+    """
+    full: list[str] = []
+    vivo: list[str] = []
+    dim = False
+    pos = 0
+    for m in CSI_RE.finditer(screen):
+        chunk = screen[pos:m.start()]
+        full.append(chunk)
+        vivo.append(re.sub(r"[^\n]", "", chunk) if dim else chunk)
+        pos = m.end()
+        if m.group(2) != "m":
+            continue
+        params = [p for p in re.split(r"[;:]", m.group(1) or "")]
+        i = 0
+        while i < len(params):
+            p = params[i]
+            if p in ("", "0"):
+                dim = False
+            elif p == "2":
+                dim = True
+            elif p == "22":
+                dim = False
+            elif p in ("38", "48", "58"):  # colore esteso: 5;n oppure 2;r;g;b
+                i += 2 if i + 1 < len(params) and params[i + 1] == "5" else 4
+            i += 1
+    chunk = screen[pos:]
+    full.append(chunk)
+    vivo.append(re.sub(r"[^\n]", "", chunk) if dim else chunk)
+    return "".join(full), "".join(vivo)
+
+
 class Rinvio(Exception):
     """Non ora: si riprova al prossimo giro. ``str(exc)`` è il motivo."""
 
@@ -67,6 +109,9 @@ def read_prompt_box(screen: str) -> str | None:
 
 
 def screen_refusal(screen: str) -> str | None:
+    """Motivo per non scrivere nella casella, o None. ``screen`` può avere le sequenze ANSI di
+    ``capture-pane -e``: il testo attenuato (suggerimento, placeholder) non conta come testo."""
+    screen, vivo = testi_schermo(screen)
     tail = "\n".join(screen.split("\n")[-40:])
     if BUSY_RE.search(tail):
         return "busy"
@@ -75,7 +120,7 @@ def screen_refusal(screen: str) -> str | None:
         return "asking"
     if PASTED_RE.search(tail):
         return "has_text"
-    box = read_prompt_box(tail)
+    box = read_prompt_box("\n".join(vivo.split("\n")[-40:]))
     if box is None:
         return "no_box"
     if box.strip():
@@ -149,7 +194,7 @@ def _tmux(*args: str) -> subprocess.CompletedProcess | None:
 
 
 def via_tmux(pane: str, text: str) -> str:
-    r = _tmux("capture-pane", "-p", "-t", pane)
+    r = _tmux("capture-pane", "-p", "-e", "-t", pane)
     if r is None or r.returncode != 0:
         raise Rinvio("tmux:pane_assente")
     why = screen_refusal(r.stdout)
@@ -161,8 +206,9 @@ def via_tmux(pane: str, text: str) -> str:
     time.sleep(0.3)
     _tmux("send-keys", "-t", pane, "Enter")
     time.sleep(1.5)
-    after = (_tmux("capture-pane", "-p", "-t", pane) or subprocess.CompletedProcess([], 0, "")).stdout or ""
-    box = read_prompt_box("\n".join(after.split("\n")[-40:]))
+    after_raw = (_tmux("capture-pane", "-p", "-e", "-t", pane) or subprocess.CompletedProcess([], 0, "")).stdout or ""
+    after, after_vivo = testi_schermo(after_raw)
+    box = read_prompt_box("\n".join(after_vivo.split("\n")[-40:]))
     ok = bool(BUSY_RE.search(after)) or (box is not None and text[:20] not in box)
     return "tmux" if ok else "tmux:non_confermato"
 
