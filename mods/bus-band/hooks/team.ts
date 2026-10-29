@@ -112,7 +112,7 @@ const EXCEPTION: Record<Exception, { glyph: string; label: string }> = {
   testo: { glyph: '✎', label: 'testo fermo nella casella' },
   permesso: { glyph: '⚑', label: 'aspetta un permesso' },
   domanda: { glyph: '?', label: 'aspetta una risposta' },
-  canale: { glyph: '⊘', label: 'senza canale di sveglia' },
+  canale: { glyph: '⊘', label: 'irraggiungibile, senza canale di sveglia' },
 }
 const ORDER: readonly Exception[] = ['testo', 'permesso', 'domanda', 'canale']
 
@@ -166,10 +166,13 @@ export const exceptionRows = (
     .map(r => r.row)
 }
 
-export const teamHeadline = (live: number, exceptions: number) => {
+// t-20261029-lbgswf (A): a session alive by heartbeat that nothing can wake is not
+// counted with the live ones: it is said apart, as unreachable.
+export const teamHeadline = (live: number, exceptions: number, unreachable = 0) => {
   const vive = live === 1 ? '1 viva' : `${live} vive`
+  const off = unreachable === 0 ? '' : unreachable === 1 ? ', 1 irraggiungibile' : `, ${unreachable} irraggiungibili`
 
-  return `Squadra: ${vive} · ${exceptions === 0 ? 'niente per te' : `${exceptions} per te`}`
+  return `Squadra: ${vive}${off} · ${exceptions === 0 ? 'niente per te' : `${exceptions} per te`}`
 }
 
 // Episode key: a session toasts once per (session, state) until it leaves it.

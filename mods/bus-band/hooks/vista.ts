@@ -104,7 +104,9 @@ const others = (v: Vista, agent: string, slug: string) =>
     s => s.viva === true && typeof s.agent === 'string' && typeof s.slug === 'string' && !(s.agent === agent && s.slug === slug),
   )
 
-export const liveCountOf = (v: Vista, agent: string, slug: string) => others(v, agent, slug).length
+// Reachable ones only: a session without a channel is counted apart (noChannelOf).
+export const liveCountOf = (v: Vista, agent: string, slug: string) =>
+  others(v, agent, slug).filter(s => s.canale !== 'nessuno').length
 
 export const noChannelOf = (v: Vista, agent: string, slug: string): NoChannel[] =>
   others(v, agent, slug)

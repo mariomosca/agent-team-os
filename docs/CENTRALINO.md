@@ -733,3 +733,34 @@ sessione aperta dopo non lo vedeva.
 Regressioni: `caso_am26_cloud_a_kai_nudo` e `caso_am26_tmux_e_hub_muto` nel banco (tmux conta come canale,
 per il mini), `att_senza_canale`, `tests/test_f55e.py`.
 
+## 23. Sessioni irraggiungibili e sessioni delegate da chiudere (t-20261029-lbgswf, 29/10/2026)
+
+**Onda ritirava per silenzio sessioni vive.** Alle 19:24 Onda dava `exited` a tre sessioni di Nico con il claude
+vivo nel PTY da 14-23 ore; per il centralino erano vive per battito, "canale: nessuno", e nessuna delega le
+avrebbe svegliate. Causa: `settleSessions` di Onda (ON18-F2.4) dà `exited` a ogni sessione `idle` senza eventi
+di hook da 30 minuti (`SILENT_EXIT_MS`), e un Claude fermo in attesa di una sveglia non manda eventi. Verificato
+dal vivo: nico/brandart-governance-feat-ris26-job-description `exited` dalle 17:51Z, claude pid 25201 vivo su
+ttys015. Fix in Onda (`onda-electron`, develop, `fix(sessions): a silent idle session is not exited while its
+terminal still runs the agent`): la regola del silenzio chiede prima il processo in primo piano del terminale
+(cache di `ps`), e una sessione con un agente vivo resta. Serve una release dell'app.
+
+Lato centralino, anche con l'Onda di oggi:
+
+- `vivo.stato`: viva per battito e voce di Onda `exited` con lo stesso `claude_session_id` → canale `onda`,
+  `ferma` (decide `agent.prompt` con `onlyIfIdle`, che usa lo stato degli hook e non il ritiro per silenzio;
+  una sessione davvero finita risponde `no_session` e resta un rinvio). `OndaView.find` fra le voci ritirate
+  preferisce quella della sessione Claude giusta;
+- banda: le sessioni senza canale non entrano in "N vive": `Squadra: 3 vive, 1 irraggiungibile · …`, e la
+  riga dice `⊘ irraggiungibile, senza canale di sveglia`.
+
+**Sessioni delegate da chiudere** (`ciclo.py`, al più ogni 5 minuti nel giro della sveglia). Delegata: aperta
+con `SESSIONE_DELEGATA=1` (l'hook lo passa, colonna `sessions.delegata`) o destinataria di deleghe negli ultimi
+7 giorni (attese di questa macchina, anche quelle di un prompt via Onda, o messaggi `kind=delega` arrivati da
+un'altra macchina: lì è chiusa quando la sessione ha mandato l'esito). Proposta quando non ha deleghe aperte,
+è `idle` in Onda da più di 2 ore (senza Onda: ultimo evento Stop da più di 2 ore, colonna
+`sessions.last_event_at`) e la cartella è pulita e pushata (`git status --porcelain` vuoto, nessun commit fuori
+dai rami remoti; una cartella non git conta come pulita e la proposta lo dice). Va al delegante dell'ultima
+delega come evento `sessione-da-chiudere` (riga 6: non sveglia, non blocca lo Stop; nella banda e nel banner
+fra i messaggi), una volta per sessione Claude (`meta` `chiudi:<agente>/<slug>:<session_id>`), con il
+`terminalId` per `onda_agent_close` + `killPty`. Nessuna chiusura automatica.
+

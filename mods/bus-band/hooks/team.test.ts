@@ -86,7 +86,7 @@ describe('team', () => {
       '✎ testo fermo nella casella kai/d 20 min',
       '✎ testo fermo nella casella kai/c 2 min',
       '? aspetta una risposta kai/b 5 min',
-      '⊘ senza canale di sveglia kai/onda-electron ',
+      '⊘ irraggiungibile, senza canale di sveglia kai/onda-electron ',
     ])
     expect(rows[0]!.unmounted).toBe(true)
     expect(rows[3]!.workspaceId).toBe(null)
@@ -97,6 +97,8 @@ describe('team', () => {
     expect(teamHeadline(3, 0)).toBe('Squadra: 3 vive · niente per te')
     expect(teamHeadline(1, 0)).toBe('Squadra: 1 viva · niente per te')
     expect(teamHeadline(5, 2)).toBe('Squadra: 5 vive · 2 per te')
+    expect(teamHeadline(2, 1, 1)).toBe('Squadra: 2 vive, 1 irraggiungibile · 1 per te')
+    expect(teamHeadline(2, 3, 3)).toBe('Squadra: 2 vive, 3 irraggiungibili · 3 per te')
   })
 
   test('toast episodes: one key per session and stuck state', () => {

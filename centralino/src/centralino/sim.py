@@ -652,10 +652,84 @@ def att_pulizia(b: Banco) -> None:
     _check(b.c.store.message(c["id"])["state"] == "read", "la comunicazione si archivia")
 
 
+def caso_onda_ritirata_per_silenzio(b: Banco) -> None:
+    """t-20261029-lbgswf (A), 29/10: Onda dava `exited` (silenzio di 30 min) a sessioni di Nico col
+    claude vivo nel PTY; per il centralino erano vive per battito, "canale: nessuno", e una delega non
+    le svegliava. Con la voce ritirata di proprio quella sessione Claude il canale torna Onda."""
+    b.onda("alita/work-hub", "idle")
+    kai = {**b.caller("kai/fbk26"), "claude_session_id": "sess-kai-fbk26"}
+    for ev in ("start", "stop"):
+        r = b.c.handle_request({"v": 1, "id": "r", "op": f"hook.{ev}", "caller": kai, "args": {}})
+        _check(r["ok"], r)
+    b.onda("kai/fbk26", "exited")  # ritirata per silenzio, il processo è vivo
+    st = b.c.vivo.stato("kai", "fbk26")
+    _check(st.viva and st.canale == "onda" and st.ferma, f"canale ricostruito: {st}")
+    b.op("alita/work-hub", "send", to="kai/fbk26", intent="x", summary="fai X", message_type="request",
+         kind="delega")
+    b.giro()
+    _check(any("Nuova delega" in t for t in b.prompt_a("kai/fbk26")), "svegliata via Onda (onlyIfIdle)")
+    # un'altra sessione Claude nello stesso slug, ritirata: non è questa, niente canale
+    b.onda("kai/fbk26", None)
+    b.onda_sessions["kai/vecchia"] = {**b.onda_sessions.get("alita/work-hub", {}), "sessionId": "sess-altra",
+                                      "terminalId": "pane-x", "agent": "kai", "slug": "fbk26", "state": "exited"}
+    b.avanza(1)
+    _check(b.c.vivo.stato("kai", "fbk26").canale == "nessuno", "voce di un'altra sessione: nessun canale")
+
+
+def caso_sessione_delegata_da_chiudere(b: Banco) -> None:
+    """t-20261029-lbgswf (B): una sessione delegata resta accesa dopo l'esito. Senza deleghe aperte,
+    ferma da più di 2 ore e con la cartella pulita e pushata, il centralino la propone (una volta)
+    al delegante con un evento che non sveglia; non la chiude."""
+    git = {"stato": (True, "pulita e pushata")}
+    b.sveglia.ciclo.git = lambda path: git["stato"]
+    b.onda("alita/work-hub", "idle")
+    b.onda("kai/fbk26", "idle")
+    r = b.op("alita/work-hub", "send", to="kai/fbk26", intent="fbk26-x", summary="fai X",
+             message_type="request", kind="delega")
+    tid = r["task_id"]
+    b.avanza(3 * 3600)
+    b.onda("alita/work-hub", "idle")
+    b.onda("kai/fbk26", "idle")
+    _check(b.sveglia.ciclo.giro(forza=True) == [], "delega ancora aperta: niente proposta")
+    b.op("kai/fbk26", "send", to="alita/work-hub", intent="re", summary="fatto", message_type="response",
+         task_id=tid)
+    b.op("alita/work-hub", "close", task_id=tid)
+    b.onda("kai/fbk26", "working")
+    b.onda("kai/fbk26", "idle")  # ha appena finito il turno: idle da 30 s
+    _check(b.sveglia.ciclo.giro(forza=True) == [], "ferma da poco: niente proposta")
+    b.avanza(2 * 3600 + 60)
+    b.onda("alita/work-hub", "idle")
+    git["stato"] = (False, "2 file non committati")
+    _check(b.sveglia.ciclo.giro(forza=True) == [], "cartella sporca: niente proposta")
+    git["stato"] = (True, "pulita e pushata")
+    prop = b.sveglia.ciclo.giro(forza=True)
+    _check(len(prop) == 1, f"una proposta: {prop}")
+    ev = [m for m in b.op("alita/work-hub", "inbox")["messages"] if m["intent"] == "sessione-da-chiudere"]
+    _check(len(ev) == 1 and ev[0]["type"] == "event" and "kai/fbk26" in ev[0]["summary"]
+           and "pane-kai-fbk26" in ev[0]["summary"], f"evento al delegante: {ev}")
+    _check(b.sveglia.blocca_stop("alita", "work-hub") == [], "non blocca lo Stop")
+    b.giro()
+    _check(not any("sessione-da-chiudere" in t or "kai/fbk26" in t for t in b.prompt_a("alita/work-hub")),
+           "non sveglia il delegante")
+    _check(b.sveglia.ciclo.giro(forza=True) == [], "una volta sola per sessione")
+    _check(b.c.vivo.stato("kai", "fbk26").viva, "la sessione resta accesa: decide il delegante")
+    # una delega arrivata da un'altra macchina (mini -> qui, o qui -> mini): l'attesa sta dal
+    # delegante, e la delega è chiusa per noi quando la sessione ha mandato l'esito
+    rec = _msg("msg-20261024T160000Z-cv00mini", "leo/pm-os", "kai", "request", tempo.iso(b.t),
+               kind="delega", task_id="t-20261024-mini01", context={"host": "mini"})
+    b.consegna("kai/ws2", rec)
+    d = b.sveglia.ciclo.deleghe("kai", "ws2", "laptop")
+    _check(d and d[0]["delegante"] == "leo@mini/pm-os" and d[0]["aperta"], f"delega remota aperta: {d}")
+    b.op("kai/ws2", "send", to="leo/pm-os", intent="re", summary="fatto", message_type="response",
+         task_id="t-20261024-mini01")
+    _check(not b.sveglia.ciclo.deleghe("kai", "ws2", "laptop")[0]["aperta"], "chiusa dopo l'esito")
+
+
 SCENARI = [caso_irjocy, caso_orbit_non_viva, caso_xn9lv0, caso_attese_non_chiudibili, caso_passaggio_attesa,
            caso_delega_completa, caso_mini_irraggiungibile, caso_due_sessioni, caso_heartbeat_senza_canale, caso_bg_spare,
            att_delega_completa, att_stop, att_hook_start, att_scadenza, att_senza_canale, att_agente_nudo,
-           att_cloud, att_pulizia, caso_am26_cloud_a_kai_nudo, caso_am26_tmux_e_hub_muto]
+           att_cloud, att_pulizia, caso_am26_cloud_a_kai_nudo, caso_am26_tmux_e_hub_muto,
+           caso_onda_ritirata_per_silenzio, caso_sessione_delegata_da_chiudere]
 
 
 def esegui(scenario, base: Path | None = None) -> None:

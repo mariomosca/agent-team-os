@@ -62,6 +62,8 @@ class Sveglia:
         self.onda_call = onda_call or canale.onda_call
         self.notifica = notifica or canale.notifica_sistema
         self.ultimo_giro: list = []
+        from .ciclo import CicloVita
+        self.ciclo = CicloVita(central)
 
     # ---------- la tabella: chi riceve cosa ----------
 
@@ -463,4 +465,8 @@ class Sveglia:
         self._pending_wake(self.ultimo_giro)
         avvisi = self.avvisi_senza_canale()
         avvisi += self.avvisi_testo()
+        try:
+            avvisi += self.ciclo.giro()
+        except Exception as exc:  # noqa: BLE001 — la proposta di chiusura non ferma la sveglia
+            self.c.log("warn", "ciclo_vita_errore", errore=repr(exc))
         return {"scadute": scadute, "decisioni": len(decs), "avvisi": avvisi, "gemelle": gemelle}

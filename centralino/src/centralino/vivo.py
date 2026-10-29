@@ -94,7 +94,10 @@ class OndaView:
                 continue
             if s.get("state") != "exited":
                 return s
-            best = best or s
+            # fra le ritirate, quella di questa sessione Claude prima delle altre dello stesso slug
+            if best is None or (claude_session_id and s.get("sessionId") == claude_session_id
+                                and best.get("sessionId") != claude_session_id):
+                best = s
         return best
 
 
@@ -144,14 +147,23 @@ class Vivacita:
             hb = age_s(row["last_heartbeat"])
         hb_viva = hb is not None and hb <= HEARTBEAT_S
         per = "onda" if onda_viva else ("heartbeat" if hb_viva else None)
-        if onda_viva:
+        # t-20261029-lbgswf (A): Onda ritira per silenzio (30 min senza eventi) anche una sessione
+        # col claude vivo nel PTY. Se il battito dice viva e la voce di Onda è proprio questa
+        # sessione (stesso claude_session_id), il canale c'è ancora: agent.prompt con onlyIfIdle
+        # guarda lo stato vero del terminale e rifiuta (no_session) se è davvero finita.
+        ritirata = (not onda_viva and hb_viva and e is not None and row is not None
+                    and row["claude_session_id"] and e.get("sessionId") == row["claude_session_id"]
+                    and e.get("terminalId"))
+        if onda_viva or ritirata:
             canale = "onda"
         elif row is not None and row["tmux_pane"]:
             canale = "tmux"
         else:
             canale = "nessuno"
         ferma = False
-        if onda_viva:
+        if ritirata:
+            ferma = True  # lo stato lo decide Onda (onlyIfIdle): occupata o con testo = Rinvio
+        elif onda_viva:
             settled = age_s(e.get("stateSince"))
             ferma = (e.get("state") == "idle" and e.get("hasText") is False
                      and settled is not None and settled >= SETTLE_S)

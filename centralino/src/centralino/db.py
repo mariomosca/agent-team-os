@@ -149,6 +149,8 @@ MIGRAZIONI = [
     ("sessions", "drain_blocks", "INTEGER NOT NULL DEFAULT 0"),  # v2, non più usata da F6.14 (stop_blocks)
     ("messages", "letto_at", "TEXT"),               # v4 (BR24-F6.6): prima lettura della delega da chi la esegue
     ("messages", "letto_da", "TEXT"),               # v4: la sessione che l'ha letta
+    ("sessions", "delegata", "INTEGER"),            # t-20261029-lbgswf (B): SESSIONE_DELEGATA=1
+    ("sessions", "last_event_at", "TEXT"),          # quando è arrivato l'ultimo evento di sessione
 ]
 
 
@@ -369,9 +371,12 @@ class Store:
         caller = caller or {}
         c.execute(
             """INSERT INTO sessions (agent, slug, host, workspace_path, claude_session_id, onda_terminal_id,
-                 tmux_pane, pid, started_at, last_heartbeat, last_event, ended_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL)
+                 tmux_pane, pid, started_at, last_heartbeat, last_event, ended_at, delegata, last_event_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,?,?)
                ON CONFLICT(agent, slug, host) DO UPDATE SET
+                 delegata=CASE WHEN excluded.last_event='start' THEN excluded.delegata
+                               ELSE COALESCE(excluded.delegata, delegata) END,
+                 last_event_at=COALESCE(excluded.last_event_at, last_event_at),
                  workspace_path=COALESCE(excluded.workspace_path, workspace_path),
                  claude_session_id=COALESCE(excluded.claude_session_id, claude_session_id),
                  onda_terminal_id=COALESCE(excluded.onda_terminal_id, onda_terminal_id),
@@ -386,7 +391,8 @@ class Store:
                  ended_at=CASE WHEN excluded.last_event IS NULL AND (ended_at IS NOT NULL OR last_event='end')
                                THEN COALESCE(ended_at, last_heartbeat) ELSE NULL END""",
             (agent, slug, host, workspace, caller.get("claude_session_id"), caller.get("onda_terminal_id"),
-             caller.get("tmux_pane"), caller.get("pid"), now, now, event))
+             caller.get("tmux_pane"), caller.get("pid"), now, now, event,
+             1 if caller.get("delegata") else None, now if event else None))
 
     @staticmethod
     def end_session(c: sqlite3.Connection, agent: str, slug: str, host: str, now: str) -> None:

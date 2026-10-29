@@ -89,6 +89,8 @@ def main(argv: list[str]) -> int:
         "claude_session_id": data.get("session_id") or os.environ.get("CLAUDE_CODE_SESSION_ID"),
         "onda_terminal_id": os.environ.get("ONDA_TERMINAL_ID"),
         "tmux_pane": os.environ.get("TMUX_PANE"),
+        # sessione aperta per una delega (Onda/agenti): il centralino la propone per la chiusura
+        "delegata": os.environ.get("SESSIONE_DELEGATA") == "1" or None,
     }
     out = chiama(f"hook.{ev}", caller, TIMEOUT_S[ev])
     if not out:

@@ -104,11 +104,12 @@ const scanTeam = async ($: EngineInterface, vista: Vista | null): Promise<TeamSn
   // BR24-F6.7: the live count and the sessions without a channel come from the
   // centralino (it sees the sessions outside Onda too); without it, Onda's list.
   const live = Math.max(vista !== null ? liveCountOf(vista, agent, slug) : 0, others.length)
-  if (live === 0 && others.length === 0) return null
-  const rows = exceptionRows(others, vista !== null ? noChannelOf(vista, agent, slug) : [], now, canMount)
+  const noChannel = vista !== null ? noChannelOf(vista, agent, slug) : []
+  if (live === 0 && others.length === 0 && noChannel.length === 0) return null
+  const rows = exceptionRows(others, noChannel, now, canMount)
 
   return {
-    headline: teamHeadline(live, rows.length),
+    headline: teamHeadline(live, rows.length, noChannel.length),
     rows: rows.slice(0, TEAM_SHOWN),
     hidden: Math.max(0, rows.length - TEAM_SHOWN),
     sessions: others,

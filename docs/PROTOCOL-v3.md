@@ -115,6 +115,13 @@ Una sessione `(agente, slug, host)` è viva se vale almeno una delle due:
 Altrimenti è chiusa. Niente TTL a ore, niente pid del registro, niente `last_seen`. Viva non vuol dire
 raggiungibile: serve anche un canale di sveglia. Per le sessioni di un altro host vale l'ultimo stato raccolto.
 
+Canale di una sessione viva per heartbeat: Onda se la sua voce in `sessions.json` è proprio quella sessione Claude
+(stesso `claude_session_id`), anche se Onda l'ha data `exited` per silenzio: `agent.prompt` con `onlyIfIdle`
+decide sullo stato vero del terminale. Altrimenti tmux se ha un pannello, altrimenti nessuno: la banda la conta a
+parte, "irraggiungibile" (t-20261029-lbgswf). Una sessione delegata senza deleghe aperte, ferma da più di 2 ore e
+con la cartella pulita e pushata viene proposta per la chiusura al delegante, una volta, con un evento che non
+sveglia; non si chiude da sola (CENTRALINO.md §23).
+
 ## 9. Host
 
 Due macchine, ognuna col suo centralino (BR24-F5.7). Laptop verso mini: `ssh mini '<centralino> consegna'`, col
