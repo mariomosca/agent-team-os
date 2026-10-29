@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import tempo
+from . import palla, tempo
 from .hookops import HookOps
 from .ops import Centralino
 from .remoto import atomic_write, read_json
@@ -725,11 +725,57 @@ def caso_sessione_delegata_da_chiudere(b: Banco) -> None:
     _check(not b.sveglia.ciclo.deleghe("kai", "ws2", "laptop")[0]["aperta"], "chiusa dopo l'esito")
 
 
+def caso_dc29_delega_si_chiude(b: Banco) -> None:
+    """DC29-F4: Alita apre una sessione con worktree (spawn) e poi manda la delega (bus_send):
+    il centralino le lega. Esito, bus_close chiuso: sessione chiusa, worktree ritirato, esito sul
+    passo in Orbit. Una seconda delega con il worktree sporco resta tenuta e avvisa una volta."""
+    chiamate: list[tuple[str, dict]] = []
+    retire = [{"retired": True, "integratedBy": "tree", "tag": "archivio/feat-a", "branchDeleted": True},
+              {"retired": False, "reason": "dirty", "detail": "1 file"}]
+
+    def onda(method, params, timeout=None):
+        chiamate.append((method, params))
+        return retire.pop(0) if method == "worktree.retire" else {"closed": True}
+
+    class Orbit:
+        scritte: list[dict] = []
+
+        def chiama(self, tool, args):
+            self.scritte.append(args)
+            return {}
+    orbit = Orbit()
+    b.c.deleghe.onda_call, b.c.deleghe.orbit, b.c.deleghe.sync = onda, orbit, True
+    b.c.orbit = palla.Orbit(None)  # mai l'orbit.db vero
+    b.onda("alita/work-hub", "idle")
+    esiti = []
+    for slug, passo in (("dc29-a", "DC29-F3.1"), ("dc29-b", "DC29-F3.2")):
+        b.onda(f"kai/{slug}", "idle")
+        path = str(b.cwd(f"kai/{slug}"))
+        b.op("alita/work-hub", "delega.spawn", input={}, result={
+            "terminalId": f"pane-kai-{slug}", "cwd": path,
+            "worktree": {"path": path, "repoRoot": "/finto/repo", "branch": f"feat/{slug}"}})
+        tid = b.op("alita/work-hub", "send", to=f"kai/{slug}", intent=passo.lower(), summary="fai",
+                   message_type="request", kind="delega")["task_id"]
+        b.op(f"kai/{slug}", "send", to="alita/work-hub", intent="re", summary="fatto",
+             message_type="response", task_id=tid)
+        b.op("alita/work-hub", "close", task_id=tid)
+        r = b.c.store.read().execute("SELECT * FROM deleghe WHERE task_id=?", (tid,)).fetchone()
+        esiti.append((r["step_ref"], r["closure_state"], r["closure_reason"]))
+    _check(esiti == [("DC29-F3.1", "closed", "retired"), ("DC29-F3.2", "kept", "dirty")], f"esiti: {esiti}")
+    _check([m for m, _ in chiamate] == ["agent.close", "worktree.retire"] * 2, f"Onda: {chiamate}")
+    _check([(x["step_ref"], x["closure_state"]) for x in orbit.scritte][-1] == ("DC29-F3.2", "kept"),
+           f"Orbit: {orbit.scritte}")
+    avvisi = [m for m in b.op("alita/work-hub", "inbox")["messages"] if m["intent"] == "delega-tenuta"]
+    _check(len(avvisi) == 1 and "dirty" in avvisi[0]["summary"], f"un avviso: {avvisi}")
+    b.giro()
+    _check(not any("delega-tenuta" in t for t in b.prompt_a("alita/work-hub")), "l'avviso non sveglia")
+
+
 SCENARI = [caso_irjocy, caso_orbit_non_viva, caso_xn9lv0, caso_attese_non_chiudibili, caso_passaggio_attesa,
            caso_delega_completa, caso_mini_irraggiungibile, caso_due_sessioni, caso_heartbeat_senza_canale, caso_bg_spare,
            att_delega_completa, att_stop, att_hook_start, att_scadenza, att_senza_canale, att_agente_nudo,
            att_cloud, att_pulizia, caso_am26_cloud_a_kai_nudo, caso_am26_tmux_e_hub_muto,
-           caso_onda_ritirata_per_silenzio, caso_sessione_delegata_da_chiudere]
+           caso_onda_ritirata_per_silenzio, caso_sessione_delegata_da_chiudere, caso_dc29_delega_si_chiude]
 
 
 def esegui(scenario, base: Path | None = None) -> None:

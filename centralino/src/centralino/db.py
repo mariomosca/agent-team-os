@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6  # v6 (DC29-F4): tabella deleghe
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -134,6 +134,46 @@ CREATE TABLE IF NOT EXISTS stop_blocks (
   at     TEXT NOT NULL,
   PRIMARY KEY (agent, slug, host, msg_id)
 );
+
+-- DC29-F4: deleghe che si chiudono da sole. Una riga per spawn non ancora legato (task_id
+-- NULL), per delega non ancora legata (spawned_at NULL) o per le due cose legate insieme.
+CREATE TABLE IF NOT EXISTS deleghe (
+  id                INTEGER PRIMARY KEY,
+  task_id           TEXT UNIQUE,
+  step_ref          TEXT,
+  delegator         TEXT,
+  delegator_host    TEXT,
+  delegated_to      TEXT,
+  sess_agent        TEXT,
+  sess_slug         TEXT,
+  claude_session_id TEXT,
+  host              TEXT,
+  spawn_by          TEXT,
+  terminal_id       TEXT,
+  onda_session_id   TEXT,
+  workspace_id      TEXT,
+  repo_root         TEXT,
+  worktree_path     TEXT,
+  branch            TEXT,
+  base              TEXT,
+  labels            TEXT,
+  spawned_at        TEXT,
+  sent_at           TEXT,
+  linked_at         TEXT,
+  closure_state     TEXT NOT NULL DEFAULT 'open',
+  closure_reason    TEXT,
+  closure_detail    TEXT,
+  closure_at        TEXT,
+  session_closed    INTEGER NOT NULL DEFAULT 0,
+  notified_reason   TEXT,
+  orbit_dirty       INTEGER NOT NULL DEFAULT 0,
+  tried_at          TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS deleghe_term ON deleghe(terminal_id);
+CREATE INDEX IF NOT EXISTS deleghe_sess ON deleghe(sess_agent, sess_slug);
+CREATE INDEX IF NOT EXISTS deleghe_repo ON deleghe(repo_root, worktree_path);
 
 CREATE TABLE IF NOT EXISTS thread_legacy (
   thread_id TEXT NOT NULL,

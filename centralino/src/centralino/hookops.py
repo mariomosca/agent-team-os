@@ -62,6 +62,7 @@ class HookOps:
 
     def op_start(self, caller: dict, a: dict, warnings: list) -> dict:
         me = self._evento(caller, "start")
+        self.c._su_deleghe("su_start", me, caller)
         info = self.c.amap.agents().get(me.agent) or {}
         items = self.c.bus.inbox_items(me.agent, me.slug)
         alte = sum(1 for _, _, m in items if m.get("priority") in ("urgent", "high"))
@@ -179,6 +180,7 @@ class HookOps:
 
     def op_end(self, caller: dict, a: dict, warnings: list) -> dict:
         me = self._evento(caller, "end")
+        self.c._su_deleghe("su_fine_sessione", me.agent, me.slug)
         return {"address": f"{me.agent}/{me.slug}"}
 
     # ---------- consegna dal cloud e da altri host (F4.4) ----------

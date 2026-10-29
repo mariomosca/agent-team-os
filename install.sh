@@ -16,7 +16,8 @@
 #                       GUI login, otherwise (the headless Mac mini over SSH) a cron line
 #                       that starts it every minute if its pid is gone.
 #   --register-hooks    add the SessionStart, UserPromptSubmit and SessionEnd hooks and the
-#                       PreToolUse hook on onda_agent_prompt ([delega] | [comunicazione]) to
+#                       PreToolUse hook on onda_agent_prompt ([delega] | [comunicazione]) and the
+#                       Pre/PostToolUse hooks on onda_agent_spawn (DC29: deleghe che si chiudono) to
 #                       $CLAUDE_HOME/settings.json (backup first, idempotent). The Stop hook
 #                       stays opt-in.
 #   --custode           install the custode (README "Il custode"): a job at 7:00 that checks
@@ -150,7 +151,7 @@ echo "Copying hooks → $CLAUDE_HOME/hooks/ and agent-team-os-centralino.py → 
 cp "$REPO_DIR/hooks/agent-team-os-centralino.py" "$CLAUDE_HOME/scripts/agent-team-os-centralino.py"
 chmod +x "$CLAUDE_HOME/scripts/agent-team-os-centralino.py"
 for h in agent-team-os-load.sh agent-team-os-urgent.sh agent-team-os-stop.sh agent-team-os-end.sh \
-         agent-team-os-onda-prompt.py; do
+         agent-team-os-onda-prompt.py agent-team-os-onda-spawn.py; do
   cp "$REPO_DIR/hooks/$h" "$CLAUDE_HOME/hooks/$h"
   chmod +x "$CLAUDE_HOME/hooks/$h"
 done
@@ -219,7 +220,8 @@ if [[ "$REGISTER_HOOKS" -eq 1 ]]; then
   jq --arg load "$CLAUDE_HOME/hooks/agent-team-os-load.sh" \
      --arg urgent "$CLAUDE_HOME/hooks/agent-team-os-urgent.sh" \
      --arg end "$CLAUDE_HOME/hooks/agent-team-os-end.sh" \
-     --arg onda "/usr/bin/python3 -I $CLAUDE_HOME/hooks/agent-team-os-onda-prompt.py" '
+     --arg onda "/usr/bin/python3 -I $CLAUDE_HOME/hooks/agent-team-os-onda-prompt.py" \
+     --arg spawn "/usr/bin/python3 -I $CLAUDE_HOME/hooks/agent-team-os-onda-spawn.py" '
     def ensure($event; $cmd; $name; $entry):
       if ([.hooks[$event][]?.hooks[]?.command // empty] | any(endswith($name)))
       then .
@@ -232,10 +234,14 @@ if [[ "$REGISTER_HOOKS" -eq 1 ]]; then
     | ensure("SessionEnd"; $end; "agent-team-os-end.sh")
     | ensure("PreToolUse"; $onda; "agent-team-os-onda-prompt.py";
              {matcher: "mcp__onda__onda_agent_prompt", hooks: [{type: "command", command: $onda, timeout: 10}]})
+    | ensure("PreToolUse"; $spawn; "agent-team-os-onda-spawn.py pre";
+             {matcher: "mcp__onda__onda_agent_spawn", hooks: [{type: "command", command: ($spawn + " pre"), timeout: 6}]})
+    | ensure("PostToolUse"; $spawn; "agent-team-os-onda-spawn.py post";
+             {matcher: "mcp__onda__onda_agent_spawn", hooks: [{type: "command", command: ($spawn + " post"), timeout: 5}]})
   ' "$SETTINGS" > "$SETTINGS.tmp"
   if [[ -s "$SETTINGS.tmp" ]] && jq empty "$SETTINGS.tmp" 2>/dev/null; then
     mv "$SETTINGS.tmp" "$SETTINGS"
-    echo "Hooks registered in $SETTINGS (SessionStart, UserPromptSubmit, SessionEnd, PreToolUse onda_agent_prompt)."
+    echo "Hooks registered in $SETTINGS (SessionStart, UserPromptSubmit, SessionEnd, PreToolUse onda_agent_prompt, Pre/PostToolUse onda_agent_spawn)."
   else
     rm -f "$SETTINGS.tmp"
     echo "ERROR: could not update $SETTINGS; left untouched."
