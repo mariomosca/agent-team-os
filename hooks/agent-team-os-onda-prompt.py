@@ -7,6 +7,9 @@ Stesse regole della v2.8 (BS21-F1.4, BR24-F2.8), ma l'attesa la registra il cent
   prompt gia' con task_id  passa; con [delega] davanti l'attesa si registra con quel task_id
   prompt corto             passa
   prompt lungo senza scelta: rifiutato con la spiegazione, come bus_send senza kind
+Un [delega] che segue un bus_send(kind=delega) non apre una seconda attesa (t-20261029-lbgswf):
+il centralino lo aggancia alla delega aperta se il testo ne cita il task_id o l'intent, o se e'
+andata alla stessa sessione negli ultimi 10 minuti; la riga in coda porta il task_id di quella.
 Centralino irraggiungibile su una [delega]: il prompt passa senza marcatore e senza attesa,
 con il motivo nella risposta. Mai bloccare per un errore suo. Solo stdlib.
 """
@@ -95,7 +98,7 @@ def handle(event: dict) -> None:
     to = target_session(tool_input.get("terminalId"))
     desc = re.sub(r"\s+", " ", body).strip()[:120]
     tm = TASK_RE.search(body)
-    args = {"description": desc, "delegated_to": to}
+    args = {"description": desc, "delegated_to": to, "onda_prompt": True, "testo": body[:4000]}
     if tm:
         args["task_id"] = tm.group(1)
     try:
@@ -117,7 +120,8 @@ def handle(event: dict) -> None:
             answer("allow", f"attesa non registrata: {err.get('message')}", {**tool_input, "prompt": body})
         return
     r = resp["result"]
-    answer("allow", f"attesa registrata {r['task_id']}",
+    come = "agganciato alla delega aperta" if r.get("agganciata") else "attesa registrata"
+    answer("allow", f"{come} {r['task_id']}",
            {**tool_input, "prompt": body.rstrip() + "\n\n" + r["prompt_line"]})
 
 

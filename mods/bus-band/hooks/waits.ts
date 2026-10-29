@@ -87,6 +87,8 @@ const BALL_STATES: readonly BallState[] = [
   'chiusa',
   'coda',
   'lavora',
+  // t-20261029-lbgswf: open, no return, still for hours: probably a duplicate. Last, counted apart.
+  'da_verificare',
 ]
 
 // One line, whatever the summary held: newlines and runs of spaces become one space.
@@ -130,11 +132,13 @@ const rank = (s: WaitRow['state']) => {
 export const orderRows = (rows: readonly WaitRow[]) => [...rows].sort((a, b) => rank(a.state) - rank(b.state))
 
 export const waitsHeadline = (waits: readonly Wait[]) => {
-  const open = waits.filter(w => w.state === 'expected').length
-  const expired = waits.length - open
+  const doubtful = waits.filter(w => w.state === 'expected' && w.ball === 'da_verificare').length
+  const open = waits.filter(w => w.state === 'expected').length - doubtful
+  const expired = waits.filter(w => w.state !== 'expected').length
   const tail = expired === 0 ? '' : expired === 1 ? ', 1 scaduta' : `, ${expired} scadute`
+  const check = doubtful === 0 ? '' : `, ${doubtful} da verificare`
 
-  return `Deleghe aperte · ${open}${tail}`
+  return `Deleghe aperte · ${open}${tail}${check}`
 }
 
 // The footer's counts, only those not zero: what waits for this session.

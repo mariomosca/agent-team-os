@@ -72,7 +72,11 @@ ha delegato non è più viva. Un messaggio senza `task_id` non è mai un ritorno
 scade alla `response_by` o dopo 72 ore senza attività, anche con ritorni già gestiti, con un avviso in casella; la
 chiusura toglie ogni sveglia pendente. Le deleghe via Onda (`onda_agent_prompt`) non passano da `bus_send`: il prompt
 comincia con `[delega]` e l'hook registra l'attesa con `expect` sul centralino (nessuna seconda attesa se il prompt
-ha già la riga col `task_id`).
+ha già la riga col `task_id`). Se il `[delega]` sveglia una sessione a cui si è appena mandata una delega con
+`bus_send`, non nasce un'attesa nuova: il prompt si aggancia a quella se ne cita il `task_id` o l'intent, o se è
+andata alla stessa sessione negli ultimi 10 minuti e nessun altro prompt l'ha già agganciata (t-20261029-lbgswf).
+Un'attesa doppia rimasta senza ritorni si chiude da sola quando la gemella riceve un esito; un'attesa aperta senza
+ritorni né movimento da più di 4 ore è "da verificare" e si conta a parte (CENTRALINO.md §18).
 
 ## 6. Tabella di sveglia
 

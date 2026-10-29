@@ -93,6 +93,15 @@ describe('one row per delegation, as the centralino says (BR24-F6.4/F6.7)', () =
     expect(waitsHeadline(ordered)).toBe('Deleghe aperte · 1, 1 scaduta')
   })
 
+  test('da verificare: last, counted apart in the headline (t-20261029-lbgswf)', () => {
+    const a = parseWait(wait({ task_id: 't-a', ...ball('lavora') }))!
+    const d = parseWait(wait({ task_id: 't-d', ...ball('da_verificare', { glifo: '◇', parola: 'da verificare: nessun ritorno da 6 h' }) }))!
+    const rows = orderRows([d, a].map(w => toDelegationRow(w, NOW)))
+    expect(rows.map(r => r.key)).toEqual(['t-a', 't-d'])
+    expect(rows[1]).toMatchObject({ state: 'da_verificare', glyph: '◇' })
+    expect(waitsHeadline([a, d])).toBe('Deleghe aperte · 1, 1 da verificare')
+  })
+
   test('a cap on the wake: the centralino note, said in words', () => {
     const r = toDelegationRow(parseWait(wait(ball('esito', { allerta: true, nota: 'tetto di sveglie con questo agente' })))!, NOW)
     expect(r.alert).toBe(true)

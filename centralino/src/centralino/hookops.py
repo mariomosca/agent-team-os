@@ -13,6 +13,7 @@ from typing import Any
 
 from . import regole
 from .db import Store
+from .palla import DA_VERIFICARE_H, da_verificare
 from .dbbus import TASK_ID_RE, BusError
 from .sveglia import attese_di
 from .tempo import iso_now
@@ -75,10 +76,16 @@ class HookOps:
             righe.append(f"Inbox: {len(items)} pending" + (f" ({alte} urgent/high)" if alte else ""))
             righe.append("")
             righe += [_riga(mid, m) for mid, _, m in items[-5:]]
-        mie = [w for w in self.c.bus.list_waits(me.agent, me.slug) if w.get("state") == "expected"]
+        tutte = [w for w in self.c.bus.list_waits(me.agent, me.slug) if w.get("state") == "expected"]
+        dubbie = [w for w in tutte if da_verificare(w)]
+        mie = [w for w in tutte if not da_verificare(w)]
         if mie:
             righe += ["", f"Deleghe aperte: {len(mie)} ("
                       + ", ".join(f"{w['task_id']} a {w.get('delegated_to') or '?'}" for w in mie[:5]) + ")"]
+        if dubbie:
+            righe += [f"Da verificare (nessun ritorno da oltre {DA_VERIFICARE_H} h, forse doppioni): "
+                      + ", ".join(w["task_id"] for w in dubbie[:5])
+                      + ". Chiudi con bus_close(task_id) quelle che non servono."]
         righe += ["", "Bus: bus_inbox, bus_read, bus_send, bus_reply, bus_close, bus_status (MCP agent-bus).",
                   "=== End Agent Team OS ==="]
         persona = None

@@ -602,7 +602,7 @@ non conta (non è un segnale che il centralino veda).
 | Campo | Cosa |
 |---|---|
 | `letto_at`, `letto_da` | quando e chi ha letto la delega; `null` finché non è letta |
-| `stato_palla` | `domanda`, `esito`, `scaduta`, `mario`, `consegnato`, `fermo`, `chiusa`, `coda`, `lavora` |
+| `stato_palla` | `domanda`, `esito`, `scaduta`, `mario`, `consegnato`, `fermo`, `chiusa`, `coda`, `lavora`, `da_verificare` |
 | `riga.glifo`, `riga.parola` | lo stato in glifo e parola (mai il solo colore): `?` domanda per te, `✉` esito da leggere, `!` scaduta, `●` tocca a Mario, `✓` Kai ha consegnato, `◌` Kai fermo, `○` Kai non aperto (`qui · vivo in <slug>` `+N`), `⧗` in coda: Kai occupato, `◐` Kai ci lavora |
 | `riga.ordine` | posizione dello stato, prima ciò che chiede qualcosa a chi ha delegato |
 | `riga.codice`, `riga.piano` | codice del piano dall'intent o dal summary (`BR24-F6.6`), e il piano |
@@ -612,6 +612,26 @@ non conta (non è un segnale che il centralino veda).
 | `riga.allerta`, `riga.nota` | da guardare subito; il tetto che trattiene una sveglia, in parola |
 
 Un'attesa chiusa (la vista dà anche quelle dell'ultimo giorno) ha `stato_palla` e `riga` a `null`.
+
+**Attese doppie (t-20261029-lbgswf, 29/10/2026).** Il flusso `bus_send(kind=delega)` + `onda_agent_prompt
+"[delega] ..."` apriva due attese per un lavoro: il 29/10 Leo ne aveva 13 aperte, una sola vera (la seconda
+nasceva 2-7 s dopo la prima, con `task_id` nuovo; l'esecutore rispondeva su una, l'altra restava `expected`).
+Ora:
+
+- **aggancio**: l'hook manda `expect` con `onda_prompt: true` e il testo; il centralino (`aggancia` in `dbbus.py`)
+  restituisce un'attesa aperta della stessa sessione, con `agganciata: true`, se il testo cita il suo `task_id`,
+  oppure il suo intent (almeno 6 caratteri, stessa sessione destinataria), oppure se è una delega da `bus_send` alla
+  stessa sessione di meno di `AGGANCIO_S` (10 minuti) non ancora agganciata da un altro prompt. 10 minuti: bus_send e
+  prompt stanno nello stesso turno (2-7 s nei casi veri), e un secondo `[delega]` più tardi è un lavoro nuovo. La
+  riga in coda al prompt porta il `task_id` della delega agganciata;
+- **gemelle orfane**: a ogni giro della sveglia (`chiudi_gemelle`) un'attesa aperta senza ritorni si chiude
+  (`closed_by: gemella:<task_id>`) se a meno di 10 minuti da lei lo stesso delegante ne ha aperta un'altra verso la
+  stessa sessione, una delle due non viene da `bus_send`, e l'altra ha un esito (`response`). Due `bus_send` vicini
+  sono due lavori veri e non si toccano; una gemella chiusa a mano senza esito non chiude niente;
+- **da verificare**: un'attesa `expected` senza ritorni né domande e senza movimento da più di `DA_VERIFICARE_H`
+  (4 ore) ha `stato_palla = da_verificare` (glifo `◇`, "da verificare: nessun ritorno da N h", in fondo alla lista).
+  La banda la conta a parte (`Deleghe aperte · 1, 3 da verificare`) e il banner di SessionStart la elenca fuori
+  dalle deleghe aperte.
 
 Regole (`centralino/palla.py`, test in `tests/test_palla.py`): scaduta, poi domanda aperta, poi esito
 non gestito, poi `mario` se l'ultimo ritorno è riarmato e in Orbit il passo è di Mario (o Mario ha un

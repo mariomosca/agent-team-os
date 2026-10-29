@@ -18,7 +18,10 @@ from .tempo import now, parse_iso
 
 # Glifo per stato: mai il solo colore (Mario è daltonico), la forma lo dice anche lei.
 GLIFO = {"domanda": "?", "esito": "✉", "scaduta": "!", "mario": "●", "consegnato": "✓",
-         "fermo": "◌", "chiusa": "○", "coda": "⧗", "lavora": "◐"}
+         "fermo": "◌", "chiusa": "○", "coda": "⧗", "lavora": "◐", "da_verificare": "◇"}
+# t-20261029-lbgswf: un'attesa aperta senza nessun ritorno e senza movimento da tante ore è
+# probabilmente un doppione o un lavoro perso: la riga lo dice e il conteggio la tiene a parte.
+DA_VERIFICARE_H = 4
 # Prima le righe che chiedono qualcosa a chi ha delegato (o a Mario).
 ORDINE = list(GLIFO)
 
@@ -177,6 +180,14 @@ def _eta(iso_s: str | None) -> str:
     return "meno di 1 min" if m < 1 else f"{m} min" if m < 120 else f"{m // 60} h"
 
 
+def da_verificare(rec: dict) -> bool:
+    """Aperta, nessun ritorno né domanda, ferma da più di DA_VERIFICARE_H ore."""
+    if rec.get("state") != "expected" or _d(rec.get("returns")) or _d(rec.get("questions")):
+        return False
+    t = parse_iso(rec.get("last_activity") or rec.get("created_at"))
+    return t is not None and (now() - t).total_seconds() > DA_VERIFICARE_H * 3600
+
+
 def stato_palla(rec: dict, letto_at: str | None, vive: list[dict], host: str,
                 orbit_righe: list[dict] | None = None, *, letto_noto: bool = True,
                 letto_da: str | None = None, risposta: dict | None = None) -> dict:
@@ -207,6 +218,8 @@ def stato_palla(rec: dict, letto_at: str | None, vive: list[dict], host: str,
 
     if rec.get("state") == "expired":
         stato = "scaduta"
+    elif da_verificare(rec):
+        stato = "da_verificare"
     elif aperte:
         stato = "domanda"
     elif esiti:
@@ -230,7 +243,8 @@ def stato_palla(rec: dict, letto_at: str | None, vive: list[dict], host: str,
         "mario": "tocca a Mario", "consegnato": f"{chi} ha consegnato", "fermo": f"{chi} fermo",
         "chiusa": f"{chi} non aperto" + (f" qui · vivo in {altrove[0]}" + (f" +{len(altrove) - 1}" if len(altrove) > 1 else "")
                                         if altrove else ""),
-        "coda": f"in coda: {chi} occupato", "lavora": f"{chi} ci lavora"}[stato]
+        "coda": f"in coda: {chi} occupato", "lavora": f"{chi} ci lavora",
+        "da_verificare": f"da verificare: nessun ritorno da {_eta(rec.get('last_activity') or rec.get('created_at'))}"}[stato]
     delega = _s(_d(rec.get("delegation")).get("msg_id"))
     leggi = aperte[0][0] if stato == "domanda" else (esiti[0][0] if esiti else delega) if stato == "esito" else delega
     motivo = _s(_d(rec.get("pending_wake")).get("reason"))

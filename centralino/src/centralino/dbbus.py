@@ -30,6 +30,25 @@ KIND_HELP = (
 ESITI = ("chiuso", "riarma", "risposto", "letto")
 OPEN_WAIT_STATES = ("expected",)
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$")
+# t-20261029-lbgswf: bus_send(kind=delega) e poi onda_agent_prompt "[delega] ..." per svegliare la
+# sessione facevano due attese per un lavoro. Il prompt si aggancia alla delega già aperta se ne cita
+# il task_id o l'intent, oppure se la delega è andata alla stessa sessione negli ultimi AGGANCIO_S:
+# bus_send e prompt stanno nello stesso turno (2-7 s il 29/10, 13 casi), 10 minuti coprono un turno
+# lento senza legare a una delega vecchia un lavoro nuovo dato a voce più tardi.
+AGGANCIO_S = 600
+TASK_CITATO_RE = re.compile(r"(?<![A-Za-z0-9])t-\d{8}-[a-z0-9]{6}(?![A-Za-z0-9])")
+
+
+def stesso_destinatario(a: str | None, b: str | None) -> bool:
+    """Due indirizzi della stessa sessione (host a parte): stesso agente, slug uguale o mancante."""
+    if not a or not b:
+        return False
+    try:
+        ag_a, sl_a, _ = parse_addr(a)
+        ag_b, sl_b, _ = parse_addr(b)
+    except Exception:  # noqa: BLE001
+        return False
+    return ag_a == ag_b and (not sl_a or not sl_b or sl_a == sl_b)
 
 
 class BusError(RuntimeError):
@@ -61,6 +80,13 @@ def with_pending_wake(rec: dict) -> dict:
     else:
         rec.pop("pending_wake", None)
     return rec
+
+
+def _giorni_fa(n: int) -> str:
+    from datetime import timedelta
+
+    from .tempo import iso
+    return iso(now() - timedelta(days=n))
 
 
 def _d(v) -> dict:
@@ -410,6 +436,84 @@ class DbBus:
                 raise BusError(f"task {task_id} already has a waiter ({w['owner_agent']}/{w['owner_slug']}): "
                                "one task, one waiter", "conflict")
             return self._save_wait(c, rec)
+        return self._tx(scrivi)
+
+    def aggancia(self, agent, slug, delegated_to, testo, task_id=None):
+        """Il prompt di sveglia via Onda di agent/slug si aggancia a una sua delega aperta, invece di
+        aprire un'attesa nuova: quella col task_id dato o citato nel testo, quella il cui intent
+        è citato (stessa sessione destinataria), o l'ultima delega da bus_send alla stessa
+        sessione negli ultimi AGGANCIO_S non ancora agganciata a un prompt. None se nessuna."""
+        testo = testo or ""
+        adesso = now()
+
+        def scrivi(c):
+            aperte = [json.loads(r["raw"]) | {"_intent": r["intent"]} for r in c.execute(
+                "SELECT w.raw, m.intent FROM waits w LEFT JOIN messages m ON m.id=w.delegation_msg "
+                "WHERE w.owner_agent=? AND w.owner_slug=? AND w.state IN ('expected') "
+                "ORDER BY w.created_at DESC", (agent, slug))]
+            if not aperte:
+                return None
+            per_id = {w["task_id"]: w for w in aperte}
+            scelta, come = None, None
+            for tid in ([task_id] if task_id else []) + TASK_CITATO_RE.findall(testo):
+                if tid in per_id:
+                    scelta, come = per_id[tid], "task_id"
+                    break
+            if scelta is None:
+                for w in aperte:
+                    intent = w.get("_intent") or ""
+                    if (len(intent) >= 6 and stesso_destinatario(w.get("delegated_to"), delegated_to)
+                            and re.search(rf"(?<![\w-]){re.escape(intent)}(?![\w-])", testo)):
+                        scelta, come = w, "intent"
+                        break
+            if scelta is None:
+                for w in aperte:
+                    creata = parse_iso(w.get("created_at"))
+                    if (_d(w.get("delegation")).get("msg_id") and not w.get("onda_prompt")
+                            and creata is not None and (adesso - creata).total_seconds() <= AGGANCIO_S
+                            and stesso_destinatario(w.get("delegated_to"), delegated_to)):
+                        scelta, come = w, "recente"
+                        break
+            if scelta is None:
+                return None
+            scelta.pop("_intent", None)
+            scelta["onda_prompt"] = {"at": iso_now(), "come": come}
+            return self._save_wait(c, scelta)
+        return self._tx(scrivi)
+
+    def chiudi_gemelle(self) -> list[str]:
+        """Attese orfane (t-20261029-lbgswf): un'attesa aperta senza ritorni, nata a meno di
+        AGGANCIO_S da un'altra dello stesso delegante verso la stessa sessione, quando una delle
+        due non viene da bus_send (l'ha aperta il prompt via Onda) e la gemella ha già un esito
+        (``response``): l'esecutore ha lavorato sull'altra. Si chiude da sola."""
+        def scrivi(c):
+            rows = [json.loads(r["raw"]) for r in c.execute(
+                "SELECT raw FROM waits WHERE created_at >= ? ORDER BY created_at",
+                (_giorni_fa(3),))]
+            chiuse = []
+            for w in rows:
+                if w.get("state") not in OPEN_WAIT_STATES or _d(w.get("returns")):
+                    continue
+                cw = parse_iso(w.get("created_at"))
+                for t in rows:
+                    if t is w or t.get("agent") != w.get("agent") or t.get("slug") != w.get("slug"):
+                        continue
+                    if not stesso_destinatario(t.get("delegated_to"), w.get("delegated_to")):
+                        continue
+                    if _d(w.get("delegation")).get("msg_id") and _d(t.get("delegation")).get("msg_id"):
+                        continue  # due bus_send: due lavori veri
+                    ct = parse_iso(t.get("created_at"))
+                    if cw is None or ct is None or abs((cw - ct).total_seconds()) > AGGANCIO_S:
+                        continue
+                    if not any(_d(e).get("type") == "response" for e in _d(t.get("returns")).values()):
+                        continue  # la gemella chiusa a mano non dice niente: serve un esito su di lei
+                    ts = iso_now()
+                    w.update(state="closed", closed_at=ts, closed_by=f"gemella:{t['task_id']}",
+                             note=f"attesa doppia di {t['task_id']}: l'esecutore ha lavorato su quella")
+                    self._save_wait(c, w)
+                    chiuse.append(w["task_id"])
+                    break
+            return chiuse
         return self._tx(scrivi)
 
     def list_waits(self, agent, slug=None, include_closed=False):

@@ -166,13 +166,20 @@ class Centralino:
 
     def op_expect(self, caller: dict, a: dict, warnings: list) -> dict:
         me = self._who(caller)
-        rec = self._write(lambda: self.bus.expect(
+        rec = None
+        if a.get("onda_prompt"):
+            # t-20261029-lbgswf: il prompt di sveglia via Onda si aggancia alla delega già aperta
+            rec = self._write(lambda: self.bus.aggancia(me.agent, me.slug, a.get("delegated_to"),
+                                                        a.get("testo") or a.get("description") or "",
+                                                        task_id=a.get("task_id")))
+        agganciata = rec is not None
+        rec = rec or self._write(lambda: self.bus.expect(
             me.agent, me.slug, a.get("description") or "", delegated_to=a.get("delegated_to"),
             deadline=a.get("deadline"), task_id=a.get("task_id"), target=_target(caller)))
         addr = f"{me.agent}/{me.slug}"
         if me.host and self.amap.hosts():
             addr = f"{me.agent}@{me.host}/{me.slug}"
-        return {"task_id": rec["task_id"], "deadline": rec["deadline"],
+        return {"task_id": rec["task_id"], "deadline": rec.get("deadline"), "agganciata": agganciata,
                 "prompt_line": (f"Quando hai finito, manda l'esito con bus_send a {addr}, "
                                 f"message_type='response', task_id='{rec['task_id']}'. Se ti serve "
                                 f"una risposta prima, manda le domande allo stesso indirizzo con "

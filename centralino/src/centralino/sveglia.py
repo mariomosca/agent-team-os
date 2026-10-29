@@ -455,9 +455,12 @@ class Sveglia:
     # ---------- giro ----------
 
     def giro(self) -> dict:
+        gemelle = self.c.bus.chiudi_gemelle()
+        for tid in gemelle:
+            self.c.log("info", "attesa_gemella_chiusa", task_id=tid)
         scadute = self.scadenze()
         decs = self.giro_sveglia()
         self._pending_wake(self.ultimo_giro)
         avvisi = self.avvisi_senza_canale()
         avvisi += self.avvisi_testo()
-        return {"scadute": scadute, "decisioni": len(decs), "avvisi": avvisi}
+        return {"scadute": scadute, "decisioni": len(decs), "avvisi": avvisi, "gemelle": gemelle}
