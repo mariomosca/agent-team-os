@@ -52,7 +52,8 @@ Campi: id, mittente (agente, slug, host), destinatario, tipo, `kind`, intento, p
 `kind` è obbligatorio per `request`, `brief` e `handoff`, e senza il bus rifiuta l'invio:
 
 - `delega`: il mittente rivuole l'esito. Crea un'attesa sulla sua sessione, nella stessa transazione del messaggio.
-- `comunicazione`: non deve tornare niente.
+- `comunicazione`: non deve tornare niente. Solo per `brief` e `handoff`: una `request` chiede lavoro ed è sempre
+  una `delega`, e con `comunicazione` il bus la rifiuta (`kind_required`, WT30-F4.1). Per informare basta un `brief`.
 
 `response`, `question` ed `event` non hanno `kind`. I record vecchi senza `kind` ma con `requires_response` si
 trattano come deleghe.

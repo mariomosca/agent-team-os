@@ -25,8 +25,19 @@ KINDS = ("delega", "comunicazione")
 KIND_HELP = (
     "say what this {type} is with kind: 'delega' if you want the outcome back (the bus "
     "registers the wait and wakes you on every return), 'comunicazione' if nothing "
-    "has to come back. There is no default."
+    "has to come back (only for a brief or a handoff: a request is always a delegation). "
+    "There is no default."
 )
+# WT30-F4.1 R1: due request di Leo a kai come comunicazione (28/10) sono rimaste 46 ore senza che
+# nessuna sessione le vedesse. Una richiesta di lavoro è sempre una delega.
+REQUEST_COMUNICAZIONE = (
+    "a request asks for work: send it with kind='delega' (the bus registers the wait and wakes "
+    "you on every return); for information only send a brief with kind='comunicazione'"
+)
+INTENT_NON_LETTO = "non-letto"
+# avvisi scritti dal centralino stesso: non si rimbalzano al "mittente" (R3)
+INTENTI_CENTRALINO = (INTENT_NON_LETTO, "task-scaduto", "messaggi-fermi-senza-canale", "sveglia-rinviata-testo",
+                      "sessione-da-chiudere", "delega-tenuta", "richieste-ferme-da-un-giorno")
 ESITI = ("chiuso", "riarma", "risposto", "letto")
 OPEN_WAIT_STATES = ("expected",)
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$")
@@ -232,6 +243,7 @@ class DbBus:
                 if outcome == "queued":  # la raccolta la toglie da qui quando la coda si svuota
                     c.execute("INSERT OR REPLACE INTO remote_queue (msg_id, host, queued_at) VALUES (?,?,?)",
                               (mid, to_host, iso_now()))
+                self._consuma_copie(c, record)  # la copia della delega sta sulla macchina di chi esegue
             self._tx(scrivi)
             addr = f"{agent}@{to_host}" + (f"/{slug}" if slug else "")
             if outcome == "queued":
@@ -255,6 +267,7 @@ class DbBus:
             Store.put_message(c, record, state="pending", to_slug=slug, to_host=self.host_self() or "",
                               path=None, origin=origin, mid=mid)
             self._registra_ritorno(c, record, agent, slug, mid)
+            self._consuma_copie(c, record)
             return True
         return self._tx(scrivi)
 
@@ -356,6 +369,8 @@ class DbBus:
         if msg_type in DECLARED_TYPES:
             if kind is None:
                 raise BusError(KIND_HELP.format(type=msg_type), "kind_required")
+            if msg_type == "request" and kind == "comunicazione":
+                raise BusError(REQUEST_COMUNICAZIONE, "kind_required")
             return kind
         if kind == "delega":
             raise BusError(f"a {msg_type} cannot be a delegation: send a request, brief or "
@@ -416,6 +431,49 @@ class DbBus:
             Store.segna_letta(c, dm, record.get("ts") or iso_now(), by)
         rec["last_activity"] = record.get("ts") or iso_now()
         self._save_wait(c, rec)
+
+    def _consuma_copie(self, c, record: dict) -> list[str]:
+        """WT30-F4.1 R2: chi esegue ha preso il lavoro, le copie della delega non chiedono più niente.
+
+        Un esito (``response`` col task_id) dell'agente X consuma ogni copia pending ``kind=delega``
+        di quel task indirizzata a X, casella condivisa compresa; una domanda (``question``) solo la
+        copia della casella condivisa: la sessione che chiede ha preso la delega, la sua copia resta
+        finché non manda l'esito. Il delegante che risponde o chiede non consuma niente (kai a kai).
+        Caso: l'allarme falso delle 04:42 del 30/10, delega a nico nudo eseguita da un'altra sessione."""
+        tid = record.get("task_id")
+        typ = record.get("type")
+        if not isinstance(tid, str) or typ not in RITORNI:
+            return []
+        frm = record.get("from_session") or record.get("from") or ""
+        x = record.get("from") or frm.partition("/")[0]
+        q = ("SELECT id, raw FROM messages WHERE task_id=? AND to_agent=? AND state='pending' "
+             "AND kind='delega'")
+        if typ == "question":
+            q += " AND to_slug IS NULL"
+        at = record.get("ts") or iso_now()
+        fatti = []
+        for r in c.execute(q, (tid, x)).fetchall():
+            m = json.loads(r["raw"])
+            if frm and m.get("from_session") == frm:
+                continue  # chi scrive è il delegante di questa copia
+            m["handled"] = {"esito": "gestito", "at": at, "by": frm or x, "via": "ritorno",
+                            "ritorno": record.get("id")}
+            self._set_state(c, r["id"], "done", m)
+            fatti.append(r["id"])
+        return fatti
+
+    def _consuma_delega(self, c, task_id: str, by: str) -> list[str]:
+        """R2: attesa chiusa dal delegante. Le copie pending della delega (a chi la esegue, casella
+        condivisa compresa) non hanno più niente da chiedere."""
+        at = iso_now()
+        fatti = []
+        for r in c.execute("SELECT id, raw FROM messages WHERE task_id=? AND state='pending' AND kind='delega'",
+                           (task_id,)).fetchall():
+            m = json.loads(r["raw"])
+            m["handled"] = {"esito": "attesa_chiusa", "at": at, "by": by, "via": "attesa_chiusa"}
+            self._set_state(c, r["id"], "done", m)
+            fatti.append(r["id"])
+        return fatti
 
     def expect(self, agent, slug, description, delegated_to=None, deadline=None, task_id=None,
                target=None, delegation=None):
@@ -511,6 +569,7 @@ class DbBus:
                     w.update(state="closed", closed_at=ts, closed_by=f"gemella:{t['task_id']}",
                              note=f"attesa doppia di {t['task_id']}: l'esecutore ha lavorato su quella")
                     self._save_wait(c, w)
+                    self._consuma_delega(c, w["task_id"], f"gemella:{t['task_id']}")
                     chiuse.append(w["task_id"])
                     break
             return chiuse
@@ -596,6 +655,7 @@ class DbBus:
             e.pop("pending_wake", None)
             if esito == "chiuso":
                 rec.update(state="closed", closed_at=now, closed_by=mid)
+                self._consuma_delega(c, tid, f"{agent}/{slug}")
             elif esito in ("riarma", "risposto"):
                 if rec.get("state") not in OPEN_WAIT_STATES:
                     rec["reopened_from"] = rec.get("state")
@@ -640,8 +700,90 @@ class DbBus:
                 if note:
                     rec["note"] = note
             self._save_wait(c, rec)
+            self._consuma_delega(c, task_id, f"{agent}/{slug}")
             self.clear_waiting_agent(agent, slug, task_id=task_id)
             return {"task_id": task_id, "state": rec["state"], "was": prev, "filed": filed}
+        return self._tx(scrivi)
+
+    # ---------- sessione chiusa: i suoi messaggi (WT30-F4.1 R3) ----------
+
+    def _da_riassegnare(self, c, agent: str, slug: str, m: dict) -> bool:
+        """Una delega non ancora presa dalla sessione, o un ritorno per un'attesa aperta di lei:
+        li prende un'altra sessione dell'agente (§6, la proprietà passa)."""
+        tid = m.get("task_id") if isinstance(m.get("task_id"), str) else None
+        if not tid:
+            return False
+        typ = m.get("type")
+        if m.get("kind") == "delega" and typ in DECLARED_TYPES:
+            return c.execute("SELECT 1 FROM messages WHERE task_id=? AND from_agent=? AND from_slug=? LIMIT 1",
+                             (tid, agent, slug)).fetchone() is None
+        if typ in RITORNI:
+            w = c.execute("SELECT owner_agent, owner_slug, state FROM waits WHERE task_id=?", (tid,)).fetchone()
+            return (w is not None and w["owner_agent"] == agent and w["owner_slug"] == slug
+                    and w["state"] in OPEN_WAIT_STATES)
+        return False
+
+    def fine_sessione(self, agent: str, slug: str) -> list[str]:
+        """La sessione agent/slug è finita (SessionEnd, o chiusa dal centralino con ``agent.close``).
+        Deleghe non prese e ritorni per le sue attese aperte passano subito alla casella condivisa;
+        il resto aspetta la grazia di ``rimbalza_non_letti``. Torna gli id riassegnati."""
+        host = self.host_self() or ""
+        ora = iso_now()
+
+        def scrivi(c):
+            c.execute("UPDATE sessions SET ended_at=COALESCE(ended_at, ?), last_event='end' "
+                      "WHERE agent=? AND slug=? AND host=?", (ora, agent, slug, host))
+            fatti = []
+            for r in c.execute("SELECT id, raw FROM messages WHERE to_agent=? AND to_slug=? AND to_host=? "
+                               "AND state='pending' ORDER BY id", (agent, slug, host)).fetchall():
+                if self._da_riassegnare(c, agent, slug, json.loads(r["raw"])):
+                    c.execute("UPDATE messages SET to_slug=NULL WHERE id=?", (r["id"],))
+                    fatti.append(r["id"])
+            return fatti
+        fatti = self._tx(scrivi)
+        if fatti:
+            self.c.log("info", "riassegnato", sessione=f"{agent}/{slug}", messaggi=fatti)
+        return fatti
+
+    def rimbalza_non_letti(self, grazia_s: float, giorni: int = 3) -> list[dict]:
+        """Sessioni finite da più di ``grazia_s`` (e da meno di ``giorni``) e non tornate vive: i loro
+        messaggi pending passano a ``done`` con esito ``non_letto``. Le deleghe e i ritorni arrivati
+        dopo la fine vanno ancora alla casella condivisa. Torna un gruppo per (sessione, mittente) da
+        avvisare: mai i messaggi del centralino, mai la sessione stessa, mai un rimbalzo di un rimbalzo."""
+        from datetime import timedelta
+
+        from .tempo import iso
+        host = self.host_self() or ""
+        fino = iso(now() - timedelta(seconds=grazia_s))
+        da = iso(now() - timedelta(days=giorni))
+
+        def scrivi(c):
+            gruppi: dict[tuple, dict] = {}
+            for s in c.execute("SELECT agent, slug FROM sessions WHERE host=? AND ended_at IS NOT NULL "
+                               "AND ended_at <= ? AND ended_at >= ?", (host, fino, da)).fetchall():
+                agent, slug = s["agent"], s["slug"]
+                for r in c.execute("SELECT id, origin, raw FROM messages WHERE to_agent=? AND to_slug=? "
+                                   "AND to_host=? AND state='pending' ORDER BY id", (agent, slug, host)).fetchall():
+                    m = json.loads(r["raw"])
+                    if self._da_riassegnare(c, agent, slug, m):
+                        c.execute("UPDATE messages SET to_slug=NULL WHERE id=?", (r["id"],))
+                        self.c.log("info", "riassegnato", sessione=f"{agent}/{slug}", messaggi=[r["id"]])
+                        continue
+                    m["handled"] = {"esito": "non_letto", "at": iso_now(), "by": "centralino",
+                                    "via": f"sessione_chiusa:{agent}/{slug}"}
+                    self._set_state(c, r["id"], "done", m)
+                    frm = m.get("from_session") or m.get("from") or ""
+                    if m.get("intent") in INTENTI_CENTRALINO or frm.endswith("/sveglia"):
+                        continue  # scritti dal centralino (scadenze, avvisi, rimbalzi): nessuno da avvisare
+                    if not frm or frm == f"{agent}/{slug}":
+                        continue
+                    g = gruppi.setdefault((agent, slug, frm), {
+                        "agent": agent, "slug": slug, "to": self.reply_address(m), "mittente": frm,
+                        "messages": [], "intents": []})
+                    g["messages"].append(r["id"])
+                    if m.get("intent"):
+                        g["intents"].append(m["intent"])
+            return list(gruppi.values())
         return self._tx(scrivi)
 
     # ---------- registro (sessions) ----------

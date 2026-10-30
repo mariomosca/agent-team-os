@@ -8,7 +8,7 @@ Manda un messaggio nuovo a `$1` con intento `$2`.
 2. **Tipo**. `request` (chiedi qualcosa), `brief` (passi un incarico), `handoff` (passi il lavoro), `event` (notizia). Per le risposte non usare questo comando: usa `/reply`.
 3. **`kind` (obbligatorio per request, brief e handoff)**:
    - `delega`: rivuoi l'esito. Il bus registra l'attesa da solo e restituisce il `task_id`.
-   - `comunicazione`: non deve tornare niente.
+   - `comunicazione`: non deve tornare niente. Solo con `brief` o `handoff`: una `request` è sempre una `delega` e il bus rifiuta una `request` comunicazione.
    Se le parole di Mario non chiariscono quale dei due, chiedi. Niente default.
 4. **Contenuto**: `summary` (una riga), `details` (cosa fare, dove, criteri di accettazione), `context_refs` per il materiale pesante invece di incollarlo, `response_by` se c'è una scadenza, `priority` (`urgent` solo se blocca, `high` entro 24 ore, `normal` di default, `low` senza fretta). Niente segreti nei messaggi.
 5. **Anteprima, poi conferma**: mostra in poche righe a chi, tipo, `kind`, priorità, oggetto, scadenza, e invia solo dopo il sì di Mario.

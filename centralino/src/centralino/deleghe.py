@@ -580,6 +580,9 @@ class Deleghe:
         if res.get("errorCode"):
             return "al_lavoro", f"agent.close: {res.get('errorCode')}"
         self._aggiorna(r["id"], session_closed=1)
+        if r["sess_agent"] and r["sess_slug"]:
+            # WT30-F4.1 R3: dopo un kill del PTY il SessionEnd di Claude può non arrivare
+            self.c.bus.fine_sessione(r["sess_agent"], r["sess_slug"])
         return "chiusa", None
 
     def _retire(self, path: str, workspace_id: str | None, appena_chiusa: bool) -> dict:

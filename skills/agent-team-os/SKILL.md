@@ -47,7 +47,7 @@ Un agente può avere più sessioni vive, una per cartella di lavoro. Ognuna ha u
 Regola del `kind`: ogni `request`, `brief` e `handoff` dichiara cosa vuole, e senza `kind` il bus rifiuta l'invio.
 
 - `delega`: rivuoi l'esito. Il bus registra l'attesa sulla tua sessione e restituisce il `task_id`.
-- `comunicazione`: non deve tornare niente, nessuno viene svegliato.
+- `comunicazione`: non deve tornare niente, nessuno viene svegliato. Solo per `brief` e `handoff`: una `request` chiede lavoro ed è sempre una `delega`; il bus rifiuta una `request` con `kind='comunicazione'`.
 
 Niente default e niente deduzioni dall'intento: se le parole di Mario non chiariscono, chiedi. `response`, `question` ed `event` non hanno `kind`.
 

@@ -10,7 +10,11 @@ Un giro ogni 10 s (e subito dopo un invio):
    band e ``bus_inbox`` lo mostrano;
 4. AM26-F2.2: messaggi che chiedono un'azione fermi da più di 10 minuti senza una sessione
    con canale che li possa ricevere: un messaggio azionabile all'hub, uno per gruppo
-   (destinatario e mittente); se l'hub stesso non ha canale, una notifica di sistema.
+   (destinatario e mittente); se l'hub stesso non ha canale, una notifica di sistema;
+5. WT30-F4.1 R3 (prima della tabella): i messaggi di una sessione finita da più di ``NON_LETTO_S`` e non tornata viva
+   passano a non letto, e il mittente ha un evento ``non-letto`` per sessione;
+6. WT30-F4.1 R4: request, brief e handoff fermi da più di un giorno, qualunque sia il kind:
+   un messaggio urgente all'hub per gruppo e un evento al mittente, una volta per messaggio.
 
 Le sessioni vive senza canale non ricevono i messaggi della casella condivisa: restano vive
 per il battito, ma una consegna lì resterebbe muta (kai/lighthouse, 26/10, quattro richieste
@@ -20,6 +24,7 @@ di Mario ferme quattro ore).
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections import defaultdict
 from datetime import timedelta
@@ -27,7 +32,7 @@ from datetime import timedelta
 from . import canale, regole
 from .canale import Rinvio
 from .db import Store
-from .dbbus import msg_id, with_pending_wake
+from .dbbus import INTENT_NON_LETTO, msg_id, with_pending_wake
 from .tempo import age_s, iso, iso_now, now, parse_iso
 
 WAIT_IDLE_H = 72
@@ -38,6 +43,18 @@ TESTO_AVVISO_S = 1800   # rinvio per testo nella casella da tanto: avviso a chi 
 INTENT_TESTO = "sveglia-rinviata-testo"
 RIPROVA_LOG_S = 600     # un rinvio del canale che si ripete identico torna nel log ogni tanto
 GESTISCI = "gestisci con bus_close (chiuso, riarma o letto) o rispondi con bus_reply"
+NON_LETTO_S = 600       # grazia dopo la fine di una sessione: claude --resume, riapertura nella stessa cartella
+FERMO_GIORNO_S = 86400  # una richiesta ferma da tanto si segnala, qualunque sia il kind
+INTENT_GIORNO = "richieste-ferme-da-un-giorno"
+TIPI_RICHIESTA = ("request", "brief", "handoff")
+
+
+def non_letto_s() -> float:
+    """La grazia, ``AB_NON_LETTO_S`` nei test."""
+    try:
+        return float(os.environ.get("AB_NON_LETTO_S") or NON_LETTO_S)
+    except ValueError:
+        return NON_LETTO_S
 
 TIPO = {"esito": "return", "domanda": "question", "da_agganciare": "return", "risposta": "answer",
         "delega": "delegation", "urgente": "urgent"}
@@ -454,6 +471,103 @@ class Sveglia:
                 "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, iso_now())))
         return inviati
 
+    def _all_hub(self, agent: str, testo: str, intent: str, extra: dict, titolo: str) -> str | None:
+        """Un messaggio urgente alla sessione dell'hub con canale (casa se possibile), o una notifica
+        di sistema se l'hub non ne ha (o il gruppo è suo). Torna l'id o ``notifica``."""
+        hub = (self.c.amap.data().get("cc_awareness") or {}).get("hub")
+        hub = hub if hub and self.c.amap.agent_exists(hub) else None
+        casa = self.c.amap.home_slug(hub) if hub else None
+        canali_hub = self.c.vivo.slug_con_canale(hub) if hub and hub != agent else []
+        if canali_hub:
+            hub_slug = casa if casa in canali_hub else canali_hub[0]
+            ev = self._evento(hub, f"{hub}/sveglia", intent, "urgent", testo, extra)
+            self.c.bus.accogli(ev, hub, hub_slug, origin="centralino")
+            return ev["id"]
+        try:
+            self.notifica(titolo, testo)
+        except Exception as exc:  # noqa: BLE001 — una notifica mancata non ferma il giro
+            self.c.log("warn", "notifica_fallita", errore=str(exc))
+        return "notifica"
+
+    def avvisi_non_letti(self) -> list[str]:
+        """R3: la sessione è finita e nessuno l'ha riaperta nella grazia. I suoi messaggi passano a
+        non letto (``DbBus.rimbalza_non_letti``) e il mittente riceve un evento per sessione:
+        priorità low, regola 6, non sveglia e non blocca lo Stop."""
+        inviati = []
+        for g in self.c.bus.rimbalza_non_letti(non_letto_s()):
+            n = len(g["messages"])
+            dove = f"{g['agent']}/{g['slug']}"
+            intents = ", ".join(sorted(set(g["intents"])))
+            testo = (f"{n} {'messaggio' if n == 1 else 'messaggi'} per {dove} non {'letto' if n == 1 else 'letti'}: "
+                     "la sessione si è chiusa prima di leggerli e non è stata riaperta"
+                     + (f". Intent: {intents}" if intents else "")
+                     + f" ({', '.join(g['messages'])}). Se serve ancora, rimandalo a {g['agent']} o a una sessione viva.")
+            try:
+                out = self.c.bus.send(g["agent"], g["to"], "event", INTENT_NON_LETTO,
+                                      {"summary": testo, "messages": g["messages"], "sessione": dove},
+                                      priority="low", sender_session=g["slug"])
+                inviati.append(out["id"])
+            except Exception as exc:  # noqa: BLE001 — un avviso mancato non ferma il giro
+                self.c.log("warn", "non_letto_fallito", sessione=dove, a=g["to"], errore=str(exc))
+            self.c.log("info", "non_letti", sessione=dove, mittente=g["mittente"], n=n)
+        return inviati
+
+    def avvisi_fermi_un_giorno(self) -> list[str]:
+        """R4: request, brief e handoff pending da più di FERMO_GIORNO_S, qualunque sia il kind (le
+        comunicazioni non svegliano e non entrano nell'avviso senza canale: il 28/10 due request a
+        kai sono rimaste ferme 46 ore). Per gruppo (destinatario, mittente): un messaggio urgente
+        all'hub e un evento al mittente. Una volta per messaggio (``meta`` ``fermo1g:<id>``)."""
+        host = self.c.amap.host_self() or ""
+        r = self.c.store.read()
+        gruppi: dict[tuple[str, str | None, str], list[dict]] = defaultdict(list)
+        segnati = {x["key"][8:] for x in r.execute("SELECT key FROM meta WHERE key LIKE 'fermo1g:%'")}
+        for x in r.execute(
+                "SELECT id, ts, to_agent, to_slug, raw FROM messages WHERE state='pending' AND to_host=? "
+                f"AND type IN ({','.join('?' * len(TIPI_RICHIESTA))}) AND ts >= ? AND ts <= ? ORDER BY id",
+                (host, *TIPI_RICHIESTA, iso(now() - timedelta(days=VECCHIO_GG)),
+                 iso(now() - timedelta(seconds=FERMO_GIORNO_S)))):
+            if x["id"] in segnati:
+                continue
+            rec = json.loads(x["raw"])
+            mittente = rec.get("from_session") or rec.get("from") or "?"
+            gruppi[(x["to_agent"], x["to_slug"], mittente)].append(
+                {"id": x["id"], "ts": x["ts"], "intent": rec.get("intent") or "", "kind": rec.get("kind") or "",
+                 "rec": rec})
+        inviati = []
+        for (agent, slug, mittente), msgs in gruppi.items():
+            n = len(msgs)
+            ore = int((age_s(msgs[0]["ts"]) or 0) // 3600)
+            dove = f"{agent}/{slug}" if slug else f"{agent} (casella condivisa)"
+            intents = ", ".join(sorted({m["intent"] for m in msgs if m["intent"]}))
+            ids = ", ".join(m["id"] for m in msgs)
+            testo = (f"{n} {'richiesta' if n == 1 else 'richieste'} per {dove} da {mittente} "
+                     f"{'ferma' if n == 1 else 'ferme'} da {ore} ore, nessuno le ha lette"
+                     + (f". Intent: {intents}" if intents else "") + f". Apri una sessione o reinstrada ({ids}).")
+            got = self._all_hub(agent, testo, INTENT_GIORNO,
+                                {"agent": agent, "slug": slug, "mittente": mittente,
+                                 "messages": [m["id"] for m in msgs]}, "Bus: richieste ferme da un giorno")
+            if got:
+                inviati.append(got if got != "notifica" else f"notifica:fermo1g:{msgs[0]['id']}")
+            # copia al mittente: chi ha chiesto sa che nessuno ha letto
+            f_agent, _, f_slug = mittente.partition("/")
+            if f_agent and f_slug and f_slug != "sveglia" and (f_agent, f_slug) != (agent, slug):
+                try:
+                    out = self.c.bus.send(agent, self.c.bus.reply_address(msgs[0]["rec"]), "event", INTENT_GIORNO,
+                                          {"summary": testo, "messages": [m["id"] for m in msgs]},
+                                          sender_session=slug or "sveglia")
+                    inviati.append(out["id"])
+                except Exception as exc:  # noqa: BLE001
+                    self.c.log("warn", "fermo1g_fallito", mittente=mittente, errore=str(exc))
+            self.c.log("info", "richieste_ferme_un_giorno", destinatario=dove, mittente=mittente, n=n)
+
+            def scrivi(msgs=msgs):
+                at = iso_now()
+                for m in msgs:
+                    self.c._conn().execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                                           (f"fermo1g:{m['id']}", at))
+            self.c._write(scrivi)
+        return inviati
+
     # ---------- giro ----------
 
     def giro(self) -> dict:
@@ -461,10 +575,13 @@ class Sveglia:
         for tid in gemelle:
             self.c.log("info", "attesa_gemella_chiusa", task_id=tid)
         scadute = self.scadenze()
+        # prima della tabella: un messaggio riassegnato alla casella condivisa sveglia in questo giro
+        avvisi = self.avvisi_non_letti()
         decs = self.giro_sveglia()
         self._pending_wake(self.ultimo_giro)
-        avvisi = self.avvisi_senza_canale()
+        avvisi += self.avvisi_senza_canale()
         avvisi += self.avvisi_testo()
+        avvisi += self.avvisi_fermi_un_giorno()
         try:
             avvisi += self.ciclo.giro()
         except Exception as exc:  # noqa: BLE001 — la proposta di chiusura non ferma la sveglia
