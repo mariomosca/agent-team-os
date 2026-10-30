@@ -58,12 +58,14 @@ JSON per riga (`\n`), una richiesta e una risposta per connessione. Massimo 1 MB
 ```json
 {"v": 1, "id": "r-<rand>", "op": "send",
  "caller": {"cwd": "/Users/.../orbit", "agent": null, "slug": null,
-            "pid": 6096, "claude_session_id": "…", "onda_terminal_id": "pane-…", "tmux_pane": null},
+            "pid": 6096, "claude_session_id": "…", "onda_terminal_id": "pane-…", "tmux_pane": null,
+            "onda_socket": "/Users/.../onda.sock"},
  "args": { … }}
 ```
 
 `caller.agent`/`caller.slug` portano `AB_AGENT`/`AB_SESSION_SLUG` se impostati, altrimenti `null`:
-li risolve il centralino (§2). Le operazioni di servizio (`ombra.*`, `admin.*`) non hanno `caller`.
+li risolve il centralino (§2). `caller.onda_socket` (WT30-F5.4) è l'`ONDA_SOCKET` dell'hook: il socket dell'Onda
+che ospita la sessione (§24). Le operazioni di servizio (`ombra.*`, `admin.*`) non hanno `caller`.
 
 Risposta: `{"v":1, "id":"r-…", "ok":true, "result":{…}, "warnings":[…]}` oppure
 `{"v":1, "id":"r-…", "ok":false, "error":{"code":"…", "message":"…"}}`.
@@ -188,6 +190,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_heartbeat    TEXT,
   last_event        TEXT,
   ended_at          TEXT,
+  -- aggiunte da MIGRAZIONI: waiting_agent, drain_blocks, delegata, last_event_at,
+  -- onda_socket (v7, WT30-F5.4: ONDA_SOCKET della sessione)
   PRIMARY KEY (agent, slug, host)
 );
 
@@ -802,7 +806,8 @@ si rifà):
    casella vuota, assestata da 5 s) e non ha altre deleghe aperte non finite. Una sessione che non è nata
    per la delega non si chiude mai. Al lavoro, o vista di Onda non valida → `pending`;
 2. worktree: `worktree.retire {path, workspaceId?, archiveTagPrefix: "archivio/", deleteBranch: true}`
-   (prefisso da `AB_ARCHIVE_TAG_PREFIX`). Ritirato → `closed`; `fetch_failed`, `tag_push_failed`,
+   (prefisso da `AB_ARCHIVE_TAG_PREFIX`). Ritirato → `closed`: via il worktree e i suoi pannelli, il
+   workspace del repo resta (contratto Onda WT30); `fetch_failed`, `tag_push_failed`,
    `git_error`, Onda giù → `pending`; ogni altro motivo (dirty, not_integrated, not_pushed, in_use,
    no_remote...) → `kept`. `in_use` subito dopo aver chiuso la sessione: un secondo tentativo dopo 2 s;
 3. altre deleghe aperte sulla stessa sessione: questa si chiude (`altre_deleghe`), sessione e worktree
@@ -826,7 +831,72 @@ qualcosa di vivo. Con una delega aperta nel registro: chiudi_delega solo se l'at
 chiuso, o nessun padrone ma `integratedInto`: retire (che rifiuta comunque ciò che non è integrato).
 Nessun padrone e non integrato: solo segnalato nel risultato e nel log. In dubbio si tiene.
 
+**Socket di Onda per sessione** (WT30-F5.4, schema v7). Ogni hook di sessione passa `ONDA_SOCKET` come
+`caller.onda_socket`; il centralino lo tiene in `sessions.onda_socket` (a ogni `start` quello della sessione nuova,
+anche nessuno; un battito senza socket, come il MCP, non lo cancella). `agent.prompt` della sveglia (`canale.via_onda`),
+`agent.close` e `worktree.retire` di chiudi_delega vanno al socket della sessione quando c'è, altrimenti
+all'`ONDA_SOCKET` del daemon o a `~/.config/onda/onda.sock`. Serve a chi ha due Onda (l'app e `npm run dev`, prova
+WT30-F0 e F6.1). La migrazione a v7 copia prima il database accanto (`centralino.db.bak-v6-<ora>`).
+
 **Sicurezza dei test**: Onda e Orbit veri si chiamano solo dal centralino di `~/.agent-team-os` (o con
 `AB_DELEGHE_ESTERNI=1`). Su un AB_HOME di prova le chiamate esterne sono sempre "giù": test e banco non
 toccano mai repo, Onda o Orbit veri. Fuori perimetro (F6): il mini, dove non ci sono Onda né Orbit.
 
+
+## 25. Ciclo di vita dei messaggi: niente messaggi appesi (WT30-F4.1, 30/10/2026)
+
+Disegno in `docs/proposals/WT30-F4-messaggi.md`. Codice in `dbbus.py`, `regole.py`, `hookops.py`, `deleghe.py`,
+`sveglia.py`; test in `tests/test_messaggi.py` e negli scenari `caso_wt30_*` del banco. Niente schema nuovo:
+`messages.handled` (nel `raw`, con `esito`), `sessions.ended_at` e `meta` bastano.
+
+**Il caso.** Il 28/10 Leo ha mandato a `kai` nudo due `request` con `kind=comunicazione`: non svegliano, non
+bloccano lo Stop e la casella condivisa non entrava nell'avviso senza canale (Kai aveva sessioni con canale).
+Ferme 46 ore. Il 30/10 alle 04:42 la sveglia ha dato un allarme urgente falso: la delega t-20261028-48yr0s di Leo
+a `nico` nudo era stata eseguita da una sessione di Nico (domanda ed esito con `bus_send`), ma la copia nella
+casella condivisa era ancora `pending`.
+
+**R1. Una richiesta di lavoro è sempre una delega.** `check_kind`: `request` con `kind='comunicazione'` →
+`kind_required` ("a request asks for work: send it with kind='delega' …; for information only send a brief with
+kind='comunicazione'"). `brief` e `handoff` restano con entrambi i kind.
+
+**R2. La copia di una delega si consuma quando il lavoro è preso.** Su ogni ritorno con `task_id` (in `accogli`
+e nella consegna verso un altro host, dove sta la copia di chi esegue):
+
+- `response` dell'agente X: ogni copia `pending` `kind=delega` del task indirizzata a X (qualunque stanza,
+  condivisa compresa) passa a `done`, `handled = {esito: gestito, via: ritorno, by: <sessione>, ritorno: <id>}`;
+- `question` di X: solo la copia della casella condivisa; quella della sessione che chiede resta finché non
+  manda l'esito;
+- il delegante che risponde o chiede sul task non consuma niente (deleghe kai → kai): si salta la copia il cui
+  `from_session` è chi scrive;
+- attesa chiusa dal delegante (`bus_close` chiuso, chiusura per `task_id`, attesa gemella): le copie `pending`
+  della delega passano a `done` con esito `attesa_chiusa`.
+
+**R3. I messaggi di una sessione chiusa.** `DbBus.fine_sessione(agente, slug)`, chiamata dal SessionEnd
+(`hook.end`) e da chiudi_delega dopo un `agent.close` riuscito (dopo un kill del PTY il SessionEnd può non
+arrivare); segna anche `ended_at` se manca.
+
+1. Deleghe non ancora prese (nessun messaggio della sessione sul task) e ritorni per un'attesa aperta della
+   sessione passano subito alla **casella condivisa** (`to_slug` NULL, log `riassegnato`). `regole.destinatari`:
+   un ritorno della condivisa va al proprietario dell'attesa se ha un canale, altrimenti alle sessioni dell'agente
+   con canale (§6: la proprietà passa quando chi ha delegato non è più viva).
+2. Il resto (comunicazioni, eventi, cc-notify, risposte senza attesa o su attesa chiusa) aspetta una grazia di
+   `NON_LETTO_S` (600 s, `AB_NON_LETTO_S` nei test): copre `claude --resume` e la riapertura nella stessa cartella,
+   che azzera `ended_at`. Finita la grazia (`Sveglia.avvisi_non_letti`, nel giro **prima** della tabella, così un
+   messaggio riassegnato sveglia nello stesso giro), i messaggi passano a `done` con esito `non_letto` e il
+   mittente riceve **un** `event` `non-letto` (priorità `low`, regola 6: non sveglia, non blocca) per sessione
+   chiusa, con gli id e gli intent. Una delega o un ritorno arrivati dopo la fine vanno ancora alla condivisa.
+   Mai per gli avvisi scritti dal centralino (`INTENTI_CENTRALINO`, mittente `*/sveglia`), mai verso la sessione
+   stessa, mai un rimbalzo di un rimbalzo. Solo sessioni finite negli ultimi 3 giorni: lo storico più vecchio non
+   si rimbalza (ci pensa la pulizia, §15).
+
+**R4. Richieste ferme da più di un giorno, qualunque sia il kind.** `Sveglia.avvisi_fermi_un_giorno`: `request`,
+`brief` e `handoff` `pending` di questa macchina più vecchi di `FERMO_GIORNO_S` (86400 s, e meno di 30 giorni),
+per gruppo (destinatario agente/stanza o casella condivisa, mittente): **un** messaggio
+`richieste-ferme-da-un-giorno`, priorità `urgent`, alla sessione dell'hub con canale (casa se possibile), o una
+notifica di sistema se l'hub non ne ha o il gruppo è suo; e una copia `event` al mittente, così chi ha chiesto sa
+che nessuno ha letto. Una volta per messaggio (`meta` `fermo1g:<id>`). Al primo giro dopo l'installazione segnala
+anche le richieste già ferme da più di un giorno (fino a 30 giorni).
+
+Regressioni: `caso_wt30_request_comunicazione_rifiutata`, `caso_wt30_copia_condivisa_consumata`,
+`caso_wt30_sessione_chiusa_riassegna_e_rimbalza`, `caso_wt30_richiesta_ferma_un_giorno`; `att_pulizia` e
+`test_avviso_senza_canale_anche_a_sessione_chiusa` aggiornati (la delega non presa è già nella condivisa).

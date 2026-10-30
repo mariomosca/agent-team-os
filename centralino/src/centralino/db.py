@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 6  # v6 (DC29-F4): tabella deleghe
+SCHEMA_VERSION = 7  # v6 (DC29-F4): tabella deleghe; v7 (WT30-F5.4): sessions.onda_socket
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -191,6 +191,7 @@ MIGRAZIONI = [
     ("messages", "letto_da", "TEXT"),               # v4: la sessione che l'ha letta
     ("sessions", "delegata", "INTEGER"),            # t-20261029-lbgswf (B): SESSIONE_DELEGATA=1
     ("sessions", "last_event_at", "TEXT"),          # quando è arrivato l'ultimo evento di sessione
+    ("sessions", "onda_socket", "TEXT"),            # v7 (WT30-F5.4): ONDA_SOCKET della sessione, per chi ha due Onda
 ]
 
 
@@ -411,9 +412,13 @@ class Store:
         caller = caller or {}
         c.execute(
             """INSERT INTO sessions (agent, slug, host, workspace_path, claude_session_id, onda_terminal_id,
-                 tmux_pane, pid, started_at, last_heartbeat, last_event, ended_at, delegata, last_event_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,?,?)
+                 tmux_pane, pid, started_at, last_heartbeat, last_event, ended_at, delegata, last_event_at,
+                 onda_socket)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,?)
                ON CONFLICT(agent, slug, host) DO UPDATE SET
+                 -- WT30-F5.4: a ogni start il socket della sessione nuova (anche nessuno, fuori da Onda)
+                 onda_socket=CASE WHEN excluded.last_event='start' THEN excluded.onda_socket
+                                  ELSE COALESCE(excluded.onda_socket, onda_socket) END,
                  delegata=CASE WHEN excluded.last_event='start' THEN excluded.delegata
                                ELSE COALESCE(excluded.delegata, delegata) END,
                  last_event_at=COALESCE(excluded.last_event_at, last_event_at),
@@ -432,7 +437,7 @@ class Store:
                                THEN COALESCE(ended_at, last_heartbeat) ELSE NULL END""",
             (agent, slug, host, workspace, caller.get("claude_session_id"), caller.get("onda_terminal_id"),
              caller.get("tmux_pane"), caller.get("pid"), now, now, event,
-             1 if caller.get("delegata") else None, now if event else None))
+             1 if caller.get("delegata") else None, now if event else None, caller.get("onda_socket")))
 
     @staticmethod
     def end_session(c: sqlite3.Connection, agent: str, slug: str, host: str, now: str) -> None:

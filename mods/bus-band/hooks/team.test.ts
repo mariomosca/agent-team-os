@@ -109,5 +109,17 @@ describe('team', () => {
   test('request file', () => {
     expect(requestName(1791969798000, 'ab12cd')).toBe('req-1791969798000-ab12cd.json')
     expect(JSON.parse(requestBody('workspace-9'))).toEqual({ action: 'mount', workspaceId: 'workspace-9' })
+    expect(JSON.parse(requestBody('workspace-9', null))).toEqual({ action: 'mount', workspaceId: 'workspace-9' })
+    expect(JSON.parse(requestBody('workspace-9', 'pane-3'))).toEqual({
+      action: 'mount',
+      workspaceId: 'workspace-9',
+      terminalId: 'pane-3',
+    })
+  })
+
+  test('rows carry the terminal to focus (WT30)', () => {
+    const s = parseSessions(file([session({ sessionId: 'a', state: 'pending_input', terminalId: 'pane-7' })]))!
+    expect(s.sessions[0]!.terminalId).toBe('pane-7')
+    expect(exceptionRows(s.sessions, [], NOW, true)[0]!.terminalId).toBe('pane-7')
   })
 })

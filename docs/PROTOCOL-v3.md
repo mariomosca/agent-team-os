@@ -52,7 +52,8 @@ Campi: id, mittente (agente, slug, host), destinatario, tipo, `kind`, intento, p
 `kind` è obbligatorio per `request`, `brief` e `handoff`, e senza il bus rifiuta l'invio:
 
 - `delega`: il mittente rivuole l'esito. Crea un'attesa sulla sua sessione, nella stessa transazione del messaggio.
-- `comunicazione`: non deve tornare niente.
+- `comunicazione`: non deve tornare niente. Solo per `brief` e `handoff`: una `request` chiede lavoro ed è sempre
+  una `delega`, e con `comunicazione` il bus la rifiuta (`kind_required`, WT30-F4.1). Per informare basta un `brief`.
 
 `response`, `question` ed `event` non hanno `kind`. I record vecchi senza `kind` ma con `requires_response` si
 trattano come deleghe.
@@ -77,6 +78,14 @@ ha già la riga col `task_id`). Se il `[delega]` sveglia una sessione a cui si �
 andata alla stessa sessione negli ultimi 10 minuti e nessun altro prompt l'ha già agganciata (t-20261029-lbgswf).
 Un'attesa doppia rimasta senza ritorni si chiude da sola quando la gemella riceve un esito; un'attesa aperta senza
 ritorni né movimento da più di 4 ore è "da verificare" e si conta a parte (CENTRALINO.md §18).
+
+Niente messaggi appesi (WT30-F4.1, CENTRALINO.md §25). Quando chi esegue manda un esito sul task (anche con
+`bus_send`, da una sessione qualunque dell'agente), le copie della delega a quell'agente non chiedono più niente e
+si consumano da sole; una domanda consuma solo la copia nella casella condivisa; chiudere l'attesa consuma le copie
+rimaste. Quando una sessione finisce, le deleghe che non ha preso e i ritorni per le sue attese passano alla casella
+condivisa dell'agente; il resto, dopo 10 minuti senza riapertura, è "non letto" e il mittente riceve un evento che
+non sveglia. Una `request`, un `brief` o un `handoff` fermo da più di un giorno, qualunque sia il `kind`, viene
+segnalato all'hub con un messaggio urgente e al mittente con un evento, una volta.
 
 ## 6. Tabella di sveglia
 

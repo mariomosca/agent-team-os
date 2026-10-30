@@ -8,6 +8,7 @@ ripiego, solo per le sessioni che hanno dichiarato un ``tmux_pane``. Ogni rifiut
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import random
@@ -128,15 +129,32 @@ def screen_refusal(screen: str) -> str | None:
     return None
 
 
-def onda_socket_path() -> str:
-    return os.environ.get("ONDA_SOCKET") or str(Path.home() / ".config" / "onda" / "onda.sock")
+def onda_socket_path(sock: str | None = None) -> str:
+    """Il socket della sessione (WT30-F5.4: ``sessions.onda_socket``, dall'ONDA_SOCKET del suo hook)
+    quando c'è, altrimenti quello dell'ambiente del daemon o il default. Serve a chi ha due Onda
+    (l'app e ``npm run dev``)."""
+    return sock or os.environ.get("ONDA_SOCKET") or str(Path.home() / ".config" / "onda" / "onda.sock")
 
 
-def onda_call(method: str, params: dict, timeout: float = SOCKET_TIMEOUT_S) -> dict:
+def con_socket(call, sock: str | None):
+    """``call`` verso il socket ``sock``, se ``call`` lo sa ricevere (``onda_call`` sì; i finti Onda
+    dei test con la firma vecchia no, e restano come sono)."""
+    if not sock:
+        return call
+    try:
+        ps = inspect.signature(call).parameters
+    except (TypeError, ValueError):
+        return call
+    if "sock" not in ps and not any(p.kind is inspect.Parameter.VAR_KEYWORD for p in ps.values()):
+        return call
+    return lambda method, params, **kw: call(method, params, sock=sock, **kw)
+
+
+def onda_call(method: str, params: dict, timeout: float = SOCKET_TIMEOUT_S, sock: str | None = None) -> dict:
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(timeout)
     try:
-        s.connect(onda_socket_path())
+        s.connect(onda_socket_path(sock))
         rid = random.randint(1, 1 << 30)
         s.sendall((json.dumps({"jsonrpc": "2.0", "method": method, "params": params, "id": rid}) + "\n").encode())
         buf = b""

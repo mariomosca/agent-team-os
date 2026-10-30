@@ -88,6 +88,8 @@ def main(argv: list[str]) -> int:
         "pid": os.getppid(),
         "claude_session_id": data.get("session_id") or os.environ.get("CLAUDE_CODE_SESSION_ID"),
         "onda_terminal_id": os.environ.get("ONDA_TERMINAL_ID"),
+        # WT30-F5.4: il socket dell'Onda che ospita la sessione (l'app o un `npm run dev`)
+        "onda_socket": os.environ.get("ONDA_SOCKET") or None,
         "tmux_pane": os.environ.get("TMUX_PANE"),
         # sessione aperta per una delega (Onda/agenti): il centralino la propone per la chiusura
         "delegata": os.environ.get("SESSIONE_DELEGATA") == "1" or None,

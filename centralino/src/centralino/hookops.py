@@ -180,6 +180,7 @@ class HookOps:
 
     def op_end(self, caller: dict, a: dict, warnings: list) -> dict:
         me = self._evento(caller, "end")
+        self.c.bus.fine_sessione(me.agent, me.slug)
         self.c._su_deleghe("su_fine_sessione", me.agent, me.slug)
         return {"address": f"{me.agent}/{me.slug}"}
 

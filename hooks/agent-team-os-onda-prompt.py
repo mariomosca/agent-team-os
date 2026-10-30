@@ -94,7 +94,8 @@ def handle(event: dict) -> None:
     caller = {"cwd": os.environ.get("CLAUDE_PROJECT_DIR") or event.get("cwd") or os.getcwd(),
               "agent": os.environ.get("AB_AGENT") or None, "slug": os.environ.get("AB_SESSION_SLUG") or None,
               "claude_session_id": event.get("session_id") or os.environ.get("CLAUDE_CODE_SESSION_ID"),
-              "onda_terminal_id": os.environ.get("ONDA_TERMINAL_ID"), "tmux_pane": os.environ.get("TMUX_PANE")}
+              "onda_terminal_id": os.environ.get("ONDA_TERMINAL_ID"), "tmux_pane": os.environ.get("TMUX_PANE"),
+              "onda_socket": os.environ.get("ONDA_SOCKET") or None}
     to = target_session(tool_input.get("terminalId"))
     desc = re.sub(r"\s+", " ", body).strip()[:120]
     tm = TASK_RE.search(body)

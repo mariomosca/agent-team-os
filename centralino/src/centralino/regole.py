@@ -74,14 +74,16 @@ def classifica(msg: dict, agent: str, slug: str, attese: dict[str, Attesa]) -> s
 def destinatari(msg: dict, to_agent: str, to_slug: str | None, attese: dict[str, Attesa],
                 vive: list[str]) -> list[str]:
     """Slug delle sessioni a cui il messaggio è rivolto. Casella condivisa (to_slug None):
-    il proprietario dell'attesa se il messaggio è un ritorno, altrimenti ogni sessione viva
-    (semantica di oggi nel passo 1)."""
+    il proprietario dell'attesa se il messaggio è un ritorno e lui ha un canale, altrimenti ogni
+    sessione viva con canale (WT30-F4.1 R3: un ritorno riassegnato dopo la chiusura della sessione
+    che aspettava lo prende un'altra sessione dello stesso agente, §6)."""
     if to_slug:
         return [to_slug]
     tid = msg.get("task_id") if isinstance(msg.get("task_id"), str) else None
     w = attese.get(tid) if tid else None
     if w is not None and w.aperta and w.owner_agent == to_agent and msg.get("type") in ("response", "question"):
-        return [w.owner_slug]
+        if w.owner_slug in vive or not vive:
+            return [w.owner_slug]
     return list(vive)
 
 

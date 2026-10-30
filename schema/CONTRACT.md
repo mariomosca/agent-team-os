@@ -206,6 +206,8 @@ $AB_HOME/onda/sessions.json        (default ~/.agent-team-os/onda/sessions.json)
 | `sessions[].mounted` | bool | Il workspace è nel mosaico di una finestra aperta. |
 | `sessions[].windowId` | string \| null | Finestra che lo ospita; `null` se `mounted` è falso. |
 | `sessions[].host` | string | Oggi sempre `laptop`. Esiste per il piano del Mac mini (`plans/PLAN-MAC-MINI-WORKER.md`). |
+| `sessions[].worktreePath` | string \| null | Facoltativo (WT30). Path assoluto del worktree git in cui gira la sessione, quando il suo workspace è un worktree creato o adottato da Onda. |
+| `sessions[].branch` | string \| null | Facoltativo (WT30). Branch del worktree; assente o `null` senza worktree o con HEAD staccata. |
 
 ### Stati
 
@@ -231,10 +233,10 @@ $AB_HOME/onda/requests/req-<ts>-<rand>.json
 Onda osserva la cartella (`fs.watch` + scansione all'avvio), consuma ogni `req-*.json` e **lo cancella** dopo averlo gestito (anche se la richiesta è invalida o il workspace non esiste: un file non consumato si accumulerebbe).
 
 ```json
-{ "action": "mount", "workspaceId": "workspace-…" }
+{ "action": "mount", "workspaceId": "workspace-…", "terminalId": "pane-…" }
 ```
 
-- Unica azione per ora: `mount`. Monta il workspace nella finestra attiva (o nella prima aperta) e mette a fuoco il pannello dell'agente.
+- Unica azione per ora: `mount`. Monta il workspace nella finestra attiva (o nella prima aperta) e mette a fuoco il pannello dell'agente. `terminalId` (facoltativo, WT30) dice quale pannello: con più agenti nello stesso workspace (worktree di un repo) Onda non deve indovinare.
 - `<ts>` è epoch in millisecondi, `<rand>` almeno 4 caratteri `[a-z0-9]`. Il mod scrive in modo atomico (tmp + rename) con il nome finale già `req-*.json`; i file temporanei **non** devono iniziare con `req-`.
 - Azioni ignote: Onda scarta e cancella.
 - Lo schema delle richieste è descritto in `onda-sessions.schema.json` (`$defs/request`).
