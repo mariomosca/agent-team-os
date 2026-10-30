@@ -285,4 +285,18 @@ ck "post con la fase" "$(jq -r '.hooks.PostToolUse[0].hooks[0].command' "$S" | g
 ck "onda_agent_prompt resta" "$(jq '[.hooks.PreToolUse[] | select(.matcher == "mcp__onda__onda_agent_prompt")] | length' "$S")" "1"
 ck "script copiato" "$([[ -x $IC/hooks/agent-team-os-onda-spawn.py ]] && echo si)" "si"
 
+echo "── install.sh: agent-detect.sh al posto della vecchia lib (DC29-F5.5)"
+ln -sf "$IC/scripts/agent-team-os-lib.sh" "$IC/scripts/agent-bus-lib.sh"   # link rimasto alla lib tolta
+ln -sf "$IC/scripts/agent-detect.sh" "$IC/scripts/link-vivo.sh"
+inst >/dev/null
+ck "agent-detect.sh copiato" "$([[ -f $IC/scripts/agent-detect.sh ]] && echo si)" "si"
+ck "link morto tolto" "$([[ -L $IC/scripts/agent-bus-lib.sh ]] && echo si || echo no)" "no"
+ck "un link vivo resta" "$([[ -L $IC/scripts/link-vivo.sh ]] && echo si)" "si"
+mkdir -p "$T/fh/.agent-team-os"
+jq -n '{rules:[{pattern:"/p", agent:"kai"}, {pattern:"/p/w", agent:"alita"}], fallback:"alita"}' > "$T/fh/.agent-team-os/AGENT_MAP.json"
+det(){ HOME="$T/fh" bash -c 'source "$1"; ab_detect_agent "$2"' _ "$IC/scripts/agent-detect.sh" "$1"; }
+ck "prefisso più lungo" "$(det /p/w/x)" "alita"
+ck "prefisso corto" "$(det /p/q)" "kai"
+ck "fuori mappa: fallback" "$(det /altrove)" "alita"
+
 echo; echo "PASS=$P FAIL=$F"; rm -rf "$T"; [[ $F -eq 0 ]]
