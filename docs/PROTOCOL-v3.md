@@ -79,6 +79,14 @@ andata alla stessa sessione negli ultimi 10 minuti e nessun altro prompt l'ha gi
 Un'attesa doppia rimasta senza ritorni si chiude da sola quando la gemella riceve un esito; un'attesa aperta senza
 ritorni né movimento da più di 4 ore è "da verificare" e si conta a parte (CENTRALINO.md §18).
 
+Niente messaggi appesi (WT30-F4.1, CENTRALINO.md §25). Quando chi esegue manda un esito sul task (anche con
+`bus_send`, da una sessione qualunque dell'agente), le copie della delega a quell'agente non chiedono più niente e
+si consumano da sole; una domanda consuma solo la copia nella casella condivisa; chiudere l'attesa consuma le copie
+rimaste. Quando una sessione finisce, le deleghe che non ha preso e i ritorni per le sue attese passano alla casella
+condivisa dell'agente; il resto, dopo 10 minuti senza riapertura, è "non letto" e il mittente riceve un evento che
+non sveglia. Una `request`, un `brief` o un `handoff` fermo da più di un giorno, qualunque sia il `kind`, viene
+segnalato all'hub con un messaggio urgente e al mittente con un evento, una volta.
+
 ## 6. Tabella di sveglia
 
 Una sessione "ferma" è una sessione che Onda dà `idle`, senza testo nella casella di Mario, da almeno 5 secondi.
