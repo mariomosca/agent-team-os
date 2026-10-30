@@ -137,6 +137,11 @@ for old in agent-team-os-lib.sh agent-team-os-wake.py agent-team-os-collect.sh \
   [[ -e "$CLAUDE_HOME/scripts/$old" ]] && echo "Removing old $CLAUDE_HOME/scripts/$old"
   rm -f "$CLAUDE_HOME/scripts/$old"
 done
+# agent-bus-lib.sh was a link to agent-team-os-lib.sh: dead once the lib is gone.
+if [[ -L "$CLAUDE_HOME/scripts/agent-bus-lib.sh" && ! -e "$CLAUDE_HOME/scripts/agent-bus-lib.sh" ]]; then
+  echo "Removing dead link $CLAUDE_HOME/scripts/agent-bus-lib.sh"
+  rm -f "$CLAUDE_HOME/scripts/agent-bus-lib.sh"
+fi
 for lb in com.agent-team-os.sveglia com.agent-team-os.custode-registro $(ls "$LA_DIR" 2>/dev/null \
           | sed -n 's/^\(com\.agent-team-os\.raccolta-[A-Za-z0-9_-]*\)\.plist$/\1/p'); do
   [[ -e "$LA_DIR/$lb.plist" ]] && echo "Removing old job $lb"
@@ -149,6 +154,8 @@ cron_drop 'agent-team-os-custode.sh --registro'
 
 echo "Copying hooks → $CLAUDE_HOME/hooks/ and agent-team-os-centralino.py → $CLAUDE_HOME/scripts/"
 cp "$REPO_DIR/hooks/agent-team-os-centralino.py" "$CLAUDE_HOME/scripts/agent-team-os-centralino.py"
+# ab_detect_agent for the shell scripts outside the bus (statusline, mvd-nudge): the old lib's job.
+cp "$REPO_DIR/scripts/agent-detect.sh" "$CLAUDE_HOME/scripts/agent-detect.sh"
 chmod +x "$CLAUDE_HOME/scripts/agent-team-os-centralino.py"
 for h in agent-team-os-load.sh agent-team-os-urgent.sh agent-team-os-stop.sh agent-team-os-end.sh \
          agent-team-os-onda-prompt.py agent-team-os-onda-spawn.py; do
