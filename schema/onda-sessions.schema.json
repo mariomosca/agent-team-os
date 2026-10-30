@@ -35,7 +35,9 @@
         "mounted": { "type": "boolean", "description": "The workspace is in the mosaic of an open window." },
         "hasText": { "type": ["boolean", "null"], "description": "Optional (bus v2.6). The prompt box holds text right now, even typed less than 60 s ago (stricter than pending_input). null when the screen is not read (pane not mounted, stale report). Its presence also tells a reader that agent.prompt accepts onlyIfIdle: the wake script refuses to inject into an Onda without it." },
         "windowId": { "type": ["string", "null"], "description": "Hosting window; null when mounted is false." },
-        "host": { "type": "string", "description": "Machine the session runs on. Today always 'laptop'." }
+        "host": { "type": "string", "description": "Machine the session runs on. Today always 'laptop'." },
+        "worktreePath": { "type": ["string", "null"], "pattern": "^/", "description": "Optional (WT30). Absolute path of the git worktree the session runs in, when its workspace is a worktree Onda created or adopted; absent or null otherwise." },
+        "branch": { "type": ["string", "null"], "description": "Optional (WT30). Branch checked out in worktreePath; absent or null when there is no worktree or HEAD is detached." }
       }
     },
     "request": {
@@ -46,7 +48,8 @@
       "additionalProperties": false,
       "properties": {
         "action": { "const": "mount", "description": "Mount the workspace in the active (or first) window and focus the agent's pane." },
-        "workspaceId": { "type": "string", "minLength": 1 }
+        "workspaceId": { "type": "string", "minLength": 1 },
+        "terminalId": { "type": "string", "minLength": 1, "description": "Optional (WT30). The pane to focus: with several agents in one workspace (worktrees of one repo) Onda focuses this terminal instead of guessing." }
       }
     }
   }

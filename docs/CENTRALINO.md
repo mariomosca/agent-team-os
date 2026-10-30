@@ -58,12 +58,14 @@ JSON per riga (`\n`), una richiesta e una risposta per connessione. Massimo 1 MB
 ```json
 {"v": 1, "id": "r-<rand>", "op": "send",
  "caller": {"cwd": "/Users/.../orbit", "agent": null, "slug": null,
-            "pid": 6096, "claude_session_id": "…", "onda_terminal_id": "pane-…", "tmux_pane": null},
+            "pid": 6096, "claude_session_id": "…", "onda_terminal_id": "pane-…", "tmux_pane": null,
+            "onda_socket": "/Users/.../onda.sock"},
  "args": { … }}
 ```
 
 `caller.agent`/`caller.slug` portano `AB_AGENT`/`AB_SESSION_SLUG` se impostati, altrimenti `null`:
-li risolve il centralino (§2). Le operazioni di servizio (`ombra.*`, `admin.*`) non hanno `caller`.
+li risolve il centralino (§2). `caller.onda_socket` (WT30-F5.4) è l'`ONDA_SOCKET` dell'hook: il socket dell'Onda
+che ospita la sessione (§24). Le operazioni di servizio (`ombra.*`, `admin.*`) non hanno `caller`.
 
 Risposta: `{"v":1, "id":"r-…", "ok":true, "result":{…}, "warnings":[…]}` oppure
 `{"v":1, "id":"r-…", "ok":false, "error":{"code":"…", "message":"…"}}`.
@@ -188,6 +190,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_heartbeat    TEXT,
   last_event        TEXT,
   ended_at          TEXT,
+  -- aggiunte da MIGRAZIONI: waiting_agent, drain_blocks, delegata, last_event_at,
+  -- onda_socket (v7, WT30-F5.4: ONDA_SOCKET della sessione)
   PRIMARY KEY (agent, slug, host)
 );
 
@@ -802,7 +806,8 @@ si rifà):
    casella vuota, assestata da 5 s) e non ha altre deleghe aperte non finite. Una sessione che non è nata
    per la delega non si chiude mai. Al lavoro, o vista di Onda non valida → `pending`;
 2. worktree: `worktree.retire {path, workspaceId?, archiveTagPrefix: "archivio/", deleteBranch: true}`
-   (prefisso da `AB_ARCHIVE_TAG_PREFIX`). Ritirato → `closed`; `fetch_failed`, `tag_push_failed`,
+   (prefisso da `AB_ARCHIVE_TAG_PREFIX`). Ritirato → `closed`: via il worktree e i suoi pannelli, il
+   workspace del repo resta (contratto Onda WT30); `fetch_failed`, `tag_push_failed`,
    `git_error`, Onda giù → `pending`; ogni altro motivo (dirty, not_integrated, not_pushed, in_use,
    no_remote...) → `kept`. `in_use` subito dopo aver chiuso la sessione: un secondo tentativo dopo 2 s;
 3. altre deleghe aperte sulla stessa sessione: questa si chiude (`altre_deleghe`), sessione e worktree
@@ -825,6 +830,13 @@ qualcosa di vivo. Con una delega aperta nel registro: chiudi_delega solo se l'at
 è done, altrimenti si tiene. Senza registro ma con `labels.ref`: retire solo con il passo done. Padrone
 chiuso, o nessun padrone ma `integratedInto`: retire (che rifiuta comunque ciò che non è integrato).
 Nessun padrone e non integrato: solo segnalato nel risultato e nel log. In dubbio si tiene.
+
+**Socket di Onda per sessione** (WT30-F5.4, schema v7). Ogni hook di sessione passa `ONDA_SOCKET` come
+`caller.onda_socket`; il centralino lo tiene in `sessions.onda_socket` (a ogni `start` quello della sessione nuova,
+anche nessuno; un battito senza socket, come il MCP, non lo cancella). `agent.prompt` della sveglia (`canale.via_onda`),
+`agent.close` e `worktree.retire` di chiudi_delega vanno al socket della sessione quando c'è, altrimenti
+all'`ONDA_SOCKET` del daemon o a `~/.config/onda/onda.sock`. Serve a chi ha due Onda (l'app e `npm run dev`, prova
+WT30-F0 e F6.1). La migrazione a v7 copia prima il database accanto (`centralino.db.bak-v6-<ora>`).
 
 **Sicurezza dei test**: Onda e Orbit veri si chiamano solo dal centralino di `~/.agent-team-os` (o con
 `AB_DELEGHE_ESTERNI=1`). Su un AB_HOME di prova le chiamate esterne sono sempre "giù": test e banco non

@@ -242,9 +242,9 @@ class Deleghe:
                 return box["out"]
         return {"avviato": True}
 
-    def _onda(self, method: str, params: dict, timeout: float) -> dict:
+    def _onda(self, method: str, params: dict, timeout: float, sock: str | None = None) -> dict:
         try:
-            res = self.onda_call(method, params, timeout=timeout)
+            res = canale.con_socket(self.onda_call, sock)(method, params, timeout=timeout)
         except EsternoGiu:
             raise
         except (OSError, ValueError) as exc:
@@ -545,6 +545,14 @@ class Deleghe:
                 out.append(x["task_id"])
         return out
 
+    def _socket(self, r) -> str | None:
+        """WT30-F5.4: il socket di Onda della sessione delegata (``sessions.onda_socket``), se noto."""
+        if not r["sess_agent"] or not r["sess_slug"]:
+            return None
+        s = self.c.store.read().execute("SELECT onda_socket FROM sessions WHERE agent=? AND slug=? AND host=?",
+                                        (r["sess_agent"], r["sess_slug"], r["host"] or "")).fetchone()
+        return s["onda_socket"] if s is not None else None
+
     def _sessione(self, r) -> tuple[str, str | None]:
         """Chiude la sessione della delega se ferma e libera. Torna (esito, dettaglio):
         chiusa | gia_chiusa | altre_deleghe | al_lavoro | onda_giu | non_mia."""
@@ -574,7 +582,7 @@ class Deleghe:
         if e.get("sessionId") or r["onda_session_id"]:
             params["sessionId"] = e.get("sessionId") or r["onda_session_id"]
         try:
-            res = self._onda("agent.close", params, CLOSE_TIMEOUT_S)
+            res = self._onda("agent.close", params, CLOSE_TIMEOUT_S, self._socket(r))
         except EsternoGiu as exc:
             return "onda_giu", str(exc)
         if res.get("errorCode"):
@@ -585,14 +593,14 @@ class Deleghe:
             self.c.bus.fine_sessione(r["sess_agent"], r["sess_slug"])
         return "chiusa", None
 
-    def _retire(self, path: str, workspace_id: str | None, appena_chiusa: bool) -> dict:
+    def _retire(self, path: str, workspace_id: str | None, appena_chiusa: bool, sock: str | None = None) -> dict:
         params: dict[str, Any] = {"path": path, "archiveTagPrefix": TAG_PREFIX, "deleteBranch": True}
         if workspace_id:
             params["workspaceId"] = workspace_id
-        res = self._onda("worktree.retire", params, RETIRE_TIMEOUT_S)
+        res = self._onda("worktree.retire", params, RETIRE_TIMEOUT_S, sock)
         if not res.get("retired") and res.get("reason") == "in_use" and appena_chiusa:
             time.sleep(float(os.environ.get("AB_RETIRE_ATTESA_S") or 2))  # il PTY appena chiuso esce
-            res = self._onda("worktree.retire", params, RETIRE_TIMEOUT_S)
+            res = self._onda("worktree.retire", params, RETIRE_TIMEOUT_S, sock)
         return res
 
     @staticmethod
@@ -642,7 +650,7 @@ class Deleghe:
         if sess == "altre_deleghe":
             return "closed", "altre_deleghe", f"sessione e worktree restano per {sdet}"
         try:
-            res = self._retire(path, r["workspace_id"], appena_chiusa=sess == "chiusa")
+            res = self._retire(path, r["workspace_id"], appena_chiusa=sess == "chiusa", sock=self._socket(r))
         except EsternoGiu as exc:
             return "pending", "onda_giu", str(exc)
         if res.get("retired"):

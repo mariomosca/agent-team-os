@@ -45,6 +45,8 @@ export type TeamState =
 
 export type TeamSession = {
   sessionId: string
+  // WT30: the pane to focus on mount (several agents in one workspace: worktrees of one repo)
+  terminalId: string | null
   workspaceId: string
   agent: string | null
   slug: string
@@ -67,6 +69,7 @@ export type TeamRow = {
   stuck: boolean
   unmounted: boolean
   workspaceId: string | null
+  terminalId: string | null
   canMount: boolean
 }
 

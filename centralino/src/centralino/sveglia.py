@@ -249,7 +249,8 @@ class Sveglia:
         if not text:
             raise Rinvio("testo_vuoto")
         if sess is not None:
-            esito = canale.via_onda(sess, text, call=self.onda_call)
+            sock = row["onda_socket"] if row is not None else None
+            esito = canale.via_onda(sess, text, call=canale.con_socket(self.onda_call, sock))
         elif row is not None and row["tmux_pane"]:
             esito = canale.via_tmux(row["tmux_pane"], text)
         else:

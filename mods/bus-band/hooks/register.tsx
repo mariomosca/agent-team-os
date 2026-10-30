@@ -170,7 +170,7 @@ const openInPrompt = async ($: EngineInterface, text: string) => {
 
 // The mod cannot open Onda's socket (JSON-RPC; $.http speaks HTTP), so the
 // request is a file Onda consumes. Temp name first, then mv: Onda never sees half a file.
-const requestMount = async ($: EngineInterface, workspaceId: string) => {
+const requestMount = async ($: EngineInterface, workspaceId: string, terminalId: string | null) => {
   const root = await busRoot($)
   if (root === null) return
   const dir = `${root}/onda/requests`
@@ -178,7 +178,7 @@ const requestMount = async ($: EngineInterface, workspaceId: string) => {
   const tmp = `${dir}/.tmp-${rand}.json`
 
   await $.process.run(['mkdir', '-p', dir])
-  await $.fs.write(tmp, requestBody(workspaceId))
+  await $.fs.write(tmp, requestBody(workspaceId, terminalId))
   await $.process.run(['mv', tmp, `${dir}/${requestName(Date.now(), rand)}`])
   $.ui.toast('Richiesta inviata a Onda')
 }
@@ -536,7 +536,7 @@ const teamBlock = (
             <Button
               key={`mount-${r.key}`}
               label={r.unmounted ? 'Rimetti nel mosaico' : 'Vai al pannello'}
-              onPress={() => requestMount($, r.workspaceId!)}
+              onPress={() => requestMount($, r.workspaceId!, r.terminalId)}
             />
           ) : null}
         </Box>

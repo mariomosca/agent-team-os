@@ -32,6 +32,7 @@ export const parseSessionList = (list: readonly unknown[]): TeamSession[] => {
 
     sessions.push({
       sessionId,
+      terminalId: str(s.terminalId),
       workspaceId,
       agent: str(s.agent),
       slug,
@@ -142,6 +143,7 @@ export const exceptionRows = (
       stuck: true,
       unmounted: !s.mounted,
       workspaceId: s.workspaceId,
+      terminalId: s.terminalId,
       canMount,
     } })
   }
@@ -156,6 +158,7 @@ export const exceptionRows = (
       stuck: true,
       unmounted: false,
       workspaceId: null,
+      terminalId: null,
       canMount: false,
     } })
   }
@@ -189,5 +192,6 @@ export const toastText = (s: TeamSession) => {
 
 // requests/ — mod → Onda. The temp name must not start with "req-".
 export const requestName = (ts: number, rand: string) => `req-${ts}-${rand}.json`
-export const requestBody = (workspaceId: string) =>
-  JSON.stringify({ action: 'mount', workspaceId })
+// WT30: terminalId tells Onda which pane to focus when a workspace holds more than one agent.
+export const requestBody = (workspaceId: string, terminalId?: string | null) =>
+  JSON.stringify(terminalId ? { action: 'mount', workspaceId, terminalId } : { action: 'mount', workspaceId })
