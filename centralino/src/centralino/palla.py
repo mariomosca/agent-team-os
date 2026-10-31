@@ -8,9 +8,13 @@ Esce ``stato_palla`` più i dati per disegnare la riga. Era in ``mods/bus-band/h
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import sqlite3
+import subprocess
 import time
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -91,6 +95,52 @@ def titolo_breve(descrizione: str, titolo_orbit: str | None) -> str:
 ORBIT_DB = Path.home() / "Library" / "Application Support" / "Orbit" / "orbit.db"
 ORBIT_TTL_S = 60
 
+# OL31-F3.4: Orbit from the server instead of the file, same rule as work-hub/tools/orbit_fonte.py.
+# Switch: ORBIT_FONTE/ORBIT_URL/ORBIT_ENV, else ~/.config/orbit/lettori.json {"fonte": "remote",
+# "url": ..., "env": ...}; no file = local (today). Token ORBIT_<ENV>_READ_TOKEN_PALLA from the
+# environment or ~/.config/agenti/secrets.env. Only for the real orbit.db (tests pass None or a file).
+LETTORI = Path.home() / ".config" / "orbit" / "lettori.json"
+SECRETS = Path.home() / ".config" / "agenti" / "secrets.env"
+
+
+def _fonte() -> dict:
+    try:
+        cfg = json.loads(LETTORI.read_text())
+    except (OSError, ValueError):
+        cfg = {}
+    for k, var in (("fonte", "ORBIT_FONTE"), ("url", "ORBIT_URL"), ("env", "ORBIT_ENV")):
+        if os.environ.get(var):
+            cfg[k] = os.environ[var]
+    return cfg
+
+
+def _segreto(nome: str) -> str:
+    if os.environ.get(nome):
+        return os.environ[nome]
+    script = 'set -a; . "$1" >/dev/null 2>&1; set +a; print -rn -- "${(P)2}"'
+    out = subprocess.run(["/bin/zsh", "-f", "-c", script, "zsh", str(SECRETS), nome],
+                         capture_output=True, timeout=10).stdout.decode()
+    if not out:
+        raise RuntimeError(f"{nome} non c'è in secrets.env")
+    return out
+
+
+def _orbit_remoto(tabelle: list[str]) -> sqlite3.Connection:
+    """The server's tables in an in-memory SQLite: the same query runs on it."""
+    cfg = _fonte()
+    env = re.sub(r"[^A-Z0-9]", "_", (cfg.get("env") or "production").upper())
+    req = urllib.request.Request(
+        f"{str(cfg.get('url') or '').rstrip('/')}/api/v1/views/tables?t={','.join(tabelle)}",
+        headers={"Authorization": f"Bearer {_segreto(f'ORBIT_{env}_READ_TOKEN_PALLA')}"})
+    with urllib.request.urlopen(req, timeout=5) as r:
+        dati = json.load(r)["tables"]
+    con = sqlite3.connect(":memory:")
+    for nome, t in dati.items():
+        con.execute(f'CREATE TABLE "{nome}" ({", ".join(f"{chr(34)}{c}{chr(34)}" for c in t["columns"])})')
+        if t["rows"]:
+            con.executemany(f'INSERT INTO "{nome}" VALUES ({", ".join("?" * len(t["columns"]))})', t["rows"])
+    return con
+
 
 class Orbit:
     """Righe di Orbit per i codici delle attese: una query in sola lettura, tenuta un minuto.
@@ -101,7 +151,8 @@ class Orbit:
         self._cache: tuple[tuple, float, list[dict]] | None = None
 
     def righe(self, rifs: list[Rif]) -> list[dict]:
-        if not rifs or self.path is None or not self.path.exists():
+        remoto = self.path == ORBIT_DB and _fonte().get("fonte") == "remote"
+        if not rifs or self.path is None or not (remoto or self.path.exists()):
             return []
         piani = sorted({r.piano for r in rifs})
         fasi = sorted({r.fase for r in rifs})
@@ -114,14 +165,15 @@ class Orbit:
              f"WHERE upper(p.code) IN ({','.join('?' * len(piani))}) AND ph.key IN ({','.join('?' * len(fasi))}) "
              "AND coalesce(p.status, 'active') = 'active'")
         try:
-            c = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, timeout=1)
+            c = (_orbit_remoto(["plans", "plan_phases", "tasks"]) if remoto
+                 else sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, timeout=1))
             try:
                 c.row_factory = sqlite3.Row
                 righe = [dict(r) for r in c.execute(q, [*piani, *fasi])]
             finally:
                 c.close()
-        except sqlite3.Error:
-            righe = []
+        except (sqlite3.Error, OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            righe = []  # remote: server down, token missing, bad answer → same as no Orbit
         self._cache = (chiave, time.monotonic(), righe)
         return righe
 

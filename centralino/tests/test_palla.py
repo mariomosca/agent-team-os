@@ -151,6 +151,53 @@ def test_orbit_in_sola_lettura(tmp_path):
     assert palla.Orbit(tmp_path / "manca.db").righe([rif_piano("BR24-F6.6")]) == []
 
 
+
+def test_orbit_remoto_stesse_righe(tmp_path, monkeypatch):
+    """OL31-F3.4: with the switch on remote, the same query runs on the server's tables."""
+    import http.server
+    import json
+    import sqlite3
+    import threading
+    tabelle = {
+        "plans": {"columns": ["id", "code", "status"], "rows": [["p", "BR24", "active"], ["q", "OL31", "completed"]]},
+        "plan_phases": {"columns": ["id", "plan_id", "key", "title"], "rows": [["f", "p", "F6", "Misura"]]},
+        "tasks": {"columns": ["id", "phase_id", "step_key", "title", "state", "assignee"],
+                  "rows": [["t", "f", "F6.6", "Banda: in coda o ci lavora", "doing", "kai"]]},
+    }
+    visto = {}
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            visto["path"], visto["auth"] = self.path, self.headers.get("Authorization")
+            body = json.dumps({"ok": True, "tables": tabelle}).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setattr(palla, "ORBIT_DB", tmp_path / "orbit.db")  # the "real" path: no file at all
+        monkeypatch.setenv("ORBIT_FONTE", "remote")
+        monkeypatch.setenv("ORBIT_URL", f"http://127.0.0.1:{srv.server_port}")
+        monkeypatch.setenv("ORBIT_ENV", "test")
+        monkeypatch.setenv("ORBIT_TEST_READ_TOKEN_PALLA", "tok-di-prova")
+        righe = palla.Orbit(palla.ORBIT_DB).righe([rif_piano("BR24-F6.6")])
+        assert [(r["step_key"], r["title"], r["state"]) for r in righe] == [("F6.6", "Banda: in coda o ci lavora", "doing")]
+        assert visto["path"] == "/api/v1/views/tables?t=plans,plan_phases,tasks"
+        assert visto["auth"] == "Bearer tok-di-prova"
+        # A test path (not the real orbit.db) stays local even with the switch on remote.
+        assert palla.Orbit(tmp_path / "altro.db").righe([rif_piano("BR24-F6.6")]) == []
+        # Server down: no rows, no exception (as with no Orbit).
+        monkeypatch.setenv("ORBIT_URL", "http://127.0.0.1:9")
+        assert palla.Orbit(palla.ORBIT_DB).righe([rif_piano("BR24-F6.7")]) == []
+    finally:
+        srv.shutdown()
+
 # ---------- BR24-F6.8: un messaggio in casella, per chi lo riceve ----------
 
 def msg(**over):
