@@ -28,9 +28,18 @@ git clone https://github.com/mariomosca/agent-team-os && cd agent-team-os
 | `UserPromptSubmit` → `agent-team-os-urgent.sh` | recommended | alerts on urgent/high messages |
 | `SessionEnd` → `agent-team-os-end.sh` | recommended | closes the session in the registry |
 | `PreToolUse` on `onda_agent_prompt` → `agent-team-os-onda-prompt.py` | recommended with Onda | `[delega]` / `[comunicazione]` on prompts sent to other sessions |
+| `UserPromptSubmit`, `Stop`, `SessionStart`, `SessionEnd` → `agent-team-os-mobile.py` | recommended | mobile mode per session (MM31): see below |
 | `Stop` → `agent-team-os-stop.sh` | **opt-in** | blocks the turn end while a message asks for an action. See [docs/agentic-v2/SETTINGS-DIFF.md](./docs/agentic-v2/SETTINGS-DIFF.md) |
 
-All of them `exec` `~/.claude/scripts/agent-team-os-centralino.py`, which calls the centralino socket; with the centralino down they stay silent and never block.
+All of them except the mobile one `exec` `~/.claude/scripts/agent-team-os-centralino.py`, which calls the centralino socket; with the centralino down they stay silent and never block.
+
+## Mobile mode (MM31)
+
+Mario follows a session from the phone (Claude Code Remote Control) while the agent works on the Mac. `hooks/agent-team-os-mobile.py` keeps a per-session switch in `$AB_HOME/mobile/<session_id>.json`:
+
+- **On**: a prompt that starts with `mobile on`, `/mobile on [Nh]`, `modalità mobile`, `sono al telefono`, `sono fuori`; or automatically when the transcript's last `remote_session_change` attachment carries a claude.ai url (Remote Control connected). **Off**: `mobile off`, `/mobile off`, `sono tornato`, `sono al mac`, the deadline, the end of the session, or Remote Control disconnecting when the automatic switch had turned it on. A manual off holds for that Remote Control connection.
+- **While on**: every prompt gets the mobile rules (no `# VOICE` line, short answers, SendUserFile and code blocks instead of pbcopy, anything that needs hands on the Mac said first as a blocker); voice-notify skips that session (it reads the same file); one `caffeinate -ims` runs until the latest deadline of the mobile sessions (default: Monday 08:00 on a weekend, otherwise 8 hours). A lid warning comes with the activation when there is no external display.
+- **CLI**: `python3 ~/.claude/hooks/agent-team-os-mobile.py on|off|status|list [--session ID] [--hours N]`. Tests: `/usr/bin/python3 -m unittest tests/test_mobile.py`.
 
 ## How an agent uses it
 
@@ -48,6 +57,7 @@ All of them `exec` `~/.claude/scripts/agent-team-os-centralino.py`, which calls 
 | `centralino/launchd/` | launchd model used by `install.sh --daemon` |
 | `hooks/agent-team-os-centralino.py` | the thin hooks' client of the centralino |
 | `hooks/agent-team-os-*.sh`, `hooks/agent-team-os-onda-prompt.py` | lifecycle hooks |
+| `hooks/agent-team-os-mobile.py` | mobile mode per session (MM31), tests in `tests/test_mobile.py` |
 | `hooks/onda-agent-event.mjs` | bridge from Claude Code hook events to the Onda terminal (separate from the bus) |
 | `scripts/agent-team-os-custode.sh` | the custode: daily health check of a remote host, report + Telegram (`install.sh --custode`) |
 | `tests/test-custode.sh` | custode and installer tests, fake `claude`/`uv`/`curl`/`launchctl`/`df`/`tmux` in `tests/fake-bin/` |
