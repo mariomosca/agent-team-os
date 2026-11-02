@@ -89,12 +89,12 @@ def _sveglia(c, notifiche):
 
 def test_avviso_senza_canale_anche_a_sessione_chiusa(c):
     # AM26-F2.2: un messaggio azionabile per una stanza chiusa è fermo lo stesso; nessun hub qui: notifica.
-    # WT30-F4.1 R3: la delega non presa passa alla casella condivisa di vera alla chiusura della stanza
+    # BU02-F2.1: la delega resta alla sua stanza anche dopo la chiusura (mai alla casella condivisa)
     mid = _messaggio_senza_canale(c, 0)
     c.handle_request({"v": 1, "id": "3", "op": "hook.end", "args": {}, "caller": {"cwd": str(c.ws / "vera" / "s1")}})
-    assert c.store.message(mid)["to_slug"] is None
+    assert c.store.message(mid)["to_slug"] == "s1"
     notifiche = []
-    assert len(_sveglia(c, notifiche).avvisi_senza_canale()) == 1 and "per vera da kai/s1" in notifiche[0]
+    assert len(_sveglia(c, notifiche).avvisi_senza_canale()) == 1 and "per vera/s1 da kai/s1" in notifiche[0]
 
 
 def test_avviso_senza_canale_non_per_messaggi_vecchi(c):

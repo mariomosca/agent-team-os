@@ -124,7 +124,7 @@ def test_r3_sessione_chiusa_riassegna_e_rimbalza(bus):
     esito = _ok(_op(bus, "alita/s1", "send", to="kai/s1", intent="fatto", summary="ok", message_type="response",
                     task_id=mia["task_id"]))
     _ok(_op(bus, "kai/s1", "hook.end"))
-    assert _msg(bus, d["id"])["to_slug"] is None          # delega non presa
+    assert _msg(bus, d["id"])["to_slug"] == "s1"          # BU02-F2.1: la delega resta sua
     assert _msg(bus, esito["id"])["to_slug"] is None      # esito per un'attesa di kai/s1
     assert _msg(bus, presa["id"])["to_slug"] == "s1"      # presa (ha fatto una domanda): resta sua
     assert _msg(bus, c["id"])["to_slug"] == "s1"          # il resto aspetta la grazia
@@ -133,10 +133,17 @@ def test_r3_sessione_chiusa_riassegna_e_rimbalza(bus):
     assert row["state"] == "done" and row["esito"] == "non_letto"
     ev = _inbox(bus, "alita/s1", "non-letto")
     assert len(ev) == 1 and c["id"] in ev[0]["summary"] and ev[0]["priority"] == "low" and ev[0]["type"] == "event"
+    # le due deleghe tornano ad alita, una per task, come ritorno (BU02-F2.1)
+    for x, presa_si in ((d, False), (presa, True)):
+        assert _msg(bus, x["id"])["esito"] == "non_letto"
+        t = [m for m in _inbox(bus, "alita/s1", "sessione-chiusa") if m["task_id"] == x["task_id"]]
+        assert len(t) == 1 and t[0]["type"] == "response" and t[0]["priority"] == "high"
+        assert ("senza mandare l'esito" in t[0]["summary"]) is presa_si
     # un rimbalzo non rimbalza e non si ripete
     _ok(_op(bus, "alita/s1", "hook.end"))
     _giro(bus)
     assert len(_inbox(bus, "kai/s2", "non-letto")) == 0
+    assert len(_inbox(bus, "alita/s1", "sessione-chiusa")) == 2
 
 
 def test_r3_grazia_e_ripresa(bus, monkeypatch):
