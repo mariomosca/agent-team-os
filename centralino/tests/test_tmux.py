@@ -215,3 +215,21 @@ def test_rinvio_per_testo_da_30_minuti_avvisa_chi_ha_delegato(tmux, tmp_path):
     finally:
         tempo.imposta(None)
         c.store.close()
+
+
+def test_casella_sotto_riga_con_titolo():
+    """2/11/2026: il titolo della sessione dentro la riga sopra la casella."""
+    riga = "─" * 70 + " Agenda, Fabric e filtro stellina ─"
+    base = ["output", "", riga, "❯ {}", "─" * 80, "  ? for shortcuts"]
+    scritto = "\n".join(base).format("1 ok ora la faccio")
+    vuoto = "\n".join(base).format("")
+    assert canale.read_prompt_box(scritto) == "1 ok ora la faccio"
+    assert canale.screen_refusal(scritto) == "has_text"
+    assert canale.screen_refusal(vuoto) is None
+
+
+def test_casella_lunga_sotto_footer_alto():
+    righe = [f"  riga {i} del messaggio" for i in range(30)]
+    footer = [f"  footer {i}" for i in range(12)]
+    schermo = "\n".join(["out", "─" * 80, "❯ inizio", *righe, "─" * 80, *footer])
+    assert canale.screen_refusal(schermo) == "has_text"
