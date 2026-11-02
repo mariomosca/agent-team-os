@@ -3,7 +3,8 @@
 - messaggi archiviati (read/done) e righe di thread vecchie oltre 30 giorni: via;
 - attese chiuse, scadute o annullate da oltre 30 giorni: via, con i loro ritorni;
 - decisioni di sveglia oltre 30 giorni: via;
-- caselle di sessioni chiuse da più di 24 ore: i messaggi che chiedono un'azione passano
+- caselle di sessioni chiuse da più di 24 ore: le deleghe restano dove sono (le rimanda al mittente
+  ``Sveglia.avvisi_non_letti``, BU02-F2.1); gli altri messaggi che chiedono un'azione passano
   all'indirizzo dell'agente nudo (unica sessione viva con canale, poi casa, poi casella condivisa),
   gli altri si archiviano come letti; la sessione esce dal registro.
 
@@ -63,6 +64,8 @@ class Pulizia:
                 for r in c.execute("SELECT id, raw FROM messages WHERE to_agent=? AND to_slug=? AND state='pending' "
                                    "AND to_host=?", (agent, slug, host)).fetchall():
                     m = json.loads(r["raw"])
+                    if regole.e_delega(m):
+                        continue  # BU02-F2.1: torna al mittente (Sveglia.avvisi_non_letti), non passa ad altri
                     if regole.blocca_stop(regole.classifica(m, agent, slug, attese)) and dest != slug:
                         c.execute("UPDATE messages SET to_slug=? WHERE id=?", (dest, r["id"]))
                         out["spostati"] += 1

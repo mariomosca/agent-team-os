@@ -35,7 +35,7 @@ allo slug dal pid leggendolo.
 |---|---|
 | `kai/crewmoor` | la sessione `crewmoor` di Kai (lo slug è il nome della cartella, o `AB_SESSION_SLUG`) |
 | `kai@mini/crewmoor` | stessa sessione, su un altro host (anche `kai/crewmoor@mini`) |
-| `kai` | l'unica sessione viva di Kai con un canale (Onda o tmux); se sono più di una, la sua sessione di casa (`workspace_root`) se ha un canale; altrimenti la casella condivisa, visibile a tutte le sue sessioni e consegnata alla prima con canale. Un messaggio che chiede un'azione e resta fermo 10 minuti senza sessioni con canale fa un avviso ad Alita (CENTRALINO.md §22) |
+| `kai` | l'unica sessione viva di Kai con un canale (Onda o tmux); se sono più di una, la sua sessione di casa (`workspace_root`) se ha un canale; altrimenti la casella condivisa. Una delega o un ritorno della casella condivisa va a **una** sola sessione (una ferma, la casa prima): la prende chi riceve la sveglia o chi la legge per primo, e alle altre sparisce (BU02); comunicazioni e urgenti restano visibili a tutte. Un messaggio che chiede un'azione e resta fermo 10 minuti senza sessioni con canale fa un avviso ad Alita (CENTRALINO.md §22) |
 | `kai@mini` | come sopra, sul mini |
 
 L'agente si ricava dalla cwd con la regola di `AGENT_MAP.rules` dal prefisso più lungo, sul confine di cartella
@@ -82,9 +82,12 @@ ritorni né movimento da più di 4 ore è "da verificare" e si conta a parte (CE
 Niente messaggi appesi (WT30-F4.1, CENTRALINO.md §25). Quando chi esegue manda un esito sul task (anche con
 `bus_send`, da una sessione qualunque dell'agente), le copie della delega a quell'agente non chiedono più niente e
 si consumano da sole; una domanda consuma solo la copia nella casella condivisa; chiudere l'attesa consuma le copie
-rimaste. Quando una sessione finisce, le deleghe che non ha preso e i ritorni per le sue attese passano alla casella
-condivisa dell'agente; il resto, dopo 10 minuti senza riapertura, è "non letto" e il mittente riceve un evento che
-non sveglia. Una `request`, un `brief` o un `handoff` fermo da più di un giorno, qualunque sia il `kind`, viene
+rimaste. Quando una sessione finisce, i ritorni per le sue attese passano alla casella condivisa dell'agente (e li
+prende una sessione sola). Una delega indirizzata a una sessione non passa mai ad altre (BU02, 02/11: tre sessioni
+di Nico eseguivano la stessa delega): se la sessione non è viva da più di 10 minuti (chiusa, sparita o mai vista),
+la delega è "non letta" e torna al mittente come `response` sul suo task (intent `sessione-chiusa`), che lo sveglia;
+l'attesa resta aperta finché non la chiude o la rimanda. Il resto, dopo 10 minuti senza riapertura, è "non letto"
+e il mittente riceve un evento che non sveglia. Una `request`, un `brief` o un `handoff` fermo da più di un giorno, qualunque sia il `kind`, viene
 segnalato all'hub con un messaggio urgente e al mittente con un evento, una volta.
 
 ## 6. Tabella di sveglia
@@ -147,8 +150,8 @@ Un giro ogni 6 ore:
 - messaggi archiviati e righe di thread oltre 30 giorni: via;
 - attese chiuse, scadute o annullate oltre 30 giorni: via, con i loro ritorni;
 - decisioni di sveglia oltre 30 giorni: via;
-- caselle di sessioni chiuse da più di 24 ore: i messaggi che chiedono un'azione passano alla sessione di casa
-  dell'agente (unica sessione viva con canale, poi casa, poi casella condivisa), gli altri si archiviano come letti; la
+- caselle di sessioni chiuse da più di 24 ore: le deleghe restano dove sono (tornano al mittente, §5); gli altri
+  messaggi che chiedono un'azione passano alla sessione di casa dell'agente (unica sessione viva con canale, poi casa, poi casella condivisa), gli altri si archiviano come letti; la
   sessione esce dal registro.
 
 ## 11. Cosa è stato tolto e perché

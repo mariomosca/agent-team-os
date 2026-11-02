@@ -61,8 +61,7 @@ def classifica(msg: dict, agent: str, slug: str, attese: dict[str, Attesa]) -> s
         return "risposta"
     if link.get("by") == "da_agganciare":
         return "da_agganciare"
-    if typ in DELEGA_TYPES and (msg.get("kind") == "delega"
-                                or (not msg.get("kind") and msg.get("requires_response") is True)):
+    if e_delega(msg):
         return "delega"
     if msg.get("priority") == "urgent":
         return "urgente"
@@ -71,12 +70,43 @@ def classifica(msg: dict, agent: str, slug: str, attese: dict[str, Attesa]) -> s
     return "nessuna"
 
 
+def e_delega(msg: dict) -> bool:
+    """Una delega: request/brief/handoff con kind=delega (o vecchia, senza kind, con requires_response)."""
+    return msg.get("type") in DELEGA_TYPES and (
+        msg.get("kind") == "delega" or (not msg.get("kind") and msg.get("requires_response") is True))
+
+
+def a_una_sola(msg: dict) -> bool:
+    """BU02-F2.2: messaggi che una sola sessione deve prendere: una delega, o un ritorno su un task
+    (response o question con task_id). Consegnati a più sessioni, ognuna fa il lavoro (02/11: una
+    delega a nico eseguita da tre sessioni, con azioni ripetute su Entra)."""
+    if e_delega(msg):
+        return True
+    tid = msg.get("task_id") if isinstance(msg.get("task_id"), str) else None
+    return bool(tid) and msg.get("type") in ("response", "question")
+
+
+def una_sessione(vive: list[str], ferme: list[str] | None = None, casa: str | None = None) -> str | None:
+    """La sessione che prende un messaggio della casella condivisa: una ferma (la casa prima), poi la
+    casa, poi la prima per nome. Ogni giro si rifà la scelta finché il messaggio non è preso."""
+    if not vive:
+        return None
+    ferme = [s for s in (ferme or []) if s in vive]
+    if casa and casa in ferme:
+        return casa
+    if ferme:
+        return sorted(ferme)[0]
+    if casa and casa in vive:
+        return casa
+    return sorted(vive)[0]
+
+
 def destinatari(msg: dict, to_agent: str, to_slug: str | None, attese: dict[str, Attesa],
-                vive: list[str]) -> list[str]:
+                vive: list[str], ferme: list[str] | None = None, casa: str | None = None) -> list[str]:
     """Slug delle sessioni a cui il messaggio è rivolto. Casella condivisa (to_slug None):
-    il proprietario dell'attesa se il messaggio è un ritorno e lui ha un canale, altrimenti ogni
-    sessione viva con canale (WT30-F4.1 R3: un ritorno riassegnato dopo la chiusura della sessione
-    che aspettava lo prende un'altra sessione dello stesso agente, §6)."""
+    il proprietario dell'attesa se il messaggio è un ritorno e lui ha un canale; una delega o un
+    ritorno senza proprietario vivo vanno a UNA sola sessione (``una_sessione``, BU02-F2.2), che lo
+    prende alla sveglia; il resto (comunicazioni, urgenti) a ogni sessione viva con canale."""
     if to_slug:
         return [to_slug]
     tid = msg.get("task_id") if isinstance(msg.get("task_id"), str) else None
@@ -84,6 +114,9 @@ def destinatari(msg: dict, to_agent: str, to_slug: str | None, attese: dict[str,
     if w is not None and w.aperta and w.owner_agent == to_agent and msg.get("type") in ("response", "question"):
         if w.owner_slug in vive or not vive:
             return [w.owner_slug]
+    if a_una_sola(msg):
+        scelta = una_sessione(vive, ferme, casa)
+        return [scelta] if scelta else []
     return list(vive)
 
 

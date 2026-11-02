@@ -496,8 +496,9 @@ def att_scadenza(b: Banco) -> None:
     w = b.c.store.wait(d["task_id"])
     _check(w["state"] == "expired", f"deadline passata senza ritorni: scaduta ({w['state']})")
     ib = b.op("alita/work-hub", "inbox")["messages"]
-    _check(sorted(m["intent"] for m in ib) == ["messaggi-fermi-senza-canale", "task-scaduto"],
-           f"avviso a chi aspetta, e la delega a kai/orbit ferma senza canale (AM26-F2.2): {ib}")
+    # BU02-F2.1: kai/orbit non c'è mai stata: la delega, passata la grazia, torna ad alita sul task
+    _check(sorted(m["intent"] for m in ib) == ["sessione-chiusa", "task-scaduto"],
+           f"avviso a chi aspetta, e la delega a kai/orbit che non c'è torna indietro: {ib}")
     _check(not b.prompt_a("alita/work-hub"), "l'avviso di scadenza non sveglia")
 
 
@@ -647,11 +648,16 @@ def att_pulizia(b: Banco) -> None:
     b.onda("kai/orbit", "idle")
     out = Pulizia(b.c).giro()
     # due sessioni escono: kai/vecchia (chiusa) e alita/work-hub (nessun segno di vita da 25 ore).
-    # La delega non presa era già passata alla casella condivisa al SessionEnd (WT30-F4.1 R3)
+    # BU02-F2.1: la delega resta a kai/vecchia, non passa a kai/orbit; al giro torna ad alita
     _check(out["spostati"] == 0 and out["archiviati"] == 1 and out["sessioni"] == 2, f"pulizia: {out}")
-    _check(b.c.store.message(d["id"])["to_slug"] is None, "la delega è nella casella condivisa")
-    _check(b.sveglia.destinazioni().get(("kai", "orbit")), "la riceve l'unica sessione viva con canale")
+    _check(b.c.store.message(d["id"])["to_slug"] == "vecchia", "la delega resta alla sua sessione")
+    _check(not b.sveglia.destinazioni().get(("kai", "orbit")), "kai/orbit non la riceve")
     _check(b.c.store.message(c["id"])["state"] == "read", "la comunicazione si archivia")
+    b.giro()
+    row = b.c.store.message(d["id"])
+    _check(row["state"] == "done" and row["esito"] == "non_letto", f"delega non letta: {row['esito']}")
+    torn = [m for m in b.op("alita/work-hub", "inbox")["messages"] if m["intent"] == "sessione-chiusa"]
+    _check(len(torn) == 1 and torn[0]["task_id"] == d["task_id"], f"torna al mittente sul task: {torn}")
 
 
 def caso_onda_ritirata_per_silenzio(b: Banco) -> None:
@@ -826,8 +832,9 @@ def caso_wt30_copia_condivisa_consumata(b: Banco) -> None:
 
 
 def caso_wt30_sessione_chiusa_riassegna_e_rimbalza(b: Banco) -> None:
-    """WT30-F4.1 R3: alla chiusura di kai/a la delega non presa e l'esito per la sua attesa passano
-    alla casella condivisa (li prende kai/b); la comunicazione, dopo la grazia, torna al mittente."""
+    """WT30-F4.1 R3 con BU02-F2.1: alla chiusura di kai/a l'esito per la sua attesa passa alla casella
+    condivisa e lo prende UNA sessione (kai/b); la delega non presa resta a kai/a e, passata la grazia,
+    torna al mittente sul task (lo sveglia); la comunicazione torna come evento non-letto."""
     b.onda("alita/work-hub", "idle")
     b.onda("kai/a", "idle")
     b.onda("kai/b", "idle")
@@ -839,20 +846,28 @@ def caso_wt30_sessione_chiusa_riassegna_e_rimbalza(b: Banco) -> None:
                kind="delega")
     b.op("kai/a", "hook.end")
     b.onda("kai/a", None)
-    _check(b.c.store.message(d["id"])["to_slug"] is None, "la delega non presa va alla condivisa")
+    _check(b.c.store.message(d["id"])["to_slug"] == "a", "la delega resta a kai/a")
     _check(b.c.store.message(c["id"])["to_slug"] == "a", "la comunicazione aspetta la grazia")
     esito = b.op("alita/work-hub", "send", to="kai/a", intent="fatto", summary="ecco", message_type="response",
                  task_id=mia["task_id"])
     b.giro()
     _check(b.c.store.message(c["id"])["state"] == "pending", "dentro la grazia non si rimbalza")
+    _check(b.c.store.message(d["id"])["state"] == "pending", "dentro la grazia la delega aspetta kai/a")
+    _check(d["id"] not in b.decisioni("kai/b"), "kai/b non riceve la delega di kai/a")
     b.avanza(601)
     b.onda("alita/work-hub", "idle")
     b.onda("kai/b", "idle")
     b.giro()
-    _check(b.c.store.message(esito["id"])["to_slug"] is None, "l'esito arrivato dopo la fine va alla condivisa")
+    _check(b.c.store.message(esito["id"])["to_slug"] == "b", "l'esito arrivato dopo la fine lo prende kai/b")
     dec = b.decisioni("kai/b")
-    _check(dec.get(d["id"], ("", ""))[1] == "sveglia", f"kai/b prende la delega: {dec}")
+    _check(d["id"] not in dec, f"kai/b non prende la delega: {dec}")
     _check(dec.get(esito["id"], ("", ""))[1] == "sveglia", f"kai/b riceve l'esito di kai/a: {dec}")
+    row = b.c.store.message(d["id"])
+    _check(row["state"] == "done" and row["esito"] == "non_letto", f"delega non letta: {row['esito']}")
+    torn = [x for x in b.op("alita/work-hub", "inbox")["messages"] if x["intent"] == "sessione-chiusa"]
+    _check(len(torn) == 1 and torn[0]["type"] == "response" and torn[0]["task_id"] == d["task_id"],
+           f"la delega torna ad alita sul task: {torn}")
+    _check(any(d["task_id"] in t for t in b.prompt_a("alita/work-hub")), "e la sveglia")
     row = b.c.store.message(c["id"])
     _check(row["state"] == "done" and row["esito"] == "non_letto", f"comunicazione non letta: {row['esito']}")
     ev = [x for x in b.op("alita/work-hub", "inbox")["messages"] if x["intent"] == "non-letto"]
@@ -861,6 +876,62 @@ def caso_wt30_sessione_chiusa_riassegna_e_rimbalza(b: Banco) -> None:
     _check(not any("non-letto" in t or c["id"] in t for t in b.prompt_a("alita/work-hub")), "non sveglia")
     _check(len([x for x in b.op("alita/work-hub", "inbox")["messages"] if x["intent"] == "non-letto"]) == 1,
            "un solo rimbalzo")
+    _check(len([x for x in b.op("alita/work-hub", "inbox")["messages"] if x["intent"] == "sessione-chiusa"]) == 1,
+           "una sola delega tornata")
+
+
+def caso_bu02_delega_a_stanza_chiusa(b: Banco) -> None:
+    """BU02-F2.1, 02/11 11:43: Leo delega a kai/claude-fabric-mcp, chiusa da ore. La delega passava
+    alla casella condivisa e tre sessioni vive di nico la eseguivano (Mariapia aggiunta al gruppo
+    Entra più volte). Ora resta a quella stanza, nessuna sessione viva la riceve, e torna a Leo (qui alita→kai)."""
+    for a in ("alita/work-hub", "kai/fbk26", "kai/fer26", "kai/acs29"):
+        b.onda(a, "idle")
+    b.op("kai/fabric", "hook.start")
+    b.op("kai/fabric", "hook.end")
+    b.avanza(3 * 3600)
+    for a in ("alita/work-hub", "kai/fbk26", "kai/fer26", "kai/acs29"):
+        b.onda(a, "idle")
+    d = b.op("alita/work-hub", "send", to="kai/fabric", intent="fabric-mariapia", summary="rimetti Mariapia nel gruppo",
+             message_type="brief", kind="delega")
+    _check("stays queued for that session only" in (d.get("warning") or ""), f"avviso all'invio: {d.get('warning')}")
+    b.giro()
+    for s in ("fbk26", "fer26", "acs29"):
+        _check(d["id"] not in b.decisioni(f"kai/{s}"), f"kai/{s} non la riceve")
+        _check(not [m for m in b.op(f"kai/{s}", "inbox")["messages"] if m["id"] == d["id"]],
+               f"e non la vede in casella (kai/{s})")
+    row = b.c.store.message(d["id"])
+    _check(row["state"] == "done" and row["esito"] == "non_letto", f"stanza chiusa da ore: subito indietro ({row['esito']})")
+    torn = [m for m in b.op("alita/work-hub", "inbox")["messages"] if m["intent"] == "sessione-chiusa"]
+    _check(len(torn) == 1 and torn[0]["task_id"] == d["task_id"] and "kai/fabric" in torn[0]["summary"],
+           f"torna a Leo: {torn}")
+    _check(any(d["task_id"] in t for t in b.prompt_a("alita/work-hub")), "Leo viene svegliato")
+
+
+def caso_bu02_delega_ad_agente_nudo(b: Banco) -> None:
+    """BU02-F2.2, 02/11: una delega a `kai` con tre sessioni vive e nessuna di casa finiva a tutte e tre
+    (lighthouse compresa). Ora la sveglia la porta a UNA sessione ferma, che la prende; le altre non
+    la vedono. Chi la legge per primo con bus_read la prende, se nessuna sveglia è partita."""
+    b.onda("alita/work-hub", "idle")
+    b.onda("kai/x", "working")
+    b.onda("kai/y", "idle")
+    b.onda("kai/z", "idle")
+    d = b.op("alita/work-hub", "send", to="kai", intent="bug", summary="correggi", message_type="request", kind="delega")
+    _check(d["delivered_to"] == "kai", f"casella condivisa: {d['delivered_to']}")
+    b.giro()
+    svegliate = [s for s in ("x", "y", "z") if b.decisioni(f"kai/{s}").get(d["id"], ("", ""))[1] == "sveglia"]
+    _check(svegliate == ["y"], f"una sola sessione, ferma: {svegliate}")
+    _check(b.c.store.message(d["id"])["to_slug"] == "y", "la prende kai/y")
+    for s in ("x", "z"):
+        _check(not [m for m in b.op(f"kai/{s}", "inbox")["messages"] if m["id"] == d["id"]], f"kai/{s} non la vede")
+    # tutte occupate: nessuna sveglia; la prima che la legge la prende
+    b.onda("kai/y", "working")
+    b.onda("kai/z", "working")
+    e = b.op("alita/work-hub", "send", to="kai", intent="bug2", summary="altro", message_type="request", kind="delega")
+    b.giro()
+    _check(b.c.store.message(e["id"])["to_slug"] is None, "nessuna ferma: resta condivisa")
+    b.op("kai/z", "read", message_id=e["id"])
+    _check(b.c.store.message(e["id"])["to_slug"] == "z", "la prende chi la legge")
+    _check(not [m for m in b.op("kai/x", "inbox")["messages"] if m["id"] == e["id"]], "kai/x non la vede più")
 
 
 def caso_wt30_richiesta_ferma_un_giorno(b: Banco) -> None:
@@ -897,7 +968,8 @@ SCENARI = [caso_irjocy, caso_orbit_non_viva, caso_xn9lv0, caso_attese_non_chiudi
            att_cloud, att_pulizia, caso_am26_cloud_a_kai_nudo, caso_am26_tmux_e_hub_muto,
            caso_onda_ritirata_per_silenzio, caso_sessione_delegata_da_chiudere, caso_dc29_delega_si_chiude,
            caso_wt30_request_comunicazione_rifiutata, caso_wt30_copia_condivisa_consumata,
-           caso_wt30_sessione_chiusa_riassegna_e_rimbalza, caso_wt30_richiesta_ferma_un_giorno]
+           caso_wt30_sessione_chiusa_riassegna_e_rimbalza, caso_wt30_richiesta_ferma_un_giorno,
+           caso_bu02_delega_a_stanza_chiusa, caso_bu02_delega_ad_agente_nudo]
 
 
 def esegui(scenario, base: Path | None = None) -> None:

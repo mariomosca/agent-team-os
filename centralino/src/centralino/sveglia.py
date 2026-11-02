@@ -32,12 +32,13 @@ from datetime import timedelta
 from . import canale, regole
 from .canale import Rinvio
 from .db import Store
-from .dbbus import INTENT_NON_LETTO, msg_id, with_pending_wake
+from .dbbus import INTENT_NON_LETTO, INTENT_SESSIONE_CHIUSA, msg_id, with_pending_wake
 from .tempo import age_s, iso, iso_now, now, parse_iso
 
 WAIT_IDLE_H = 72
 FERMO_S = 600           # un messaggio azionabile fermo da tanto, senza canale, fa l'avviso all'hub
 INTENT_FERMI = "messaggi-fermi-senza-canale"
+PRESA_ALLA_SVEGLIA = ("delega", "esito", "domanda", "risposta")  # una sola sessione (regole.a_una_sola)
 VECCHIO_GG = 30          # un messaggio pending più vecchio non genera l'avviso senza canale
 TESTO_AVVISO_S = 1800   # rinvio per testo nella casella da tanto: avviso a chi ha delegato
 INTENT_TESTO = "sveglia-rinviata-testo"
@@ -91,15 +92,18 @@ class Sveglia:
         """(agente, slug) -> [(msg_id, regola, mittente)] per i messaggi pending di questa macchina."""
         attese = attese if attese is not None else self._attese()
         host = self.c.amap.host_self() or ""
-        vive_cache: dict[str, list[str]] = {}
+        vive_cache: dict[str, tuple[list[str], list[str], str | None]] = {}
         out: dict[tuple[str, str], list] = defaultdict(list)
         for r in self.c.store.read().execute(
                 "SELECT id, to_agent, to_slug, raw FROM messages WHERE state='pending' AND to_host=?", (host,)):
             rec = json.loads(r["raw"])
             agent = r["to_agent"]
             if agent not in vive_cache:
-                vive_cache[agent] = self.c.vivo.slug_con_canale(agent)
-            for slug in regole.destinatari(rec, agent, r["to_slug"], attese, vive_cache[agent]):
+                stati = [s for s in self.c.vivo.vive(agent) if s.canale != "nessuno"]
+                vive_cache[agent] = ([s.slug for s in stati], [s.slug for s in stati if s.ferma],
+                                     self.c.amap.home_slug(agent))
+            vive, ferme, casa = vive_cache[agent]
+            for slug in regole.destinatari(rec, agent, r["to_slug"], attese, vive, ferme, casa):
                 out[(agent, slug)].append((r["id"], regole.classifica(rec, agent, slug, attese),
                                            rec.get("from_session") or rec.get("from")))
         return out
@@ -173,6 +177,11 @@ class Sveglia:
                         conn.execute("UPDATE messages SET letto_at=?, letto_da=? WHERE id=? "
                                      "AND letto_at IS NULL AND (to_slug IS NULL OR to_slug=?)",
                                      (at, f"{a}/{s}", d.msg_id, s))
+                        if d.regola in PRESA_ALLA_SVEGLIA:
+                            # BU02-F2.2: dalla casella condivisa la prende chi l'ha ricevuta, le altre
+                            # sessioni non la vedono più
+                            conn.execute("UPDATE messages SET to_slug=? WHERE id=? AND to_slug IS NULL",
+                                         (s, d.msg_id))
                     conn.execute("INSERT INTO wake_decisions (at, giro, agent, slug, msg_id, task_id, regola, "
                                  "decisione, motivo, canale) VALUES (?,?,?,?,?,?,?,?,?,?)",
                                  (at, giro, a, s, d.msg_id, task_of.get(d.msg_id), d.regola, d.decisione,
@@ -496,6 +505,10 @@ class Sveglia:
         priorità low, regola 6, non sveglia e non blocca lo Stop."""
         inviati = []
         for g in self.c.bus.rimbalza_non_letti(non_letto_s()):
+            if g.get("tipo") == "delega":
+                if (got := self._delega_tornata(g)):
+                    inviati.append(got)
+                continue
             n = len(g["messages"])
             dove = f"{g['agent']}/{g['slug']}"
             intents = ", ".join(sorted(set(g["intents"])))
@@ -512,6 +525,28 @@ class Sveglia:
                 self.c.log("warn", "non_letto_fallito", sessione=dove, a=g["to"], errore=str(exc))
             self.c.log("info", "non_letti", sessione=dove, mittente=g["mittente"], n=n)
         return inviati
+
+    def _delega_tornata(self, g: dict) -> str | None:
+        """BU02-F2.1: la delega per una sessione chiusa torna a chi l'ha mandata come ``response`` sul
+        suo task (intent ``sessione-chiusa``): è un ritorno, quindi sveglia il delegante (regola esito)
+        e la sua attesa resta aperta finché non la chiude o la rimanda."""
+        dove = f"{g['agent']}/{g['slug']}"
+        mid, tid = g["messages"][0], g.get("task_id")
+        cosa = f" ({g['intents'][0]}: {g['summary']})" if g.get("intents") and g["intents"][0] else ""
+        stato = ("l'aveva presa ma si è chiusa senza mandare l'esito" if g.get("presa") else
+                 "si è chiusa e non è stata riaperta prima di leggerla")
+        testo = (f"Delega {tid}{cosa} non eseguita: la sessione {dove} {stato}. Nessun'altra sessione di "
+                 f"{g['agent']} l'ha ricevuta. Se serve ancora, rimandala a una sessione viva (bus_status "
+                 f"{g['agent']}) e chiudi questa attesa con bus_close ({mid}).")
+        try:
+            out = self.c.bus.send(g["agent"], g["to"], "response", INTENT_SESSIONE_CHIUSA,
+                                  {"summary": testo, "messages": g["messages"], "sessione": dove},
+                                  priority="high", sender_session=g["slug"],
+                                  task_id=tid if isinstance(tid, str) else None)
+        except Exception as exc:  # noqa: BLE001 — un avviso mancato non ferma il giro
+            self.c.log("warn", "delega_tornata_fallita", sessione=dove, a=g["to"], errore=str(exc))
+            return None
+        return out["id"]
 
     def avvisi_fermi_un_giorno(self) -> list[str]:
         """R4: request, brief e handoff pending da più di FERMO_GIORNO_S, qualunque sia il kind (le

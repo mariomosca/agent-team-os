@@ -875,19 +875,36 @@ e nella consegna verso un altro host, dove sta la copia di chi esegue):
 (`hook.end`) e da chiudi_delega dopo un `agent.close` riuscito (dopo un kill del PTY il SessionEnd può non
 arrivare); segna anche `ended_at` se manca.
 
-1. Deleghe non ancora prese (nessun messaggio della sessione sul task) e ritorni per un'attesa aperta della
-   sessione passano subito alla **casella condivisa** (`to_slug` NULL, log `riassegnato`). `regole.destinatari`:
-   un ritorno della condivisa va al proprietario dell'attesa se ha un canale, altrimenti alle sessioni dell'agente
-   con canale (§6: la proprietà passa quando chi ha delegato non è più viva).
-2. Il resto (comunicazioni, eventi, cc-notify, risposte senza attesa o su attesa chiusa) aspetta una grazia di
+1. I ritorni per un'attesa aperta della sessione passano subito alla **casella condivisa** (`to_slug` NULL, log
+   `riassegnato`). `regole.destinatari`: un ritorno della condivisa va al proprietario dell'attesa se ha un canale,
+   altrimenti a **una** sessione dell'agente (§6: la proprietà passa quando chi ha delegato non è più viva; BU02-F2.2).
+2. **Le deleghe non passano mai ad altre sessioni** (BU02-F2.1, 02/11 11:43: una delega di Leo a
+   `nico/claude-fabric-mcp`, chiusa, finiva nella condivisa e la eseguivano tre sessioni vive di Nico, con l'aggiunta
+   di Mariapia al gruppo Entra ripetuta). `DbBus._deleghe_senza_sessione`: una delega `pending` per uno slug di questa
+   macchina la cui sessione non è viva (`Vivacita.stato`) e il cui ultimo segno di vita (`ended_at`, altrimenti
+   `last_heartbeat`, altrimenti l'età della delega se la sessione non è mai stata vista) è più vecchio di
+   `NON_LETTO_S` passa a `done` con esito `non_letto` (`via: sessione_chiusa:<agente>/<slug>`), presa o no, a
+   qualunque età. Al mittente torna, una per task, una **`response`** sul task con intent `sessione-chiusa`,
+   priorità `high`, mittente la sessione chiusa (`Sveglia._delega_tornata`): è un ritorno, quindi sveglia il
+   delegante (regola esito) e l'attesa resta aperta finché non la chiude o la rimanda. All'invio, una delega a uno
+   slug non vivo ha l'avviso "stays queued for that session only". La pulizia (`pulizia.py`) non sposta le deleghe.
+3. Il resto (comunicazioni, eventi, cc-notify, risposte senza attesa o su attesa chiusa) aspetta una grazia di
    `NON_LETTO_S` (600 s, `AB_NON_LETTO_S` nei test): copre `claude --resume` e la riapertura nella stessa cartella,
    che azzera `ended_at`. Finita la grazia (`Sveglia.avvisi_non_letti`, nel giro **prima** della tabella, così un
    messaggio riassegnato sveglia nello stesso giro), i messaggi passano a `done` con esito `non_letto` e il
    mittente riceve **un** `event` `non-letto` (priorità `low`, regola 6: non sveglia, non blocca) per sessione
-   chiusa, con gli id e gli intent. Una delega o un ritorno arrivati dopo la fine vanno ancora alla condivisa.
+   chiusa, con gli id e gli intent. Un ritorno arrivato dopo la fine va ancora alla condivisa.
    Mai per gli avvisi scritti dal centralino (`INTENTI_CENTRALINO`, mittente `*/sveglia`), mai verso la sessione
    stessa, mai un rimbalzo di un rimbalzo. Solo sessioni finite negli ultimi 3 giorni: lo storico più vecchio non
    si rimbalza (ci pensa la pulizia, §15).
+
+**R3b. Casella condivisa: una sessione sola per deleghe e ritorni** (BU02-F2.2, 02/11: la delega t-20261102-u2rkzx
+a `kai` nudo arrivava a tre sessioni Kai, lighthouse compresa). `regole.a_una_sola`: una delega, o una `response`/
+`question` con `task_id`. Nella condivisa `regole.destinatari` la dà a una sola sessione con canale
+(`regole.una_sessione`: una ferma, la casa prima; poi la casa; poi la prima per nome), scelta di nuovo a ogni giro.
+La prende (`to_slug` = quella sessione) chi riceve la sveglia (`PRESA_ALLA_SVEGLIA` in `giro_sveglia`) o la prima
+sessione dell'agente che la legge con `bus_read` (`DbBus.segna_lettura`, log `presa`): dalle caselle delle altre
+sparisce, e lo Stop delle altre non la conta. Comunicazioni e urgenti della condivisa restano a tutte le sessioni.
 
 **R4. Richieste ferme da più di un giorno, qualunque sia il kind.** `Sveglia.avvisi_fermi_un_giorno`: `request`,
 `brief` e `handoff` `pending` di questa macchina più vecchi di `FERMO_GIORNO_S` (86400 s, e meno di 30 giorni),
@@ -898,5 +915,6 @@ che nessuno ha letto. Una volta per messaggio (`meta` `fermo1g:<id>`). Al primo 
 anche le richieste già ferme da più di un giorno (fino a 30 giorni).
 
 Regressioni: `caso_wt30_request_comunicazione_rifiutata`, `caso_wt30_copia_condivisa_consumata`,
-`caso_wt30_sessione_chiusa_riassegna_e_rimbalza`, `caso_wt30_richiesta_ferma_un_giorno`; `att_pulizia` e
-`test_avviso_senza_canale_anche_a_sessione_chiusa` aggiornati (la delega non presa è già nella condivisa).
+`caso_wt30_sessione_chiusa_riassegna_e_rimbalza`, `caso_wt30_richiesta_ferma_un_giorno`, `caso_bu02_delega_a_stanza_chiusa`,
+`caso_bu02_delega_ad_agente_nudo`; `att_pulizia`, `att_scadenza` e `test_avviso_senza_canale_anche_a_sessione_chiusa`
+aggiornati (la delega resta alla sua stanza e torna al mittente).

@@ -1,6 +1,6 @@
 from types import SimpleNamespace as S
 
-from centralino.regole import Attesa, blocca_stop, classifica, decidi, destinatari
+from centralino.regole import Attesa, a_una_sola, blocca_stop, classifica, decidi, destinatari, una_sessione
 
 W = {"t-1": Attesa("t-1", "alita", "work-hub", "kai/orbit", "kai/orbit", "expected"),
      "t-2": Attesa("t-2", "alita", "work-hub", None, "kai/orbit", "closed")}
@@ -27,6 +27,25 @@ def test_destinatari():
     assert destinatari({"type": "response", "task_id": "t-1"}, "alita", None, W, ["a", "work-hub"]) == ["work-hub"]
     assert destinatari({"type": "brief"}, "kai", None, W, ["a", "b"]) == ["a", "b"]
     assert destinatari({"type": "brief"}, "kai", "z", W, ["a"]) == ["z"]
+    # BU02-F2.2: una delega o un ritorno senza proprietario vivo vanno a una sola sessione
+    dl = {"type": "request", "kind": "delega", "task_id": "t-9"}
+    assert destinatari(dl, "kai", None, W, ["c", "a", "b"]) == ["a"]
+    assert destinatari(dl, "kai", None, W, ["c", "a", "b"], ferme=["c"]) == ["c"]
+    assert destinatari(dl, "kai", None, W, ["c", "a", "b"], ferme=["c", "b"], casa="b") == ["b"]
+    assert destinatari(dl, "kai", None, W, ["c", "a", "b"], ferme=[], casa="b") == ["b"]
+    assert destinatari(dl, "kai", None, W, []) == []
+    assert destinatari({"type": "response", "task_id": "t-9"}, "kai", None, W, ["b", "a"]) == ["a"]
+    # comunicazioni e urgenti restano a tutte
+    assert destinatari({"type": "event", "priority": "urgent"}, "kai", None, W, ["a", "b"]) == ["a", "b"]
+
+
+def test_a_una_sola():
+    assert a_una_sola({"type": "brief", "kind": "delega"})
+    assert a_una_sola({"type": "request", "requires_response": True})
+    assert a_una_sola({"type": "question", "task_id": "t-1"})
+    assert not a_una_sola({"type": "brief", "kind": "comunicazione"})
+    assert not a_una_sola({"type": "response"})
+    assert una_sessione([], ["a"]) is None
 
 
 def test_blocca_stop():
