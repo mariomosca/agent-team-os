@@ -27,7 +27,11 @@ BUSY_RE = re.compile(
     r"(esc to interrupt|ctrl\+c to interrupt|\b(?:Running|Contemplating|Crunching|Thinking|Working|"
     r"Generating|Pondering)\b[^\n]*…|…\s*\(\s*(?:\d+\s*s|↓))", re.I)
 PASTED_RE = re.compile(r"\[Pasted text #\d+")
-RULE_RE = re.compile(r"^[\s]*[─━\-═]{8,}\s*$")
+# Riga orizzontale, liscia o con un'etichetta dentro: Claude Code scrive il titolo della sessione
+# nella riga sopra la casella ("──────── Agenda, Fabric e filtro stellina ─"). Scartarla faceva
+# sembrare assente una casella piena (2/11/2026, la sveglia nel messaggio di Mario a Leo).
+RULE_RE = re.compile(r"^\s*(?:[─━\-═]{8,}|[─━\-═]{8,}\s.*\s[─━\-═]+|[─━\-═]+\s.*\s[─━\-═]{8,})\s*$")
+BOX_TAIL = 90  # un messaggio lungo va a capo su molte righe: la casella si cerca più in alto
 PROMPT_RE = re.compile(r"^\s*[❯>][  ]?(.*)$")
 MENU_ROW_RE = re.compile(r"^\s*\d+[.)]\s|^(?:yes|no)\b", re.I)
 PLACEHOLDER_RE = re.compile(r"^try\s*[\"“]", re.I)
@@ -86,7 +90,7 @@ def read_prompt_box(screen: str) -> str | None:
     end = len(lines)
     while end > 0 and not lines[end - 1].strip():
         end -= 1
-    lines = lines[max(0, end - 24):end]
+    lines = lines[max(0, end - BOX_TAIL):end]
     for i in range(len(lines) - 1, 0, -1):
         m = PROMPT_RE.match(lines[i])
         if not m:
@@ -121,7 +125,7 @@ def screen_refusal(screen: str) -> str | None:
         return "asking"
     if PASTED_RE.search(tail):
         return "has_text"
-    box = read_prompt_box("\n".join(vivo.split("\n")[-40:]))
+    box = read_prompt_box("\n".join(vivo.split("\n")[-BOX_TAIL:]))
     if box is None:
         return "no_box"
     if box.strip():
@@ -226,7 +230,7 @@ def via_tmux(pane: str, text: str) -> str:
     time.sleep(1.5)
     after_raw = (_tmux("capture-pane", "-p", "-e", "-t", pane) or subprocess.CompletedProcess([], 0, "")).stdout or ""
     after, after_vivo = testi_schermo(after_raw)
-    box = read_prompt_box("\n".join(after_vivo.split("\n")[-40:]))
+    box = read_prompt_box("\n".join(after_vivo.split("\n")[-BOX_TAIL:]))
     ok = bool(BUSY_RE.search(after)) or (box is not None and text[:20] not in box)
     return "tmux" if ok else "tmux:non_confermato"
 
