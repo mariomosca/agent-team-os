@@ -1,4 +1,4 @@
-"""centralino serve | status | sim | consegna | pendenti"""
+"""centralino serve | status | sim | consegna | pendenti | chiama"""
 
 from __future__ import annotations
 
@@ -26,6 +26,18 @@ def main(argv: list[str] | None = None) -> int:
     st.add_argument("--timeout", type=float, default=10, help="secondi di attesa del socket (default 10)")
     sub.add_parser("consegna", help="un messaggio da un altro host (JSON {agent, slug, record} su stdin)")
     sub.add_parser("pendenti", help="messaggi in casella di questo host, una riga inboxes/<agente>[/@slug]/<id>.json")
+    ch = sub.add_parser("chiama", help="un'operazione del socket per un agente senza MCP (runner headless): "
+                        "args JSON da --args o da stdin, risposta JSON su stdout")
+    ch.add_argument("op", help="send, reply, close, inbox, read, thread, waits, status, ...")
+    ch.add_argument("--agent", default=os.environ.get("AB_AGENT"), help="agente (default AB_AGENT, altrimenti dalla cartella)")
+    ch.add_argument("--slug", default=os.environ.get("AB_SESSION_SLUG"),
+                    help="sessione (default AB_SESSION_SLUG, altrimenti il nome della cartella)")
+    ch.add_argument("--cwd", default=None, help="cartella del chiamante (default la cartella corrente)")
+    ch.add_argument("--args", dest="op_args", default=None, help="argomenti JSON (default: stdin se non è un terminale)")
+    ch.add_argument("--senza-battito", action="store_true",
+                    help="non segnare la sessione viva (come i client di servizio); di default la chiamata vale "
+                         "come battito: un runner che legge la casella almeno ogni 60 s resta una sessione viva")
+    ch.add_argument("--timeout", type=float, default=30)
     sm = sub.add_parser("sim", help="banco di prova a simulazione (AB_HOME temporaneo)")
     sm.add_argument("-v", "--verbose", action="store_true")
     a = p.parse_args(argv)
@@ -49,6 +61,25 @@ def main(argv: list[str] | None = None) -> int:
                               "ORDER BY ts", (AgentMap(home).host_self() or "",)):
             print(f"inboxes/{r['to_agent']}" + (f"/@{r['to_slug']}" if r["to_slug"] else "") + f"/{r['id']}.json")
         return 0
+    if a.cmd == "chiama":
+        raw = a.op_args if a.op_args is not None else ("" if sys.stdin.isatty() else sys.stdin.read())
+        try:
+            op_args = json.loads(raw) if raw.strip() else {}
+        except ValueError as exc:
+            print(f"argomenti non JSON: {exc}", file=sys.stderr)
+            return 2
+        if not isinstance(op_args, dict):
+            print("gli argomenti devono essere un oggetto JSON", file=sys.stderr)
+            return 2
+        caller = {"cwd": a.cwd or os.getcwd(), "agent": a.agent or None, "slug": a.slug or None,
+                  "pid": os.getppid(), "heartbeat": not a.senza_battito}
+        try:
+            r = call(a.op, op_args, caller=caller, sock=sock, timeout=a.timeout)
+        except CentralinoGiu as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print(json.dumps(r, ensure_ascii=False))
+        return 0 if r.get("ok") else 1
     try:
         if a.cmd == "consegna":
             d = json.load(sys.stdin)

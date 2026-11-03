@@ -299,4 +299,26 @@ ck "prefisso più lungo" "$(det /p/w/x)" "alita"
 ck "prefisso corto" "$(det /p/q)" "kai"
 ck "fuori mappa: fallback" "$(det /altrove)" "alita"
 
+echo "── install.sh --agents (TEO26-F1.4: agenti tenuti nel repo)"
+jq '.agents.teo = {display_name:"Vecchio", voice_id:"x"} | .rules = [{pattern:"/vecchia", agent:"teo"}, {pattern:"/k", agent:"kai"}]' \
+  "$IB/AGENT_MAP.json" > "$IB/m.tmp" && mv "$IB/m.tmp" "$IB/AGENT_MAP.json"
+ck "--agents esce 0" "$(inst --agents)" "0"
+AM="$IB/AGENT_MAP.json"
+ck "teo dal repo" "$(jq -r '.agents.teo.display_name' "$AM")" "Teo"
+ck "voce vecchia via" "$(jq -r '.agents.teo.voice_id // "nessuna"' "$AM")" "nessuna"
+ck "host mini" "$(jq -r '.agents.teo.host' "$AM")" "mini"
+ck "dominio brandart" "$(jq -r '.agents.teo.domain' "$AM")" "brandart"
+ck "~ espansa nel workspace" "$(jq -r '.agents.teo.workspace_root' "$AM")" "$HOME/Projects/06-Brandart/teo"
+ck "regola vecchia di teo tolta" "$(jq '[.rules[] | select(.pattern == "/vecchia")] | length' "$AM")" "0"
+ck "regola di teo con ~ espansa" "$(jq -r '[.rules[] | select(.agent == "teo")][0].pattern' "$AM")" "$HOME/Projects/06-Brandart/teo"
+ck "regole altrui intatte" "$(jq '[.rules[] | select(.agent == "kai")] | length' "$AM")" "1"
+ck "altri agenti intatti" "$(jq -r '.agents.kai.domain' "$AM")" "side"
+ck "persona copiata" "$(cmp -s "$R/personas/teo.md" "$IB/personas/teo.md" && echo si)" "si"
+ck "backup fatto" "$(ls "$IB"/AGENT_MAP.json.bak-* 2>/dev/null | wc -l | tr -d ' ')" "1"
+inst --agents >/dev/null
+ck "idempotente: una regola sola" "$(jq '[.rules[] | select(.agent == "teo")] | length' "$AM")" "1"
+echo '{rotto' > "$IB/AGENT_MAP.json"
+ck "mappa illeggibile: rifiutato" "$(inst --agents)" "1"
+ck "mappa rotta non toccata" "$(cat "$IB/AGENT_MAP.json")" "{rotto"
+
 echo; echo "PASS=$P FAIL=$F"; rm -rf "$T"; [[ $F -eq 0 ]]
