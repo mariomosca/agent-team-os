@@ -38,6 +38,7 @@ All of them `exec` `~/.claude/scripts/agent-team-os-centralino.py`, which calls 
 - **Executing a delegation**: questions with `bus_reply(message_type='question')` on the delegation (it stays in your inbox and does not hold your Stop until the answer arrives), the outcome with `bus_reply` on the delegation.
 - **Consuming**: `bus_close` with `chiuso`, `riarma` (keep waiting) or `letto`.
 - **Two machines**: address `agent@host[/slug]` (e.g. `kai@mini/crewmoor`). Laptop → mini goes to the mini's centralino over SSH (queued in `outbox/<host>/` if down); mini → laptop waits in the mini's `outbox/laptop/` until the laptop collects.
+- **Headless agents** (no Onda, no tmux, e.g. Teo on the mini): the runner reads its box with `centralino chiama <op>` (any socket op, JSON in/out): `session.event` start once, then `inbox` at least every 60 s. See `docs/CENTRALINO.md` §26.
 - **Slash commands**: `/bus`, `/inbox`, `/read <id>`, `/send`, `/reply`, `/handoff`, `/thread`, `/delegate`.
 
 ## Key files
@@ -56,6 +57,7 @@ All of them `exec` `~/.claude/scripts/agent-team-os-centralino.py`, which calls 
 | `skills/agent-team-os/SKILL.md` | the skill |
 | `mods/bus-band/` | the band above the prompt, reads the centralino's view |
 | `examples/AGENT_MAP.example.json` | starter config |
+| `agents/<name>.json`, `personas/<name>.md` | agents this repo carries to every machine (Teo); merged into `AGENT_MAP.json` by `install.sh --agents` |
 | `schema/` | message and event schemas |
 
 ## Source of truth

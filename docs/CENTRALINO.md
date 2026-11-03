@@ -918,3 +918,54 @@ Regressioni: `caso_wt30_request_comunicazione_rifiutata`, `caso_wt30_copia_condi
 `caso_wt30_sessione_chiusa_riassegna_e_rimbalza`, `caso_wt30_richiesta_ferma_un_giorno`, `caso_bu02_delega_a_stanza_chiusa`,
 `caso_bu02_delega_ad_agente_nudo`; `att_pulizia`, `att_scadenza` e `test_avviso_senza_canale_anche_a_sessione_chiusa`
 aggiornati (la delega resta alla sua stanza e torna al mittente).
+
+## 26. Agenti headless: la casella letta dal runner (TEO26-F1.4, 03/11/2026)
+
+**Il caso.** Teo è un agente Brandart che gira solo sul Mac mini, headless, dietro un bot Teams: niente Onda,
+niente tmux, quindi nessun canale di sveglia. Riceve dai colleghi (attraverso il bot), delega a `nico`, manda
+eventi a `leo@laptop`. Il bus verrà sostituito da Crewmoor (CM02): la soluzione è piccola e non cambia la
+logica del centralino.
+
+**Scelta: la casella si legge, non si sveglia.** Il runner di Teo (lo scrive Nico, TEO26-F3) usa il comando
+`centralino chiama <op>`: una qualunque operazione del socket (§3.2) con il chiamante preso da `--agent`,
+`--slug`, `--cwd` (o `AB_AGENT`, `AB_SESSION_SLUG`, la cartella corrente), argomenti JSON da `--args` o da
+stdin, risposta JSON su stdout (exit 0 ok, 1 rifiuto del centralino, 2 argomenti sbagliati o centralino giù).
+Nessun canale «headless» nuovo: le regole di §22 e §25 valgono così come sono, purché il runner sia una
+sessione viva.
+
+Ciclo del runner:
+
+1. all'avvio `centralino chiama session.event --args '{"event":"start","source":"runner"}'`: senza un evento di
+   sessione il battito non fa una sessione (§19);
+2. almeno ogni 60 s `centralino chiama inbox` (ogni chiamata è un battito, `HEARTBEAT_S` 120 s): teo/teo è
+   «viva per heartbeat, canale nessuno»;
+3. `read` per prendere una delega della casella condivisa (R3b), `reply` per domande ed esito sulla delega,
+   `send` con `kind='delega'` verso `nico` (mini) o `nico@laptop`, `event` verso `leo@laptop`, `close` sui
+   ritorni;
+4. alla chiusura `session.event` con `{"event":"end"}`.
+
+`--senza-battito` dà il comportamento dei client di servizio (`heartbeat: false`): utile per letture di
+controllo, non per il runner.
+
+**Cosa succede ai messaggi.** Un messaggio a `teo` nudo dal laptop va al mini (`agents.teo.host = "mini"`) e lì,
+con nessuna sessione con canale, resta nella casella condivisa (§22): `inbox` della sessione teo/teo la
+vede. Una delega a `teo@mini/teo` resta alla stanza finché il runner batte; se il runner è fermo da più di
+`NON_LETTO_S` torna al mittente come `sessione-chiusa` (BU02-F2.1), che è il segnale giusto. Un messaggio
+azionabile che il runner non chiude entro 10 minuti produce l'avviso «messaggi fermi» (§22): sul mini l'hub
+non ha canale, quindi è una notifica di sistema; il testo porta solo destinatario, mittente, intent e id.
+Dal mini, `leo` e `nico` nudi sono quelli del mini: verso il laptop si scrive `leo@laptop`, `nico@laptop`.
+
+**cc verso il dominio personale.** Il bus v3 non produce cc-notify (l'ultimo è del 21/10, bus v2.8): il
+traffico fra agenti brandart non lascia nulla nella casella di Alita. Gli unici avvisi all'hub sono quelli
+del centralino (§22, §25 R4), con mittente, intent e id e mai il `summary`, come chiesto dalla review di Alita
+del 29/10 per il ponte verso il personale. Regressione: `test_niente_cc_al_hub_per_il_traffico_brandart`.
+
+**Configurazione nel repo.** L'AGENT_MAP vero non è nel repo; gli agenti che il repo deve portare su tutte le
+macchine stanno in `agents/<nome>.json` (voce, regole delle cartelle con `~/`, regola di routing) e
+`personas/<nome>.md`. `install.sh --agents` li fonde nell'AGENT_MAP della macchina (backup prima; per quegli
+agenti vince il repo, gli altri restano come sono) e copia la persona. Si lancia sul laptop e sul mini dopo il
+pull: il centralino rilegge l'AGENT_MAP da solo (mtime), nessun riavvio. Teo non ha `voice_id`: `tts` non
+legge l'AGENT_MAP, voice-notify ripiega (`voice_id || null`), la bus-band non usa la voce, l'importatore di
+Crewmoor tratta la voce assente come `null`.
+
+Test: `tests/test_chiama.py`; `tests/test-custode.sh` (sezione `install.sh --agents`).

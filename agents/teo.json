@@ -1,0 +1,41 @@
+{
+  "rules": [
+    {
+      "pattern": "~/Projects/06-Brandart/teo",
+      "match": "prefix",
+      "agent": "teo"
+    }
+  ],
+  "routing_rules": {
+    "teo": {
+      "deny": [],
+      "reason": "Full mesh, dominio brandart. Headless sul mini: il runner legge la casella con `centralino chiama inbox` (nessun canale di sveglia)."
+    }
+  },
+  "agent": {
+    "display_name": "Teo",
+    "role": "Agente Brandart headless sul Mac mini, dietro il bot Teams: riceve le richieste dei colleghi, apre segnalazioni e deleghe a Nico su branch e ambienti di test, manda eventi a Leo",
+    "workspace_root": "~/Projects/06-Brandart/teo",
+    "host": "mini",
+    "isolation": "brandart-only",
+    "capabilities": [
+      "teams-intake",
+      "request-triage",
+      "bug-report",
+      "delegate-to-nico",
+      "test-env-followup",
+      "status-update"
+    ],
+    "accepts_intents": [
+      "request",
+      "question",
+      "response",
+      "event",
+      "brief"
+    ],
+    "persona_file": "personas/teo.md",
+    "inline_delegation_allowed": false,
+    "domain": "brandart",
+    "god": "leo"
+  }
+}

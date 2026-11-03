@@ -24,6 +24,10 @@
 #                       this host and warns on Telegram. Only on a remote host: with
 #                       --host <name>, or with $AB_HOME/HOST set to a host that is not the hub.
 #   --custode --uninstall   remove the custode (job + script). Nothing else.
+#   --agents            merge the agents kept in this repo (agents/<name>.json + personas/<name>.md)
+#                       into $AB_HOME/AGENT_MAP.json: the repo wins for those agents (entry, folder
+#                       rules, routing rule, persona), every other agent stays as it is. Backup first.
+#                       Run it on every machine of the bus (the hub and the mini) after a pull.
 #
 # Env: CLAUDE_HOME (default ~/.claude, e.g. ~/.config/claude-mini), AB_HOME
 # (default ~/.agent-team-os), LAUNCH_AGENTS_DIR (default ~/Library/LaunchAgents),
@@ -38,6 +42,7 @@ BUS_HOME="${AB_HOME:-$HOME/.agent-team-os}"
 HOST_NAME=""
 DAEMON=0
 REGISTER_HOOKS=0
+AGENTS=0
 CUSTODE=0
 UNINSTALL=0
 while [[ $# -gt 0 ]]; do
@@ -46,13 +51,14 @@ while [[ $# -gt 0 ]]; do
     --host=*) HOST_NAME="${1#--host=}"; shift ;;
     --daemon) DAEMON=1; shift ;;
     --register-hooks) REGISTER_HOOKS=1; shift ;;
+    --agents) AGENTS=1; shift ;;
     --custode) CUSTODE=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     --file-bus|--sveglia|--host-sync)
       echo "ERROR: $1 belonged to the file bus, removed in BR24-F5.7: every machine runs a centralino (--daemon)."
       exit 1 ;;
     --centralino) shift ;;  # accepted for old scripts: v3 is the only bus
-    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
     *) echo "Unknown option: $1 (see --help)"; exit 1 ;;
   esac
 done
@@ -198,6 +204,47 @@ else
     mkdir -p "$BUS_HOME/personas"
     cp "$REPO_DIR/examples/personas/"*.md "$BUS_HOME/personas/" 2>/dev/null || true
   fi
+fi
+
+# --- Agents kept in this repo (--agents) ---
+
+if [[ "$AGENTS" -eq 1 ]]; then
+  MAP="$BUS_HOME/AGENT_MAP.json"
+  if ! jq empty "$MAP" 2>/dev/null; then
+    echo "ERROR: $MAP is not valid JSON; agents not merged."
+    exit 1
+  fi
+  cp "$MAP" "$MAP.bak-$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$BUS_HOME/personas"
+  for frag in "$REPO_DIR"/agents/*.json; do
+    [[ -e "$frag" ]] || continue
+    name=$(basename "$frag" .json)
+    if ! jq -e '.agent | type == "object"' "$frag" >/dev/null 2>&1; then
+      echo "ERROR: $frag has no \"agent\" object; skipped."
+      continue
+    fi
+    # "~/" in folder paths becomes this machine's $HOME: the map compares real paths.
+    jq --arg n "$name" --arg home "$HOME" --arg today "$(date +%Y-%m-%d)" --slurpfile f "$frag" '
+      def tilde: if type == "string" and startswith("~/") then $home + .[1:] else . end;
+      ($f[0]) as $frag
+      | .agents = ((.agents // {}) + {($n): ($frag.agent | .workspace_root |= tilde)})
+      | .rules = ([(.rules // [])[] | select(.agent != $n)]
+                  + [($frag.rules // [])[] | .pattern |= tilde | .agent = $n])
+      | if $frag.routing_rules[$n] then .routing_rules = ((.routing_rules // {}) + {($n): $frag.routing_rules[$n]}) else . end
+      | .updated = $today
+    ' "$MAP" > "$MAP.tmp"
+    if [[ -s "$MAP.tmp" ]] && jq empty "$MAP.tmp" 2>/dev/null; then
+      mv "$MAP.tmp" "$MAP"
+    else
+      rm -f "$MAP.tmp"
+      echo "ERROR: merging $frag into $MAP failed; map left untouched."
+      exit 1
+    fi
+    if [[ -f "$REPO_DIR/personas/$name.md" ]]; then
+      cp "$REPO_DIR/personas/$name.md" "$BUS_HOME/personas/$name.md"
+    fi
+    echo "Agent '$name' merged into $MAP (persona → $BUS_HOME/personas/$name.md)"
+  done
 fi
 
 # --- This machine's host name ---
