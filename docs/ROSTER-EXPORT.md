@@ -26,6 +26,16 @@ Un unico ordine, uguale in tutti i lettori: `AB_AGENT_MAP` (un file preciso) →
 = l'ultima copia buona; file malformato = il centralino tiene l'ultima versione buona e scrive l'errore nel log. Mai un crash.
 `roster doctor` segnala una copia non controllata da più di 24 ore.
 
+## Quanto può essere vecchia la copia
+
+Chi la rinfresca è la sessione che si apre: `roster-identity.sh` lancia `roster cache refresh --if-older 600` in background,
+quindi la copia ha al massimo l'età dell'ultima apertura di sessione su quel device, più i pochi secondi del giro. Dove nessuno
+apre sessioni per ore (il mini di notte) la copia resta quella dell'ultimo giro buono, e va bene perché una mappa vecchia cambia
+l'instradamento solo se nel frattempo si è modificato il registro, e di notte non si modifica: la prima sessione del mattino la
+riscarica (304 se non è cambiato niente) e il centralino la rilegge da solo al cambio di `mtime`. Soglia di `roster doctor`:
+**24 ore** dall'ultimo controllo, oltre diventa un avviso con il rimedio (`roster cache refresh --force`). Una modifica urgente
+al registro si propaga a mano con lo stesso comando, anche sul mini (`ssh mini roster cache refresh --force`).
+
 ## Cosa non c'è più
 
 LaunchAgent `com.mindfullabai.roster.export` e cron del mini, `roster-export.sh`, il file `~/.agent-team-os/AGENT_MAP.json`
