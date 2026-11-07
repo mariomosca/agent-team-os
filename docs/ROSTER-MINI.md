@@ -66,18 +66,33 @@ inganna. Il fix è in `mcp-config` (37cef4e): se il cwd non corrisponde a nessun
 mappa solo dopo. Python di sistema 3.9: niente `str | None` non quotato.
 
 Agenti: Nico (`06-Brandart/`) e Teo (`06-Brandart/teo`) si connettono. Le sessioni nella cartella di Leo (`00-Brandart-PM-OS`: Nora, Otto) risolvono a
-leo, che sul mini non ha token: il server non si connette (voluto) e non c'è presenza, finché Otto e Nora non hanno le loro cartelle in Roster.
+leo, che sul mini non ha token: per le sessioni interattive in quelle cartelle il server non si connette. Otto e Nora ora hanno cartelle e token (F4.3c).
 
-## Teo e Otto
+## Teo, Otto e Nora
 
-Nessuna modifica ai loro avvii: sono già sulla config del mini. Teo: `claudeConfigDir: ~/.config/claude-mini` nei config del runner. Otto e Nora:
-plist Lighthouse (`com.lighthouse.otto.*`, `CLAUDE_CONFIG_DIR=/Users/mariomosca/.config/claude-mini`) e cron di Nora con la stessa variabile.
-Gli hook di Roster sono nelle `settings.json` di quella config, quindi si attivano.
+Teo: `claudeConfigDir: ~/.config/claude-mini` nei config del runner, gli hook delle settings utente scattano (sessione interattiva o `claude -p` senza opzioni).
+Otto e Nora: `CLAUDE_CONFIG_DIR=~/.config/claude-mini` da plist Lighthouse (`com.lighthouse.otto.*`) e dal cron del calendario di Nora (`avvia.sh`).
+Cartelle in Roster (workspace brandart): otto `~/Projects/00-Brandart-PM-OS/contratti`, nora `~/Projects/00-Brandart-PM-OS/segretaria`, `prefix`, `is_home`.
+Token: `ROSTER_PRODUCTION_TOKEN_{OTTO,NORA}_MINI_MINI` in `secrets.env` del mini (Nora coniato il 7/11 con `roster setup --agents otto,nora --config-dir ~/.config/claude-mini`).
 
-**Da impostare in Roster (workspace brandart, serve `registry:write`: l'agente kai ha solo il workspace personale e non vede Teo né Otto):**
-`agent_folders_set otto` con `{device: "mini", path: "~/Projects/00-Brandart-PM-OS/contratti", match: "prefix", is_home: true}`; stessa cosa per Nora
-(`~/Projects/00-Brandart-PM-OS/segretaria`). Dopo, il token `…OTTO_MINI_MINI` (già nel `secrets.env`) risolve e Otto manda la presenza. Teo ha già la sua
-regola nell'`AGENT_MAP` esportato (`~/Projects/06-Brandart/teo`).
+**Perché gli hook non bastano (F4.3c).** I `run.sh` di Otto (`contratti/`) e di Nora (`segretaria/`) lanciano `claude -p ... --setting-sources project,local`: le
+settings utente non vengono caricate, e gli hook di Roster stanno proprio lì. Risultato: giri veri, nessuna sessione su Roster. La presenza è quindi data da
+`roster wrap`, messo in testa a ciascun `run.sh` (dopo la scelta di `CLAUDE_CONFIG_DIR`, prima del lock):
+
+```
+if [ -z "${ROSTER_WRAPPED:-}" ] && command -v roster >/dev/null 2>&1; then
+  export ROSTER_WRAPPED=1
+  _SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
+  cd "$(dirname "$_SELF")" && exec roster wrap --client lighthouse --label "${1:-giro}" -- /bin/bash "$_SELF" "$@"
+fi
+```
+
+- Il wrap parte **dalla cartella dell'agente**: la cwd decide il token (il vault `00-Brandart-PM-OS` da solo risolverebbe a leo, senza token sul mini).
+- Apre la sessione (`client: lighthouse`, `reason: wrap`), un `beat` ogni 5 minuti, `end` all'uscita con l'exit del run; inoltra TERM/INT/HUP.
+- Etichetta: il modo del run (`giro`, `scadenze`, `chiudi`, `calendario`, `bozze`...). Fail-open: senza `roster`, senza token o con Roster giù il run parte uguale.
+- Limiti: niente `usage`/costo (il wrap non lo manda; il costo dei giri sta nei log del run) e una sessione per processo `run.sh`, quindi anche i no-op (es. `chiudi` senza risposte) aprono e chiudono una sessione di un secondo.
+- Dove: repo di Leo `brandartit/brandart-pm-os`, ramo `feat/rs07-f43c-roster-wrap` (4fa5d91, da `main`). Le stesse 10 righe per file sono applicate anche alle copie di lavoro del
+  laptop e del mini (che hanno modifiche di Leo non committate, e sul mini `segretaria/run.sh` è più vecchio di quello del laptop: non si copia un file sull'altro).
 
 ## Verifica (DoD)
 
@@ -93,7 +108,12 @@ F4.3b, 7 novembre 2026, 17:5x CET: stessa prova per Teo, `claude --model haiku` 
 `claude -p` con `mcp__roster__whoami` da `teo/` e da `06-Brandart/audit-plan`: risponde Teo e Nico, device mini.
 
 Non verificato a occhio su https://rosterhq.io/team (serve il login di Mario): lo stato viene dall'API.
-Un giro vero di Otto non c'è stato (cron/plist non in finestra): resta da vedere dopo che ha le cartelle.
+
+F4.3c, 7 novembre 2026, 20:46 CET: `contratti/run.sh chiudi` (Otto) e `segretaria/run.sh <modo sconosciuto>` (Nora) dal mini con l'env del cron
+(`CLAUDE_CONFIG_DIR=~/.config/claude-mini`, `PORTINERIA_HOST=mini`): niente modello, niente scritture nel vault. `GET /api/v1/sessions?live=false&device=mini`:
+`as-24a5195979c5` (otto, client `lighthouse`, chiusa) e `as-619150870a02` (nora, client `lighthouse`, chiusa). Vivi: `roster wrap -- sleep 12` dalle due cartelle,
+`live=true` → `as-8c84c16121f8` (otto) e `as-f803cd2bebc2` (nora), stato `open`; dopo 12 secondi `live=true` vuoto.
+Il primo giro vero (cron di Nora 7:45 lun-ven, Otto 9/13/17) passa dallo stesso involucro: da guardare lunedì 9/11.
 
 ## Ritorno
 
@@ -102,6 +122,6 @@ togliere la riga `roster export` dal crontab. I file di personas restano e si mo
 
 ## Da fare dopo
 
-- Cartelle di Otto e Nora in Roster (sopra, Alita): poi un loro giro vero visto come vivo sul mini.
+- Giro vero di Otto e Nora lunedì 9/11 visto su Roster; merge del ramo `feat/rs07-f43c-roster-wrap` in `brandartit/brandart-pm-os` (Leo).
 - `mcp_sync --host mini`: farlo conoscere `roster` e `agents-crew` (oggi la config globale e i token del mini restano a mano; `hosts:` non ammette `${VAR}`).
 - Installare sul laptop il `mcp-secrets.py` nuovo con `mcp_sync --apply` (oggi è solo nel repo e sul mini).
