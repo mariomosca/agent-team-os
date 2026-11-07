@@ -44,6 +44,9 @@ mini in tre modi:
 2. voci di alita, leo e kai più nuove di quelle del mini (giuste), `gemini_voice` per kai.
 3. campi in più in `hosts` (`mini.claude_account`, `mini.centralino`, `mini.claude_config`, `cloud`, `laptop.claude_accounts`).
 
+Il passo RS07-F4.1b (ramo `fix/rs07-f41b-export-host` di Roster) lo sistema: `host` = slug del home_device. Il comando è già in
+`roster-export.sh` ma commentato: si attiva quando il fix è in develop e il bundle del mini è aggiornato (Alita avvisa).
+
 Da fare lato server di Roster: emettere `host` (slug del `home_device`) per gli agenti con home device. Poi si aggiunge
 `export agent-map --device mini --agent-map ~/.agent-team-os/AGENT_MAP.json` a `roster-export.sh`, dopo un confronto con il file attuale.
 

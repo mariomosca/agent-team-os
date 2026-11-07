@@ -22,5 +22,8 @@ fi
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] roster export personas --device ${ROSTER_DEVICE:-mini}"
   "$ROSTER_BIN" export personas --device "${ROSTER_DEVICE:-mini}" --personas-dir "$ATO/personas"
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] exit $?"
+  # RS07-F4.1b: da attivare quando l'export emette `host` dal home_device e il bundle del mini e' aggiornato
+  # (Alita avvisa). Prima confrontare con il file attuale.
+  # "$ROSTER_BIN" export agent-map --device "${ROSTER_DEVICE:-mini}" --agent-map "$ATO/AGENT_MAP.json"
 } >> "$LOG" 2>&1
 exit 0
