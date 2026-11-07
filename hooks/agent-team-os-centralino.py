@@ -69,6 +69,24 @@ def chiama(op: str, caller: dict, timeout: float) -> dict | None:
     return resp.get("result") if isinstance(resp, dict) and resp.get("ok") else None
 
 
+def identita_da_roster() -> bool:
+    """RS07-F4.2: identità e persona le stampa ``roster-identity.sh`` (Roster) se è registrato
+    nello SessionStart di questa configurazione e la sua cache c'è; altrimenti le stampa il
+    centralino come prima. Tornare indietro = ``roster hook install --uninstall``."""
+    if os.environ.get("ROSTER_DISABLE") == "1":
+        return False
+    cfg = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    cache = Path(os.environ.get("ROSTER_HOME") or Path.home() / ".roster") / "cache" / "agents.json"
+    try:
+        hooks = json.loads((cfg / "settings.json").read_text(encoding="utf-8")).get("hooks") or {}
+        gruppi = hooks.get("SessionStart") or []
+        registrato = any("roster-identity.sh" in str(h.get("command") or "")
+                         for g in gruppi if isinstance(g, dict) for h in (g.get("hooks") or []) if isinstance(h, dict))
+    except (OSError, ValueError, AttributeError):
+        return False
+    return registrato and cache.is_file()
+
+
 def main(argv: list[str]) -> int:
     ev = argv[1] if len(argv) > 1 else ""
     if ev not in TIMEOUT_S:
@@ -94,12 +112,14 @@ def main(argv: list[str]) -> int:
         # sessione aperta per una delega (Onda/agenti): il centralino la propone per la chiusura
         "delegata": os.environ.get("SESSIONE_DELEGATA") == "1" or None,
     }
+    if ev == "start" and identita_da_roster():
+        caller["identita"] = "roster"
     out = chiama(f"hook.{ev}", caller, TIMEOUT_S[ev])
     if not out:
         return 0
     if ev == "start":
         print(out.get("banner") or "")
-        if out.get("persona"):
+        if out.get("persona") and caller.get("identita") != "roster":
             print(f"\n=== Persona: {out.get('display')} ===\n{out['persona'].rstrip()}\n=== End Persona ===")
     elif ev == "prompt" and out.get("additionalContext"):
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",

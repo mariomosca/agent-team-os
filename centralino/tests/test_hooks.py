@@ -120,3 +120,27 @@ def test_concorrenza_modo_attivo(bus):
     assert not errori, errori[:2]
     st = call("admin.stats", sock=sock)["result"]
     assert st["messaggi"] == 30 and st["attese_aperte"] == 30
+
+
+def test_identita_da_roster(bus, tmp_path):
+    """RS07-F4.2: con roster-identity.sh nello SessionStart e la cache di Roster, il centralino
+    non stampa identità e persona (le stampa Roster), ma resta l'indirizzo sul bus."""
+    home, cfg = bus
+    rh = tmp_path / "roster"
+    (rh / "cache").mkdir(parents=True)
+    (rh / "cache" / "agents.json").write_text("[]")
+    (cfg / "settings.json").write_text(json.dumps({"hooks": {"SessionStart": [
+        {"hooks": [{"type": "command", "command": "/x/.roster/hooks/roster-identity.sh --with-presence"}]}]}}))
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("AB_", "ONDA_", "CLAUDE_", "TMUX", "ROSTER_"))}
+    env.update(AB_HOME=str(home), CLAUDE_CONFIG_DIR=str(cfg), CLAUDE_PROJECT_DIR=str(home / "ws" / "kai" / "s1"),
+               ROSTER_HOME=str(rh))
+    run = lambda e: subprocess.run([str(HOOKS / "agent-team-os-load.sh")], input='{"session_id": "sess-r"}',
+                                   capture_output=True, text=True, env=e, timeout=15).stdout
+    out = run(env)
+    assert "Bus: this session is kai@laptop/s1." in out and "Inbox: empty." in out
+    assert "You are" not in out and "Sono Kai." not in out
+    # ritorno: senza cache di Roster, o con ROSTER_DISABLE=1, il centralino stampa tutto come prima
+    assert "You are Kai (kai@laptop/s1)" in run({**env, "ROSTER_DISABLE": "1"})
+    (rh / "cache" / "agents.json").unlink()
+    out = run(env)
+    assert "You are Kai (kai@laptop/s1)" in out and "Sono Kai." in out
