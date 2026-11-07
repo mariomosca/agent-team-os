@@ -67,10 +67,17 @@ class HookOps:
         items = self.c.bus.inbox_items(me.agent, me.slug)
         alte = sum(1 for _, _, m in items if m.get("priority") in ("urgent", "high"))
         host = f"@{me.host}" if me.host else ""
-        righe = ["=== Agent Team OS ===",
-                 f"You are {info.get('display_name') or me.agent} ({me.agent}{host}/{me.slug}). "
-                 f"Role: {info.get('role') or ''}",
-                 f"Workspace: {caller.get('cwd')}", ""]
+        # RS07-F4.2: con l'hook di Roster installato l'identità e la persona le stampa
+        # roster-identity.sh; qui resta solo l'indirizzo sul bus (CENTRALINO.md §13.2).
+        da_roster = caller.get("identita") == "roster"
+        if da_roster:
+            righe = ["=== Agent Team OS ===",
+                     f"Bus: this session is {me.agent}{host}/{me.slug}. Workspace: {caller.get('cwd')}", ""]
+        else:
+            righe = ["=== Agent Team OS ===",
+                     f"You are {info.get('display_name') or me.agent} ({me.agent}{host}/{me.slug}). "
+                     f"Role: {info.get('role') or ''}",
+                     f"Workspace: {caller.get('cwd')}", ""]
         if not items:
             righe.append("Inbox: empty.")
         else:
@@ -90,7 +97,7 @@ class HookOps:
         righe += ["", "Bus: bus_inbox, bus_read, bus_send, bus_reply, bus_close, bus_status (MCP agent-bus).",
                   "=== End Agent Team OS ==="]
         persona = None
-        pf = info.get("persona_file")
+        pf = None if da_roster else info.get("persona_file")
         if pf:
             p = self.c.home / pf
             if p.is_file():

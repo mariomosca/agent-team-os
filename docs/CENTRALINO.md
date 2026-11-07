@@ -434,7 +434,7 @@ Gli hook diventano sottili e chiamano `~/.claude/scripts/agent-team-os-centralin
 
 | Hook | Chiamata | Effetto |
 |---|---|---|
-| SessionStart | `evento start` | sessione registrata (pid, sessione Claude, pannello), banner con gli ultimi messaggi, persona |
+| SessionStart | `evento start` | sessione registrata (pid, sessione Claude, pannello), banner con gli ultimi messaggi, persona (senza «You are» e persona se `caller.identita = "roster"`: le stampa `roster-identity.sh`, RS07-F4.2, `ROSTER-LAPTOP.md`) |
 | UserPromptSubmit | `evento prompt` | heartbeat + avviso per urgent/high (massimo 3) |
 | Stop | `stop` | blocca solo con messaggi della tabella §6 colonna Stop, massimo 3 blocchi di fila |
 | SessionEnd | `evento end` | sessione chiusa |
