@@ -1,17 +1,18 @@
 # Il Mac mini come device di Roster (RS07-F4.3)
 
-Stato al 7 novembre 2026. Parte mini di `roster/docs/MIGRAZIONE.md` §2. Il laptop è RS07-F4.2.
+Stato al 7 novembre 2026 (F4.3 e F4.3b). Parte mini di `roster/docs/MIGRAZIONE.md` §2. Il laptop è RS07-F4.2.
 
 ## Cosa c'è sul mini
 
 | Cosa | Dove | Note |
 |---|---|---|
-| CLI `roster` 0.1.0 | `~/.local/share/roster/roster.mjs`, symlink `~/.local/bin/roster` | bundle di `npm run build:cli` da `origin/develop` (f5fbbfe), copiato con scp |
+| CLI `roster` 0.1.0 | `~/.local/share/roster/roster.mjs`, symlink `~/.local/bin/roster` | stesso bundle del laptop (SHA-256 `f820e6ff206e…`, da develop 9c5c4ca), copiato con scp il 7/11 (F4.3b); il precedente è `roster.mjs.bak-20261107-f43b`. Dopo ogni ricompilazione sul laptop: scp e confronto dello SHA |
 | Hook | `~/.local/share/hooks/` (sorgente per `roster hook install`), installati in `~/.roster/hooks/` | `roster-identity.sh --with-presence` su SessionStart, `roster-presence.sh` sugli altri eventi |
 | Device | `dv-mini`, slug `mini`, kind `mini`, workspace brandart e personale | `roster login` (device flow), token device fino al 2027-05-06 |
 | Token device | `~/.roster/credentials.json` (600) | niente portachiavi: il mini non ha login grafico, `store: "file"` in `~/.roster/config.json` |
 | Token agente | `~/.config/agenti/secrets.env` del mini | `ROSTER_PRODUCTION_TOKEN_{NICO,TEO,OTTO}_MINI_MINI`, mai stampati |
-| Export | cron ogni 10 minuti, `~/.local/share/roster/roster-export.sh` (sorgente: `scripts/roster-export-mini.sh`) | log in `~/.agent-team-os/logs/roster-export.log` |
+| Export | cron ogni 10 minuti, `~/.local/share/roster/roster-export.sh` (sorgente: `scripts/roster-export-mini.sh`) | persona e `AGENT_MAP.json`; log in `~/.agent-team-os/logs/roster-export.log` |
+| MCP `roster` | `~/.config/claude-mini/.claude.json` (a mano) + `scripts/mcp-secrets.map.json` | `headersHelper` con `{AGENT}_{DEVICE}_{CONFIG}` = `NICO/TEO_MINI_MINI`, vedi sotto |
 | Config Claude del mini | `~/.config/claude-mini/settings.json` | hook di Roster + env `ROSTER_TOKEN_CMD`; backup `settings.json.bak-20261107-rs07-f43` |
 
 Niente LaunchAgent: il mini non ha sessione grafica (gui/501), quindi tutto gira da cron.
@@ -36,19 +37,39 @@ Si esportano solo `personas/*.md` in `~/.agent-team-os/personas/` (4 file: alita
 del mini al momento dell'attivazione). Le persona di leo, nico, nora, otto e teo il server non le esporta (nessun DPA): i file
 già sul mini restano come sono. Lighthouse sul mini non legge `agenti.json`, quindi non si esporta.
 
-**`AGENT_MAP.json` non è nel cron.** `roster export agent-map --device mini` produce un documento che differisce da quello del
-mini in tre modi:
+**`AGENT_MAP.json` è nel cron dal 7/11 (F4.3b).** Con il fix F4.1b (Roster 1.0.3, `host` = slug del home_device) l'export ha `teo.host = "mini"`,
+che il centralino usa per instradare i messaggi a Teo sul mini. Ogni giro esporta in una cartella temporanea e sostituisce il file solo se
+l'export è riuscito e contiene `"host": "mini"`; la prima volta del giorno salva il precedente come `AGENT_MAP.json.bak-AAAAMMGG`.
+Il diff del primo giro rispetto al file del 3/11 era solo voci vocali più nuove (alita, kai, leo), `gemini_voice` di kai e campi in più in `hosts`.
 
-1. **toglie `agents.teo.host: "mini"`**, anche se il registro ha `home_device = mini` per teo. Il centralino usa quel campo
-   (`indirizzi.py`, `resolve_host`) per mandare i messaggi a teo verso il mini: senza, vanno in coda sul laptop. Blocca l'attivazione.
-2. voci di alita, leo e kai più nuove di quelle del mini (giuste), `gemini_voice` per kai.
-3. campi in più in `hosts` (`mini.claude_account`, `mini.centralino`, `mini.claude_config`, `cloud`, `laptop.claude_accounts`).
+## MCP `roster` sul mini
 
-Il passo RS07-F4.1b (ramo `fix/rs07-f41b-export-host` di Roster) lo sistema: `host` = slug del home_device. Il comando è già in
-`roster-export.sh` ma commentato: si attiva quando il fix è in develop e il bundle del mini è aggiornato (Alita avvisa).
+`mcp_sync.py --host mini` non è adatto: sul mini rifiuta le voci con `${VAR}` e la config globale è tenuta a mano (e il suo dry-run
+toglierebbe `agents-crew` dal `.mcp.json` di Nico, che non è in `hosts:`: non applicarlo senza prima sistemare quella voce). Quindi, come per
+`orbit` e `github-brandart` sul mini:
 
-Da fare lato server di Roster: emettere `host` (slug del `home_device`) per gli agenti con home device. Poi si aggiunge
-`export agent-map --device mini --agent-map ~/.agent-team-os/AGENT_MAP.json` a `roster-export.sh`, dopo un confronto con il file attuale.
+- voce `roster` (http `https://rosterhq.io/mcp`, `headersHelper: ~/.config/claude-mini/scripts/mcp-headers.sh roster`) in `~/.config/claude-mini/.claude.json`;
+- voce `roster` in `~/.config/claude-mini/scripts/mcp-secrets.map.json`: `Bearer ${ROSTER_PRODUCTION_TOKEN_{AGENT}_{DEVICE}_{CONFIG}}`;
+- `mcp-secrets.py` sostituito con quello di `mcp-config` (placeholder `{AGENT}/{DEVICE}/{CONFIG}`). Backup `*.bak-20261107-f43b` accanto.
+
+**Gotcha**: su questa versione di Claude Code l'helper parte con cwd = `~/.config/claude-mini`, non con la cartella della sessione. Senza agente il
+header manca, il server risponde 401 e Claude ripiega sul portachiavi: errore `CREDENTIAL_STORE_UNAVAILABLE` (sul mini il portachiavi è bloccato), che
+inganna. Il fix è in `mcp-config` (37cef4e): se il cwd non corrisponde a nessuna regola si usa il cwd del processo padre (`lsof`), il fallback della
+mappa solo dopo. Python di sistema 3.9: niente `str | None` non quotato.
+
+Agenti: Nico (`06-Brandart/`) e Teo (`06-Brandart/teo`) si connettono. Le sessioni nella cartella di Leo (`00-Brandart-PM-OS`: Nora, Otto) risolvono a
+leo, che sul mini non ha token: il server non si connette (voluto) e non c'è presenza, finché Otto e Nora non hanno le loro cartelle in Roster.
+
+## Teo e Otto
+
+Nessuna modifica ai loro avvii: sono già sulla config del mini. Teo: `claudeConfigDir: ~/.config/claude-mini` nei config del runner. Otto e Nora:
+plist Lighthouse (`com.lighthouse.otto.*`, `CLAUDE_CONFIG_DIR=/Users/mariomosca/.config/claude-mini`) e cron di Nora con la stessa variabile.
+Gli hook di Roster sono nelle `settings.json` di quella config, quindi si attivano.
+
+**Da impostare in Roster (workspace brandart, serve `registry:write`: l'agente kai ha solo il workspace personale e non vede Teo né Otto):**
+`agent_folders_set otto` con `{device: "mini", path: "~/Projects/00-Brandart-PM-OS/contratti", match: "prefix", is_home: true}`; stessa cosa per Nora
+(`~/Projects/00-Brandart-PM-OS/segretaria`). Dopo, il token `…OTTO_MINI_MINI` (già nel `secrets.env`) risolve e Otto manda la presenza. Teo ha già la sua
+regola nell'`AGENT_MAP` esportato (`~/Projects/06-Brandart/teo`).
 
 ## Verifica (DoD)
 
@@ -59,7 +80,12 @@ un prompt breve, poi `/exit`.
   stato `waiting` (turn_end).
 - Dopo `/exit`: `live=true` vuoto, `GET /api/v1/sessions/as-7625ac83fc5d` → `closed`, `end_reason: prompt_input_exit`.
 
+F4.3b, 7 novembre 2026, 17:5x CET: stessa prova per Teo, `claude --model haiku` in tmux su `~/Projects/06-Brandart/teo`, un prompt, `/exit`.
+`GET /api/v1/sessions?live=true` con il token di teo: `as-51ec34c6be65`, agent `teo`, device `mini`, client `claude-code`, stato `waiting`; dopo `/exit` vuoto.
+`claude -p` con `mcp__roster__whoami` da `teo/` e da `06-Brandart/audit-plan`: risponde Teo e Nico, device mini.
+
 Non verificato a occhio su https://rosterhq.io/team (serve il login di Mario): lo stato viene dall'API.
+Un giro vero di Otto non c'è stato (cron/plist non in finestra): resta da vedere dopo che ha le cartelle.
 
 ## Ritorno
 
@@ -68,5 +94,6 @@ togliere la riga `roster export` dal crontab. I file di personas restano e si mo
 
 ## Da fare dopo
 
-- `mcp_sync --host mini` per distribuire i token di Roster (`servers.yaml`, voce `roster`): oggi i token sono nel file dei segreti del mini, non nei `.mcp.json`.
-- Sessioni di Teo e Otto (cron/Lighthouse): i loro token ci sono, ma i processi devono avere `CLAUDE_CONFIG_DIR=~/.config/claude-mini` perché gli hook si attivino.
+- Cartelle di Otto e Nora in Roster (sopra, Alita): poi un loro giro vero visto come vivo sul mini.
+- `mcp_sync --host mini`: farlo conoscere `roster` e `agents-crew` (oggi la config globale e i token del mini restano a mano; `hosts:` non ammette `${VAR}`).
+- Installare sul laptop il `mcp-secrets.py` nuovo con `mcp_sync --apply` (oggi è solo nel repo e sul mini).
