@@ -5,8 +5,7 @@
 # Fail-open: il CLI scrive un file solo dopo un 200 dell'API, in modo atomico; con Roster giu' i file restano
 # quelli dell'ultimo giro buono. Le persona di leo, nico, nora, otto, teo non si esportano (nessun DPA): il CLI non le
 # tocca e quelle gia' presenti restano.
-# AGENT_MAP.json NON e' qui: l'export toglie `agents.teo.host`, che serve al centralino per instradare verso il mini.
-# Si aggiunge quando il server di Roster emette `host` dal home_device (vedi docs/ROSTER-MINI.md).
+# AGENT_MAP.json (RS07-F4.3b): export in cartella temporanea, controllo che teo.host sia "mini", poi sostituzione atomica.
 set -u
 export PATH="/opt/homebrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 export ROSTER_TOKEN_STORE="${ROSTER_TOKEN_STORE:-file}"
@@ -22,8 +21,21 @@ fi
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] roster export personas --device ${ROSTER_DEVICE:-mini}"
   "$ROSTER_BIN" export personas --device "${ROSTER_DEVICE:-mini}" --personas-dir "$ATO/personas"
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] exit $?"
-  # RS07-F4.1b: da attivare quando l'export emette `host` dal home_device e il bundle del mini e' aggiornato
-  # (Alita avvisa). Prima confrontare con il file attuale.
-  # "$ROSTER_BIN" export agent-map --device "${ROSTER_DEVICE:-mini}" --agent-map "$ATO/AGENT_MAP.json"
+  # RS07-F4.3b: AGENT_MAP.json dal registro (host = slug del home_device, quindi teo.host = mini).
+  # Il file attuale si salva una volta al giorno come .bak-AAAAMMGG e solo se l'export e' riuscito.
+  AM="$ATO/AGENT_MAP.json"
+  TMPD="$(mktemp -d)"
+  if "$ROSTER_BIN" export agent-map --device "${ROSTER_DEVICE:-mini}" --agent-map "$TMPD/AGENT_MAP.json" \
+     && grep -q '"host": "mini"' "$TMPD/AGENT_MAP.json"; then
+    if ! cmp -s "$TMPD/AGENT_MAP.json" "$AM"; then
+      [[ -f "$AM" && ! -f "$AM.bak-$(date +%Y%m%d)" ]] && cp -p "$AM" "$AM.bak-$(date +%Y%m%d)"
+      cp "$TMPD/AGENT_MAP.json" "$AM.tmp" && mv "$AM.tmp" "$AM"
+      echo "agent-map aggiornato"
+    fi
+  else
+    echo "agent-map NON aggiornato (export fallito o senza host mini): resta il file precedente"
+  fi
+  rm -rf "$TMPD"
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] agent-map fatto"
 } >> "$LOG" 2>&1
 exit 0
