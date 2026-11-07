@@ -1,46 +1,38 @@
-# Agenti: come si cambiano adesso (RS07-F4.1)
+# Agenti: come si cambiano adesso (RS07-F4.1, riscritto in F4.10)
 
-Dal 7 novembre 2026 il registro degli agenti è **Roster** (https://rosterhq.io). Questi file sono **generati**, non si
-modificano a mano:
+Dal 7 novembre 2026 il registro degli agenti è **Roster** (https://rosterhq.io). Dal 7/11 sera (F4.10) non c'è più nessun
+file `AGENT_MAP.json` da tenere: i lettori aprono la **cache del CLI Roster**.
 
-| File | Chi lo legge |
-|------|--------------|
-| `~/.agent-team-os/AGENT_MAP.json` | centralino, statusline, voice-notify, Onda, `agent-detect.sh`, `mcp_sync.py` |
-| `~/.agent-team-os/personas/<agente>.md` | hook `agent-team-os-load.sh` (persona iniettata a inizio sessione) |
-| `~/.agent-team-os/avatars/{local,default}/*.png` | Onda |
-| `~/.lighthouse/agenti.json` | Lighthouse |
-
-Accanto a ogni gruppo di file c'è `.roster-export.json`: per ogni file l'ETag di Roster (`<versione>.<12 hex dello
-SHA-256 del file>`), quando è stato controllato e scritto, da quale URL.
+| Cosa | Dove sta | Chi lo legge |
+|------|----------|--------------|
+| agent-map (regole di cartella, `hosts`, `cc_awareness`, schede degli agenti) | `~/.roster/cache/agent-map.json` (stesso formato del vecchio `AGENT_MAP.json`) | centralino (`indirizzi.py`), statusline e `agent-detect.sh`, voice-notify, hook `onda-agent-event.mjs`, bus-band, `mcp-secrets.py`, `alita-memoria-sync.py`, custode del mini, `install.sh` |
+| persona | `~/.roster/cache/personas/<agente>.md` | hook `roster-identity.sh` a inizio sessione |
+| schede, cartelle, voce | `~/.roster/cache/agents.json` | hook `roster-identity.sh`, voice-notify |
+| avatar | `~/.agent-team-os/avatars/{local,default}/*.png` | Onda |
+| `~/.lighthouse/agenti.json` | scritto da `roster cache refresh` quando il registro cambia | Lighthouse (solo sul laptop) |
 
 ## Cambiare un agente
 
 1. Modificalo in Roster: dal portale o dal MCP `roster`.
-2. Il LaunchAgent `com.mindfullabai.roster.export` rigenera i file ogni 10 minuti. Subito: `roster export all`
-   (o `scripts/roster-export.sh`).
+2. La cache si rinfresca da sola: l'hook di sessione lancia `roster cache refresh --if-older 600` (If-None-Match, un
+   giro a vuoto costa un 304). Subito: `roster cache refresh --force`.
 
-Una modifica a mano al file viene sovrascritta al giro dopo.
+## Regola dei lettori
 
-## Come gira
+Un unico ordine, uguale in tutti i lettori: `AB_AGENT_MAP` (un file preciso) → la cache di Roster
+(`$ROSTER_HOME` o `~/.roster`, `cache/agent-map.json`) se esiste → il file a mano `~/.agent-team-os/AGENT_MAP.json`
+(per chi installa il bus senza Roster; `install.sh` ne crea uno di partenza solo se non c'è né la cache né il file).
+**Fail-open**: cache assente = nessuna mappa, comportamento di un file mancante; cache vecchia (Roster giù, token scaduto)
+= l'ultima copia buona; file malformato = il centralino tiene l'ultima versione buona e scrive l'errore nel log. Mai un crash.
+`roster doctor` segnala una copia non controllata da più di 24 ore.
 
-- CLI `roster` in `~/.local/bin/roster` (bundle in `~/.local/share/roster/`, dal repo `roster`, `npm run build:cli`;
-  non è pubblicato su npm). Token del device nel portachiavi, configurazione in `~/.roster/`.
-- `scripts/install-roster-export.sh` installa il LaunchAgent (`--remove` lo toglie); `scripts/roster-export.sh` è
-  quello che gira, log in `~/Library/Logs/roster-export.log`.
-- **Fail-open**: il CLI scrive un file solo dopo una risposta 200 dell'API, in modo atomico. Con Roster giù o il
-  token scaduto il giro fallisce nel log e i file restano quelli dell'ultimo giro buono.
-- **Non esportate**: le persona del workspace Brandart (leo, nico, teo, nora, otto) escono dal registro con 403
-  finché manca il DPA (`presence_reduced`): restano scritte a mano, il CLI non le tocca. Un agente senza testo di
-  persona (elio) non produce nessun file. `personas/proposte/` non è toccata.
+## Cosa non c'è più
 
-## Pre-commit
-
-`scripts/git-hooks/pre-commit` (attivo con `scripts/install-git-hooks.sh`, che imposta `core.hooksPath`) rifiuta il
-commit di `AGENT_MAP.json`, `agenti.json` o `personas/*.md` se il `.roster-export.json` nella stessa cartella manca o
-non corrisponde al contenuto (hash del file ≠ hash registrato). `examples/` e le persona a mano elencate in
-`HAND_MANAGED` (oggi `personas/teo.md`) non sono controllate.
+LaunchAgent `com.mindfullabai.roster.export` e cron del mini, `roster-export.sh`, il file `~/.agent-team-os/AGENT_MAP.json`
+(copia in `~/.roster/backups/`), il pre-commit che lo proteggeva e `.roster-export.json` accanto ai file generati.
+Non esportate: le persona del workspace Brandart restano scritte a mano (il server le nega finché manca il DPA).
 
 ## Tornare indietro
 
-`scripts/install-roster-export.sh --remove`: i file restano e si modificano a mano. Copie dei file di prima del primo
-giro: `~/.agent-team-os/backups/roster-f41-20261107/`.
+Rimettere un `AGENT_MAP.json` a mano in `~/.agent-team-os/` e togliere (o rinominare) `~/.roster/cache/agent-map.json`: i lettori
+ripiegano sul file. La copia di prima dell'ultimo giro è in `~/.roster/backups/`.

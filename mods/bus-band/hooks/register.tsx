@@ -46,6 +46,19 @@ const TODO_SHOWN = 5
 const TEAM_SHOWN = 4
 const WAITS_SHOWN = 5
 
+// RS07-F4.10: the agent-map is the Roster CLI's cache copy when it exists, else the hand-kept AGENT_MAP.json
+// of the bus (an install without Roster); AB_AGENT_MAP names a file outright.
+const agentMapFile = async ($: EngineInterface, root: string) => {
+  const explicit = await $.env.get('AB_AGENT_MAP')
+  if (explicit) return explicit
+  const rosterHome = await $.env.get('ROSTER_HOME')
+  const home = await $.env.get('HOME')
+  const cache = `${rosterHome ?? (home === undefined ? '' : `${home}/.roster`)}/cache/agent-map.json`
+  if (cache !== '/cache/agent-map.json' && (await $.fs.exists(cache))) return cache
+
+  return `${root}/AGENT_MAP.json`
+}
+
 const busRoot = async ($: EngineInterface) => {
   const busHome = await $.env.get('AB_HOME')
   const home = await $.env.get('HOME')
@@ -95,7 +108,7 @@ const scanTeam = async ($: EngineInterface, vista: Vista | null): Promise<TeamSn
   if (parsed === null) return null
 
   const cwd = await $.session.cwd()
-  const map = JSON.parse(await $.fs.read(`${root}/AGENT_MAP.json`))
+  const map = JSON.parse(await $.fs.read(await agentMapFile($, root)))
   const agent = agentForCwd(map.rules ?? [], cwd) ?? ''
   const slug = slugForCwd(cwd)
   const canMount = (await $.env.get('ONDA_SOCKET')) !== undefined
@@ -121,7 +134,7 @@ const scanWaits = async ($: EngineInterface, vista: Vista | null): Promise<Waits
   const root = await busRoot($)
   if (root === null) return null
   const cwd = await $.session.cwd()
-  const map = JSON.parse(await $.fs.read(`${root}/AGENT_MAP.json`))
+  const map = JSON.parse(await $.fs.read(await agentMapFile($, root)))
   const agent = agentForCwd(map.rules ?? [], cwd)
   if (agent === undefined) return null
 
@@ -191,7 +204,7 @@ const scan = async ($: EngineInterface, vista: Vista | null): Promise<BusSnapsho
   const root = busHome ?? `${home}/.agent-team-os`
   const cwd = await $.session.cwd()
 
-  const map = JSON.parse(await $.fs.read(`${root}/AGENT_MAP.json`))
+  const map = JSON.parse(await $.fs.read(await agentMapFile($, root)))
   const agent = agentForCwd(map.rules ?? [], cwd)
   if (agent === undefined) return null
   const slug = slugForCwd(cwd)

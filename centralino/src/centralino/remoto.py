@@ -90,7 +90,7 @@ class Remoto:
         """Il messaggio passa al centralino dell'altro host, che lo mette nella sua casella."""
         cmd = (self.hosts().get(host) or {}).get("centralino")
         if not cmd:
-            print(f"hosts.{host}.centralino manca in AGENT_MAP: messaggio in coda, non consegnabile", file=sys.stderr)
+            print(f"hosts.{host}.centralino manca nell'agent-map: messaggio in coda, non consegnabile", file=sys.stderr)
             return False
         doc = {"agent": agent, "slug": slug, "record": json.loads(data), "origine": self.amap.host_self() or "host"}
         res = self.ssh(host, f"{cmd} consegna", json.dumps(doc, ensure_ascii=False).encode("utf-8"))

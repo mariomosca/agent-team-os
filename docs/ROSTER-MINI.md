@@ -2,10 +2,9 @@
 
 > **Ora si fa con `roster setup` (RS07-F4.2b, 7/11/2026).** Pacchetto `@mindfullabai/roster` (`npm install -g` dal `.tgz` della
 > release di Roster), poi `roster setup --config-dir ~/.config/claude-mini` (la scelta resta in `config.json`) e `roster doctor`:
-> stessi passi del laptop (device, token, hook, cron, voce MCP con `headersHelper`). Il CLI sta in `~/.npm-global/bin/roster`
-> (`~/.local/bin/roster` è un symlink). Lo script di export è lo stesso del laptop (`personas` e `AGENT_MAP.json` col controllo
-> `"host": "mini"` e il `.bak` giornaliero di F4.3b, log in `~/.agent-team-os/logs/roster-export.log`); `scripts/roster-export-mini.sh`
-> di questo repo non serve più. Il bundle a mano e gli script vecchi sono in `~/.roster/backups/old-bundle/`. La voce MCP è ora
+> stessi passi del laptop (device, token, hook, voce MCP con `headersHelper`). Il CLI sta in `~/.npm-global/bin/roster`
+> (`~/.local/bin/roster` è un symlink). **Dal F4.10 (7/11 sera) il cron di export non c'è più**: l'agent-map (con `"host": "mini"` per Teo, che `doctor` controlla) sta in
+> `~/.roster/cache/agent-map.json`, rinfrescata dall'hook di sessione; `scripts/roster-export-mini.sh` è stato tolto da questo repo. Il bundle a mano e gli script vecchi sono in `~/.roster/backups/old-bundle/`. La voce MCP è ora
 > `roster mcp-headers` (stessa regola della cwd del processo padre del fix di `mcp-config`). La descrizione sotto resta come storia.
 
 Stato al 7 novembre 2026 (F4.3 e F4.3b). Parte mini di `roster/docs/MIGRAZIONE.md` §2. Il laptop è RS07-F4.2.
@@ -19,7 +18,7 @@ Stato al 7 novembre 2026 (F4.3 e F4.3b). Parte mini di `roster/docs/MIGRAZIONE.m
 | Device | `dv-mini`, slug `mini`, kind `mini`, workspace brandart e personale | `roster login` (device flow), token device fino al 2027-05-06 |
 | Token device | `~/.roster/credentials.json` (600) | niente portachiavi: il mini non ha login grafico, `store: "file"` in `~/.roster/config.json` |
 | Token agente | `~/.config/agenti/secrets.env` del mini | `ROSTER_PRODUCTION_TOKEN_{NICO,TEO,OTTO}_MINI_MINI`, mai stampati |
-| Export | cron ogni 10 minuti, `~/.local/share/roster/roster-export.sh` (sorgente: `scripts/roster-export-mini.sh`) | persona e `AGENT_MAP.json`; log in `~/.agent-team-os/logs/roster-export.log` |
+| Agent-map | `~/.roster/cache/agent-map.json` (dal F4.10, niente cron) | rinfrescata da `roster cache refresh` (hook di sessione); la leggono centralino, custode, `mcp-secrets.py` |
 | MCP `roster` | `~/.config/claude-mini/.claude.json` (a mano) + `scripts/mcp-secrets.map.json` | `headersHelper` con `{AGENT}_{DEVICE}_{CONFIG}` = `NICO/TEO_MINI_MINI`, vedi sotto |
 | Config Claude del mini | `~/.config/claude-mini/settings.json` | hook di Roster + env `ROSTER_TOKEN_CMD`; backup `settings.json.bak-20261107-rs07-f43` |
 

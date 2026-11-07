@@ -76,9 +76,35 @@ class Identita:
         return f"{self.agent}/{self.slug}"
 
 
+def roster_agent_map_path() -> Path:
+    """La copia dell'agent-map che tiene il CLI Roster: ``<ROSTER_HOME o ~/.roster>/cache/agent-map.json``."""
+    base = os.environ.get("ROSTER_HOME") or str(Path.home() / ".roster")
+    return Path(base) / "cache" / "agent-map.json"
+
+
+def agent_map_path(home: Path) -> Path:
+    """Dove sta l'agent-map di un bus (RS07-F4.10): ``AB_AGENT_MAP`` se c'è; sul bus vero
+    (``~/.agent-team-os``) la cache di Roster, se esiste, altrimenti il file scritto a mano
+    ``<home>/AGENT_MAP.json`` (chi non usa Roster); su un AB_HOME di prova solo il file."""
+    env = os.environ.get("AB_AGENT_MAP")
+    if env:
+        return Path(env)
+    legacy = Path(home) / "AGENT_MAP.json"
+    try:
+        real = Path(home).resolve() == (Path.home() / ".agent-team-os").resolve()
+    except OSError:
+        real = False
+    if real:
+        cache = roster_agent_map_path()
+        if cache.exists():
+            return cache
+    return legacy
+
+
 class AgentMap:
-    """AGENT_MAP.json riletto quando cambia mtime. Un file malformato lascia in uso
-    l'ultima versione buona (e ``errore`` lo dice)."""
+    """L'agent-map (copia in cache del CLI Roster, o AGENT_MAP.json a mano) riletta quando
+    cambia mtime. Assente = nessun agente noto, come prima; un file malformato lascia in
+    uso l'ultima versione buona (e ``errore`` lo dice)."""
 
     def __init__(self, home: Path):
         self.home = Path(home)
@@ -89,7 +115,7 @@ class AgentMap:
 
     @property
     def path(self) -> Path:
-        return self.home / "AGENT_MAP.json"
+        return agent_map_path(self.home)
 
     def data(self) -> dict:
         with self._lock:
@@ -105,7 +131,7 @@ class AgentMap:
                         raise ValueError("non è un oggetto")
                     self._data, self.errore = d, None
                 except (OSError, ValueError) as exc:
-                    self.errore = f"AGENT_MAP.json illeggibile: {exc}"
+                    self.errore = f"agent-map illeggibile: {exc}"
                 self._mtime = m
             return self._data
 
@@ -178,7 +204,7 @@ class AgentMap:
             if want == me:
                 return None
             if want not in self.hosts():
-                known = ", ".join(sorted(self.hosts())) or 'nessuno ("hosts" manca in AGENT_MAP.json)'
+                known = ", ".join(sorted(self.hosts())) or 'nessuno ("hosts" manca nella agent-map di Roster)'
                 raise ErroreIndirizzo("bad_request", f"host sconosciuto '{want}'. Noti: {known}")
             return want
         pinned = (self.agents().get(agent) or {}).get("host")
@@ -200,7 +226,7 @@ class AgentMap:
             raise ErroreIndirizzo(
                 "no_identity",
                 f"nessun agente per {cwd or '(cwd assente)'}: imposta AB_AGENT, oppure lavora in una "
-                "cartella elencata nelle rules di AGENT_MAP.json.")
+                "cartella elencata nelle rules dell'agent-map di Roster.")
         slug = norm_slug((caller or {}).get("slug") or "") or (slug_for_path(cwd) if cwd else None)
         if not slug:
             raise ErroreIndirizzo("no_identity", "slug della sessione non ricavabile: imposta AB_SESSION_SLUG")

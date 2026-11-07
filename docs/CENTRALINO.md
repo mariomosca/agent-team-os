@@ -42,7 +42,7 @@ centralino i dati grezzi del chiamante e riceve l'identità risolta.
 - **Indirizzo**: `agente`, `agente/slug`, `agente@host`, `agente@host/slug`, `agente/slug@host`. Host
   assente: `agents.<a>.host`, poi l'host hub, poi locale (come `resolve_host` di oggi).
 - **Host di questa macchina**: file `HOST`, altrimenti l'host con `hub: true`.
-- `AGENT_MAP.json` si rilegge quando cambia `mtime`; un file malformato lascia in uso l'ultima versione buona e scrive un errore nel log.
+- L'agent-map (`~/.roster/cache/agent-map.json`, la copia del CLI Roster; in mancanza `AGENT_MAP.json` a mano, o `AB_AGENT_MAP`; vedi `ROSTER-EXPORT.md`) si rilegge quando cambia `mtime`; assente = nessun agente noto; un file malformato lascia in uso l'ultima versione buona e scrive un errore nel log.
 
 Gli hook bash e `lib.sh` nel passo 1 restano come sono (la lib prende la prima regola, INV §3.a): il
 passo 0 la allinea, il passo 2 la sostituisce con eventi al centralino.
