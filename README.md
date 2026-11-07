@@ -45,7 +45,7 @@ The six tools come from the separate MCP server [`agent-bus-mcp`](https://github
 | `bus_read` | one message in full, or a whole thread |
 | `bus_status` | live sessions and hosts |
 
-Each session finds its identity from its working directory via `~/.agent-team-os/AGENT_MAP.json`. The old tool names (`bus_gestisci`, `bus_archive`, `bus_waits`, `bus_expect`, `bus_thread`) stay as aliases until 31 October 2026.
+Each session finds its identity from its working directory via the agent-map: `AGENT_MAP.json` in `~/.agent-team-os/`, or the cache copy of the Roster CLI (`~/.roster/cache/agent-map.json`) when there is one, which wins. The old tool names (`bus_gestisci`, `bus_archive`, `bus_waits`, `bus_expect`, `bus_thread`) stay as aliases until 31 October 2026.
 
 ### Architecture at a glance
 

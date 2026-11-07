@@ -18,7 +18,7 @@ git clone https://github.com/mariomosca/agent-team-os && cd agent-team-os
 ./install.sh --daemon --register-hooks
 ```
 
-`install.sh` is idempotent: copies hooks, commands, skill and the bus-band mod into `~/.claude/` (or `CLAUDE_HOME`), creates `~/.agent-team-os/`, drops a starter `AGENT_MAP.json` if none exists, and with `--daemon` starts the centralino (launchd with a GUI login, a cron line on a headless Mac). Requires `jq` and `uv`. A second machine: `--host <name>` there, and on the hub an entry in `hosts` with `ssh` and `centralino` (the command that runs that machine's centralino, used as `ssh <host> '<centralino> consegna'`).
+`install.sh` is idempotent: copies hooks, commands, skill and the bus-band mod into `~/.claude/` (or `CLAUDE_HOME`), creates `~/.agent-team-os/`, drops a starter `AGENT_MAP.json` if there is no agent-map (the Roster CLI's cache copy, `~/.roster/cache/agent-map.json`, or the hand-kept file), and with `--daemon` starts the centralino (launchd with a GUI login, a cron line on a headless Mac). Requires `jq` and `uv`. A second machine: `--host <name>` there, and on the hub an entry in `hosts` with `ssh` and `centralino` (the command that runs that machine's centralino, used as `ssh <host> '<centralino> consegna'`).
 
 ## Hooks
 

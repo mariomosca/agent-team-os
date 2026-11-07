@@ -29,7 +29,10 @@ set -uo pipefail
 trap '' PIPE
 
 AB_HOME="${AB_HOME:-$HOME/.agent-team-os}"
-AB_MAP="$AB_HOME/AGENT_MAP.json"
+# RS07-F4.10: l'agent-map e' la copia in cache del CLI Roster; senza Roster, il file a mano del bus.
+if [ -n "${AB_AGENT_MAP:-}" ]; then AB_MAP="$AB_AGENT_MAP"
+elif [ -f "${ROSTER_HOME:-$HOME/.roster}/cache/agent-map.json" ]; then AB_MAP="${ROSTER_HOME:-$HOME/.roster}/cache/agent-map.json"
+else AB_MAP="$AB_HOME/AGENT_MAP.json"; fi
 iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 file_age() { local m; m=$(stat -f %m "$1" 2>/dev/null) || { echo 999999; return; }; echo $(( $(date +%s) - m )); }
 
@@ -103,13 +106,13 @@ last_line() { grep -v '^[[:space:]]*$' "$1" 2>/dev/null | tail -1 | cut -c1-300;
 
 check_identity() {
   if ! jq empty "$AB_MAP" 2>/dev/null; then
-    add identita fail "AGENT_MAP.json non valido o assente ($AB_MAP)" \
-      "scp laptop:~/.agent-team-os/AGENT_MAP.json $AB_MAP   # stesso file su tutte e due le macchine"
+    add identita fail "agent-map non valida o assente ($AB_MAP)" \
+      "roster cache refresh --force   # riscarica l'agent-map dal registro Roster"
     return
   fi
   if ! jq -e --arg h "$SELF" '(.hosts // {}) | has($h)' "$AB_MAP" >/dev/null 2>&1; then
-    add identita fail "HOST=$SELF ma \"hosts.$SELF\" manca in AGENT_MAP.json" \
-      "ricopia AGENT_MAP.json dal laptop (deve contenere hosts.$SELF)"
+    add identita fail "HOST=$SELF ma \"hosts.$SELF\" manca nell'agent-map ($AB_MAP)" \
+      "roster cache refresh --force (l'agent-map deve contenere hosts.$SELF)"
     return
   fi
   add identita ok "$SELF sul bus, mappa valida"

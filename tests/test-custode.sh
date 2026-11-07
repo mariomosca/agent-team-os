@@ -5,6 +5,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."; R="$PWD"
 T=$(mktemp -d /tmp/abcustode.XXXXXX)
+# RS07-F4.10: the readers prefer the Roster cache copy of the agent-map; the tests must not see the real one.
+export ROSTER_HOME="$T/no-roster"
 export HOME="$T/home"; mkdir -p "$HOME"
 export PATH="$R/tests/fake-bin:$PATH"
 cat > "$HOME/.gitconfig" <<'EOF'
@@ -298,6 +300,11 @@ det(){ HOME="$T/fh" bash -c 'source "$1"; ab_detect_agent "$2"' _ "$IC/scripts/a
 ck "prefisso più lungo" "$(det /p/w/x)" "alita"
 ck "prefisso corto" "$(det /p/q)" "kai"
 ck "fuori mappa: fallback" "$(det /altrove)" "alita"
+mkdir -p "$T/no-roster/cache"
+jq -n '{rules:[{pattern:"/p", agent:"vera"}]}' > "$T/no-roster/cache/agent-map.json"
+ck "la cache di Roster vince sul file" "$(det /p/w/x)" "vera"
+ck "AB_AGENT_MAP sopra la cache" "$(AB_AGENT_MAP="$T/fh/.agent-team-os/AGENT_MAP.json" det /p/w/x)" "alita"
+rm -rf "$T/no-roster"
 
 echo "── install.sh --agents (TEO26-F1.4: agenti tenuti nel repo)"
 jq '.agents.teo = {display_name:"Vecchio", voice_id:"x"} | .rules = [{pattern:"/vecchia", agent:"teo"}, {pattern:"/k", agent:"kai"}]' \

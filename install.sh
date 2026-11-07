@@ -6,7 +6,7 @@
 # the centralino (centralino/, docs/CENTRALINO.md): one daemon per machine, SQLite.
 #
 # Idempotent: re-running it overwrites the bundled files but leaves your
-# AGENT_MAP.json untouched if it already exists. It also removes what the file bus
+# AGENT_MAP.json untouched if it already exists (with Roster the agent-map is its cache, ~/.roster/cache/agent-map.json). It also removes what the file bus
 # (v1-v2.8) left installed: lib.sh, wake.py, the collector and their jobs.
 #
 # Options:
@@ -38,6 +38,12 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
 BUS_HOME="${AB_HOME:-$HOME/.agent-team-os}"
+# RS07-F4.10: the agent-map the bus reads is the Roster CLI's cache copy when there is one; without Roster it is
+# the hand-kept $BUS_HOME/AGENT_MAP.json (AB_AGENT_MAP names a file outright). Same rule as the readers.
+ROSTER_MAP="${ROSTER_HOME:-$HOME/.roster}/cache/agent-map.json"
+if [[ -n "${AB_AGENT_MAP:-}" ]]; then AGENT_MAP_FILE="$AB_AGENT_MAP"
+elif [[ -f "$ROSTER_MAP" ]]; then AGENT_MAP_FILE="$ROSTER_MAP"
+else AGENT_MAP_FILE="$BUS_HOME/AGENT_MAP.json"; fi
 
 HOST_NAME=""
 DAEMON=0
@@ -125,7 +131,7 @@ fi
 if [[ "$CUSTODE" -eq 1 ]]; then
   C_SELF="$HOST_NAME"
   [[ -z "$C_SELF" && -s "$BUS_HOME/HOST" ]] && C_SELF=$(head -1 "$BUS_HOME/HOST" | tr -d '[:space:]')
-  C_HUB=$(jq -r '(.hosts // {}) | to_entries[] | select(.value.hub == true) | .key' "$BUS_HOME/AGENT_MAP.json" 2>/dev/null | head -1 || true)
+  C_HUB=$(jq -r '(.hosts // {}) | to_entries[] | select(.value.hub == true) | .key' "$AGENT_MAP_FILE" 2>/dev/null | head -1 || true)
   if [[ -z "$C_SELF" || "$C_SELF" == "$C_HUB" || "$C_SELF" == "laptop" ]]; then
     echo "ERROR: --custode runs on a remote host (the Mac mini), not on the hub."
     echo "       Use it with --host <name>, or after $BUS_HOME/HOST names a non-hub host."
@@ -195,8 +201,8 @@ rm -rf "$CLAUDE_HOME/mods/bus-band/.claude-plugin/types"
 
 # --- AGENT_MAP starter ---
 
-if [[ -f "$BUS_HOME/AGENT_MAP.json" ]]; then
-  echo "AGENT_MAP.json already exists at $BUS_HOME/AGENT_MAP.json — leaving it untouched."
+if [[ -f "$AGENT_MAP_FILE" ]]; then
+  echo "The agent-map already exists at $AGENT_MAP_FILE — leaving it untouched."
 else
   echo "Creating starter AGENT_MAP.json at $BUS_HOME/AGENT_MAP.json"
   cp "$REPO_DIR/examples/AGENT_MAP.example.json" "$BUS_HOME/AGENT_MAP.json"
@@ -208,7 +214,9 @@ fi
 
 # --- Agents kept in this repo (--agents) ---
 
-if [[ "$AGENTS" -eq 1 ]]; then
+if [[ "$AGENTS" -eq 1 && "$AGENT_MAP_FILE" == "$ROSTER_MAP" ]]; then
+  echo "--agents: this machine reads the agent-map from Roster ($ROSTER_MAP): the agents come from the registry, nothing to merge."
+elif [[ "$AGENTS" -eq 1 ]]; then
   MAP="$BUS_HOME/AGENT_MAP.json"
   if ! jq empty "$MAP" 2>/dev/null; then
     echo "ERROR: $MAP is not valid JSON; agents not merged."
@@ -250,8 +258,8 @@ fi
 # --- This machine's host name ---
 
 if [[ -n "$HOST_NAME" ]]; then
-  if ! jq -e --arg h "$HOST_NAME" '(.hosts // {}) | has($h)' "$BUS_HOME/AGENT_MAP.json" >/dev/null 2>&1; then
-    echo "WARN: host '$HOST_NAME' is not in \"hosts\" of $BUS_HOME/AGENT_MAP.json."
+  if ! jq -e --arg h "$HOST_NAME" '(.hosts // {}) | has($h)' "$AGENT_MAP_FILE" >/dev/null 2>&1; then
+    echo "WARN: host '$HOST_NAME' is not in \"hosts\" of $AGENT_MAP_FILE."
   fi
   echo "$HOST_NAME" > "$BUS_HOME/HOST"
   echo "This machine is '$HOST_NAME' on the bus ($BUS_HOME/HOST)."

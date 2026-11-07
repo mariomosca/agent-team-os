@@ -94,11 +94,21 @@ function readJsonFile(file) {
 }
 
 /**
- * Resolve the agent id from cwd via AGENT_MAP.rules[], mirroring
+ * The agent-map (RS07-F4.10): AB_AGENT_MAP, else the Roster CLI's cache copy when it exists, else the
+ * hand-kept AGENT_MAP.json of the bus (an install without Roster). Missing = no map, as before.
+ */
+function agentMapFile() {
+  if (process.env.AB_AGENT_MAP) return process.env.AB_AGENT_MAP;
+  const cache = path.join(process.env.ROSTER_HOME || path.join(os.homedir(), '.roster'), 'cache', 'agent-map.json');
+  return fs.existsSync(cache) ? cache : path.join(AB_HOME, 'AGENT_MAP.json');
+}
+
+/**
+ * Resolve the agent id from cwd via the agent-map rules[], mirroring
  * `ab_detect_agent`: longest matching prefix wins, then the map's fallback.
  */
 function detectAgent(cwd) {
-  const map = readJsonFile(path.join(AB_HOME, 'AGENT_MAP.json'));
+  const map = readJsonFile(agentMapFile());
   if (!map || !cwd) return { map: null, id: null };
 
   let bestId = null;
