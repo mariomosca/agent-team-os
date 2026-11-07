@@ -1,5 +1,13 @@
 # Il laptop come device di Roster: motori (RS07-F4.2)
 
+> **Ora si fa con `roster setup` (RS07-F4.2b, 7/11/2026).** Pacchetto `@mindfullabai/roster` (`npm install -g` dal `.tgz` della
+> release di Roster, bin in `/opt/homebrew/bin/roster`), poi `roster setup` e `roster doctor`: trova `~/.claude`, `~/.claude-a` e
+> `~/.config/claude-lighthouse`, conia i token che mancano, installa gli hook, programma l'export con launchd (stesso script del
+> mini, tutti e quattro i bersagli, `AGENT_MAP.json` protetto come sul mini; `scripts/roster-export.sh` e `install-roster-export.sh` di questo
+> repo non servono più; log in `~/.agent-team-os/logs/roster-export.log`, non più in `~/Library/Logs`) e lascia la voce MCP a `mcp_sync`. Sul laptop ha detto «già a posto»
+> su tutto tranne il LaunchAgent (plist e script rigenerati). `~/.local/bin/roster` è un symlink al nuovo bin. La descrizione
+> sotto resta come storia.
+
 Stato al 7 novembre 2026. Parte laptop di `roster/docs/MIGRAZIONE.md` §2. Il mini è RS07-F4.3 (`ROSTER-MINI.md`),
 l'export dei file generati è RS07-F4.1 (`ROSTER-EXPORT.md`).
 

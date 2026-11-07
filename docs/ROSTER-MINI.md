@@ -1,5 +1,13 @@
 # Il Mac mini come device di Roster (RS07-F4.3)
 
+> **Ora si fa con `roster setup` (RS07-F4.2b, 7/11/2026).** Pacchetto `@mindfullabai/roster` (`npm install -g` dal `.tgz` della
+> release di Roster), poi `roster setup --config-dir ~/.config/claude-mini` (la scelta resta in `config.json`) e `roster doctor`:
+> stessi passi del laptop (device, token, hook, cron, voce MCP con `headersHelper`). Il CLI sta in `~/.npm-global/bin/roster`
+> (`~/.local/bin/roster` è un symlink). Lo script di export è lo stesso del laptop (`personas` e `AGENT_MAP.json` col controllo
+> `"host": "mini"` e il `.bak` giornaliero di F4.3b, log in `~/.agent-team-os/logs/roster-export.log`); `scripts/roster-export-mini.sh`
+> di questo repo non serve più. Il bundle a mano e gli script vecchi sono in `~/.roster/backups/old-bundle/`. La voce MCP è ora
+> `roster mcp-headers` (stessa regola della cwd del processo padre del fix di `mcp-config`). La descrizione sotto resta come storia.
+
 Stato al 7 novembre 2026 (F4.3 e F4.3b). Parte mini di `roster/docs/MIGRAZIONE.md` §2. Il laptop è RS07-F4.2.
 
 ## Cosa c'è sul mini
