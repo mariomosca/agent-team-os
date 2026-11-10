@@ -37,7 +37,32 @@
         "windowId": { "type": ["string", "null"], "description": "Hosting window; null when mounted is false." },
         "host": { "type": "string", "description": "Machine the session runs on. Today always 'laptop'." },
         "worktreePath": { "type": ["string", "null"], "pattern": "^/", "description": "Optional (WT30). Absolute path of the git worktree the session runs in, when its workspace is a worktree Onda created or adopted; absent or null otherwise." },
-        "branch": { "type": ["string", "null"], "description": "Optional (WT30). Branch checked out in worktreePath; absent or null when there is no worktree or HEAD is detached." }
+        "branch": { "type": ["string", "null"], "description": "Optional (WT30). Branch checked out in worktreePath; absent or null when there is no worktree or HEAD is detached." },
+        "ask": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/ask" }], "description": "Optional (OD24-F4.4). What the session asks the human: set exactly when state is waiting_permission or waiting_answer, null otherwise. Its appearance is the 'session blocked' event: a reader that tracks (sessionId, state) sees the transition and can wake whoever delegated the session, with the text of the question." },
+        "subagents": { "type": "array", "items": { "$ref": "#/$defs/subagent" }, "description": "Optional. Sub-agents of the session: running ones, and finished ones for a few minutes. Empty when none or unknown." }
+      }
+    },
+    "ask": {
+      "type": "object",
+      "required": ["kind", "tool", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["permission", "answer"] },
+        "tool": { "type": ["string", "null"], "description": "Tool the ask is about (Bash, Edit, AskUserQuestion…); null when no tool call is pending (e.g. the trust prompt)." },
+        "text": { "type": ["string", "null"], "description": "The command, the file or the question; null when it cannot be known. Never screen content, never the user's prompt." }
+      }
+    },
+    "subagent": {
+      "type": "object",
+      "required": ["id", "type", "description", "state", "startedAt", "endedAt"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string" },
+        "description": { "type": ["string", "null"] },
+        "state": { "enum": ["running", "finished"] },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "endedAt": { "type": ["string", "null"], "format": "date-time" }
       }
     },
     "request": {

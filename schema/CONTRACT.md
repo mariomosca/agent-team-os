@@ -208,6 +208,9 @@ $AB_HOME/onda/sessions.json        (default ~/.agent-team-os/onda/sessions.json)
 | `sessions[].host` | string | Oggi sempre `laptop`. Esiste per il piano del Mac mini (`plans/PLAN-MAC-MINI-WORKER.md`). |
 | `sessions[].worktreePath` | string \| null | Facoltativo (WT30). Path assoluto del worktree git in cui gira la sessione, quando il suo workspace è un worktree creato o adottato da Onda. |
 | `sessions[].branch` | string \| null | Facoltativo (WT30). Branch del worktree; assente o `null` senza worktree o con HEAD staccata. |
+| `sessions[].hasText` | bool \| null | La casella del prompt ha testo, dall'ultima lettura dello schermo; `null` senza lettura recente. |
+| `sessions[].ask` | oggetto \| null | Facoltativo (OD24-F4.4). Cosa chiede la sessione all'umano: presente **esattamente** quando `state` è `waiting_permission` o `waiting_answer`, `null` altrimenti. `{ kind: "permission" \| "answer", tool, text }`: `tool` è lo strumento (`Bash`, `Edit`, `AskUserQuestion`…), `text` il comando, il file o la domanda; `null` quando non si sa. Mai contenuto dello schermo, mai il prompt dell'utente. |
+| `sessions[].subagents` | array | Facoltativo. Sotto-agenti della sessione (`id`, `type`, `description`, `state` running/finished, `startedAt`, `endedAt`): quelli vivi e, per qualche minuto, quelli finiti. |
 
 ### Stati
 
@@ -223,6 +226,15 @@ $AB_HOME/onda/sessions.json        (default ~/.agent-team-os/onda/sessions.json)
 `stateSince` per `pending_input` è l'istante in cui è **iniziato** l'episodio, non quello in cui sono scattati i 60 s: "TESTO FERMO da 12 min" si calcola da lì.
 
 Stati "fermi" (richiedono qualcuno): `pending_input`, `waiting_permission`, `waiting_answer`.
+
+### Evento «sessione bloccata» (OD24-F4.4, 10 nov 2026)
+
+Non c'è un file di eventi: l'evento è la **transizione** di una sessione in `waiting_permission` o `waiting_answer`, con `ask` valorizzato. Chi legge il file tiene `(sessionId, state)` dell'ultima lettura e, quando una sessione entra in uno dei due stati, ha in mano chi è bloccato (`agent`, `slug`, `terminalId`), da quando (`stateSince`) e su cosa (`ask.text`). È ciò che serve per svegliare chi ha delegato la sessione con il testo della domanda. Un lettore non annuncia gli stati che trova già fermi alla prima lettura (Onda fa lo stesso: niente replay dopo un riavvio).
+
+Lo stesso dato arriva per altre due strade:
+
+- `agent.wait` (MCP `onda_agent_wait`) finisce subito con `{ matched: false, blocked: true, state, stateSince, ask, agent, slug }` quando la sessione osservata si blocca (`stopOnBlocked: false` per il comportamento di prima).
+- Dentro Onda la sessione entra nella coda «aspettano te» (contatore nel rail = badge del Dock, ⌘J, notifica con chi, dove e cosa).
 
 ## 12. `requests/` — richieste dal mod a Onda
 
