@@ -637,3 +637,130 @@ def test_sessione_non_delegata_non_prende_la_delega_del_bus(b):
     _onda_term(b, "kai/rm", "pane-rm")
     _start_x(b, "kai/rm", "pane-rm")  # aperta da Mario, senza SESSIONE_DELEGATA
     assert _righe(b)[0]["terminal_id"] is None
+
+
+# ---------- DC29-F6.1: macchina senza Onda (mini) ----------
+
+import subprocess as _sp
+
+from centralino.deleghe import CliWorktree, _worktree_di
+
+
+def _git(cwd, *args):
+    return _sp.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args], cwd=cwd, check=True,
+                   capture_output=True, text=True).stdout.strip()
+
+
+def _worktree_vero(b, tmp_path, addr):
+    """Un repo usa e getta e un worktree linkato proprio nella cartella della sessione ``addr``."""
+    repo = tmp_path / "repo-mini"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "a.txt").write_text("a\n")
+    _git(repo, "add", "a.txt")
+    _git(repo, "commit", "-q", "-m", "init")
+    wt = b.cwd(addr)
+    wt.rmdir()
+    _git(repo, "worktree", "add", "-q", "-b", "feat/x", str(wt))
+    return str(repo), str(wt)
+
+
+@pytest.fixture
+def mini(b):
+    b.c.deleghe.senza_onda = True
+    return b
+
+
+def _fine(b, addr):
+    resp = b.c.handle_request({"v": 1, "id": "x", "op": "hook.end", "caller": b.caller(addr), "args": {}})
+    assert resp["ok"], resp
+
+
+def test_worktree_di(tmp_path, b):
+    repo, wt = _worktree_vero(b, tmp_path, "kai/wtd")
+    assert _worktree_di(wt) == (wt, os.path.realpath(repo))
+    assert _worktree_di(repo) is None              # il checkout principale non è un worktree da ritirare
+    os.makedirs(os.path.join(wt, "sub"))
+    assert _worktree_di(os.path.join(wt, "sub")) is None
+    assert _worktree_di(str(tmp_path / "manca")) is None
+
+
+def test_mini_bus_close_aspetta_il_session_end_poi_ritira(mini, tmp_path):
+    b = mini
+    repo, wt = _worktree_vero(b, tmp_path, "kai/mx")
+    tid = _delega(b, "alita/work-hub", "kai/mx", "DC29-F6.1 fai")
+    _start_x(b, "kai/mx", None, delegata=True)
+    b.op("kai/mx", "send", to="alita/work-hub", intent="re", summary="fatto", message_type="response", task_id=tid)
+    b.op("alita/work-hub", "close", task_id=tid)
+    r = _righe(b)[0]
+    assert (r["closure_state"], r["closure_reason"]) == ("pending", "session_al_lavoro")
+    assert (r["worktree_path"], r["repo_root"]) == (wt, os.path.realpath(repo))
+    assert b.fonda.metodi("worktree.retire") == [] and b.fonda.metodi("agent.close") == []
+    _fine(b, "kai/mx")
+    assert [p["path"] for p in b.fonda.metodi("worktree.retire")] == [wt]
+    assert b.fonda.metodi("worktree.list") == []  # niente rete sugli orfani senza Onda
+    r = _righe(b)[0]
+    assert (r["closure_state"], r["closure_reason"]) == ("closed", "retired")
+    assert r["closure_detail"].startswith("sessione già chiusa; worktree tolto")
+
+
+def test_mini_sessione_non_delegata_non_si_tocca(mini, tmp_path):
+    b = mini
+    _worktree_vero(b, tmp_path, "kai/mm")
+    tid = _delega(b, "alita/work-hub", "kai/mm", "fai")
+    _start_x(b, "kai/mm", None)  # aperta da Mario: niente SESSIONE_DELEGATA
+    _fine(b, "kai/mm")
+    b.op("alita/work-hub", "close", task_id=tid)
+    r = _righe(b)[0]
+    assert (r["closure_state"], r["closure_reason"], r["worktree_path"]) == ("closed", "senza_worktree", None)
+    assert b.fonda.chiamate == []
+
+
+def test_mini_esito_via_bus_una_volta_e_senza_task_id(mini, tmp_path, monkeypatch):
+    b = mini
+    _, wt = _worktree_vero(b, tmp_path, "kai/me")
+    tid = _delega(b, "alita/work-hub", "kai/me", "DC29-F6.1 fai")
+    b.c._write(lambda: b.c._conn().execute("UPDATE deleghe SET delegator_host='laptop2'"))
+    mandati = []
+    monkeypatch.setattr(b.c.bus, "send", lambda *a, **kw: mandati.append((a, kw)) or {"id": "m"})
+    _start_x(b, "kai/me", None, delegata=True)
+    _fine(b, "kai/me")
+    b.op("alita/work-hub", "close", task_id=tid)
+    b.op(None, "delega.chiudi", task_id=tid, reason="step_done", attendi=True)
+    assert b.forbit.scritte == []  # nessun Orbit qui
+    assert len(mandati) == 1
+    (frm, to, tipo, intent, payload), kw = mandati[0]
+    assert (frm, to, tipo, intent) == ("kai", "alita@laptop2/work-hub", "event", "delega-esito")
+    assert "task_id" not in kw and payload["delega_task_id"] == tid
+    assert payload["delega_set"]["step_ref"] == "DC29-F6.1" and payload["delega_set"]["closure_state"] == "closed"
+    assert payload["delega_set"]["worktree_path"] == wt
+
+
+def test_laptop_scrive_sul_passo_l_esito_remoto(b):
+    rec = {"id": "msg-20261111T070000Z-abcdefgh", "from": "nico", "to": "leo", "type": "event",
+           "intent": "delega-esito", "ts": "2026-11-11T07:00:00Z", "version": "1.0",
+           "payload": {"summary": "chiusa", "delega_set": {"step_ref": "DC29-F6.1", "bus_task_id": "t-x",
+                                                            "closure_state": "closed"}}}
+    b.c.bus.accogli(rec, "alita", "work-hub", origin="mini")
+    assert b.forbit.scritte == [{"step_ref": "DC29-F6.1", "bus_task_id": "t-x", "closure_state": "closed"}]
+    b.c.bus.accogli(rec, "alita", "work-hub", origin="mini")  # doppione: già in casella, niente di nuovo
+    assert len(b.forbit.scritte) == 1
+
+
+def test_cli_worktree(tmp_path):
+    finto = tmp_path / "onda-worktree"
+    finto.write_text('#!/bin/sh\necho "$@" > "$(dirname "$0")/argv"\n'
+                     'case "$1" in retire) echo \'{"retired":false,"reason":"dirty"}\';; '
+                     'list) echo \'{"worktrees":[]}\';; *) echo \'{"error":"boom"}\'; exit 1;; esac\n')
+    finto.chmod(0o755)
+    cli = CliWorktree(str(finto))
+    out = cli("worktree.retire", {"path": "/w", "archiveTagPrefix": "archivio/", "deleteBranch": True})
+    assert out == {"retired": False, "reason": "dirty"}
+    assert (tmp_path / "argv").read_text().split() == ["retire", "/w", "--archive-tag-prefix", "archivio/"]
+    cli("worktree.retire", {"path": "/w", "deleteBranch": False})
+    assert (tmp_path / "argv").read_text().split() == ["retire", "/w", "--keep-branch"]
+    assert cli("worktree.list", {"repoRoot": "/r", "fetch": False}) == {"worktrees": []}
+    with pytest.raises(EsternoGiu):
+        cli("agent.close", {"terminalId": "x"})
+    with pytest.raises(EsternoGiu):
+        CliWorktree(str(tmp_path / "manca"))("worktree.retire", {"path": "/w"})

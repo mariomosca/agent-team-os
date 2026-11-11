@@ -847,7 +847,24 @@ WT30-F0 e F6.1). La migrazione a v7 copia prima il database accanto (`centralino
 
 **Sicurezza dei test**: Onda e Orbit veri si chiamano solo dal centralino di `~/.agent-team-os` (o con
 `AB_DELEGHE_ESTERNI=1`). Su un AB_HOME di prova le chiamate esterne sono sempre "giù": test e banco non
-toccano mai repo, Onda o Orbit veri. Fuori perimetro (F6): il mini, dove non ci sono Onda né Orbit.
+toccano mai repo, Onda o Orbit veri.
+
+**Macchina senza Onda (DC29-F6.1, il mini)**. Vale quando nella home del centralino non c'è la cartella `onda/`
+(dove l'app scrive `sessions.json`), oppure con `AB_DELEGHE_WORKTREE=cli` (`=onda` lo spegne). Lì:
+
+- `worktree.retire` e `worktree.list` vanno alla CLI `onda-worktree` di onda-electron (`npm run build:cli`,
+  bundle `dist/cli/onda-worktree`, gli stessi controlli a porte chiuse dell'app). Si cerca in
+  `AB_ONDA_WORKTREE_CLI`, poi nel PATH, poi in `~/.local/bin/onda-worktree`. Installazione sul mini: copiare il
+  bundle in `~/.local/bin/` (serve `node` nel PATH del cron, `/opt/homebrew/bin`). Gli altri metodi di Onda
+  (`agent.close`) qui non esistono: le sessioni delegate girano in tmux e il centralino non le chiude.
+- il worktree di una delega è la cartella della sua sessione, se è la radice di un worktree linkato e la
+  sessione è delegata (`SESSIONE_DELEGATA=1`); una sessione aperta a mano non si tocca.
+- `bus_close` chiuso con la sessione ancora viva lascia la delega `pending` (`session_al_lavoro`); il retire
+  lo fa il SessionEnd della sessione delegata, che qui conta anche le deleghe del bus non nate da uno spawn.
+  La rete sugli orfani non gira.
+- niente Orbit locale: l'esito (closed o kept) va a chi ha delegato, se è su un'altra macchina, come evento
+  `delega-esito` (non sveglia, non blocca, senza `task_id`: non è un ritorno della delega), una volta per esito.
+  Il centralino che lo riceve da un altro host lo scrive sul passo con `delega_set`.
 
 
 ## 25. Ciclo di vita dei messaggi: niente messaggi appesi (WT30-F4.1, 30/10/2026)
