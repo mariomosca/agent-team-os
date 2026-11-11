@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -284,18 +285,13 @@ class Deleghe:
             spawn_by = f"{by.agent}/{by.slug}"
         except ErroreIndirizzo:
             spawn_by = None
-        sess_agent = sess_slug = None
-        if cwd:
-            try:
-                me = self.c.amap.identify({"cwd": cwd})
-                sess_agent, sess_slug = me.agent, me.slug
-            except ErroreIndirizzo:
-                pass
+        sess_agent, sess_slug, claude_sid = self._chi_e_nel_terminale(tid, inp, cwd)
         campi = {"spawn_by": spawn_by, "terminal_id": tid, "onda_session_id": r.get("sessionId"),
                  "workspace_id": r.get("workspaceId"), "repo_root": wt.get("repoRoot") or wi.get("repoRoot"),
                  "worktree_path": path, "branch": wt.get("branch") or wi.get("branch"),
                  "base": wt.get("base") or wt.get("mergedInto"), "labels": _j(labels),
-                 "sess_agent": sess_agent, "sess_slug": sess_slug, "host": self.c.amap.host_self()}
+                 "sess_agent": sess_agent, "sess_slug": sess_slug, "claude_session_id": claude_sid,
+                 "host": self.c.amap.host_self()}
         ts = iso_now()
 
         def scrivi():
@@ -319,6 +315,36 @@ class Deleghe:
         return {"registrato": True, "id": row["id"] if row else rid, "task_id": row["task_id"] if row else None,
                 "legate": legate}
 
+    def _chi_e_nel_terminale(self, tid: str, inp: dict, cwd: str | None) -> tuple:
+        """(agent, slug, claude_session_id) della sessione nata nel terminale dello spawn.
+
+        DC29-F5.6: ``onda_agent_spawn`` aspetta che la sessione sia pronta, quindi il suo SessionStart
+        arriva PRIMA di questo PostToolUse e ``su_start`` non trova ancora la riga. Se la sessione
+        si è già presentata (``sessions.onda_terminal_id``) vale la sua identità; altrimenti gli
+        override negli agentArgs (``AB_AGENT``/``AB_SESSION_SLUG``, come fa l'hook); per ultimo la
+        cartella. Il 30/10 lo spawn di kai/onda-wt30 (AB_SESSION_SLUG) era finito come
+        kai/onda-electron e la delega non si è mai legata."""
+        s = self.c.store.read().execute(
+            "SELECT agent, slug, claude_session_id FROM sessions WHERE onda_terminal_id=? AND host=? "
+            "AND ended_at IS NULL AND last_heartbeat>=? ORDER BY last_heartbeat DESC LIMIT 1",
+            (tid, self.c.amap.host_self() or "", iso(now() - timedelta(seconds=FINESTRA_S)))).fetchone()
+        if s is not None:
+            return s["agent"], s["slug"], s["claude_session_id"]
+        args = " ".join(str(x) for x in inp.get("agentArgs") or [] if isinstance(x, (str, int)))
+        env = dict(re.findall(r"\b(AB_AGENT|AB_SESSION_SLUG)=['\"]?([A-Za-z0-9._-]+)", args))
+        caller: dict[str, Any] = {"cwd": cwd} if cwd else {}
+        if env.get("AB_AGENT"):
+            caller["agent"] = env["AB_AGENT"]
+        if env.get("AB_SESSION_SLUG"):
+            caller["slug"] = env["AB_SESSION_SLUG"]
+        if not caller:
+            return None, None, None
+        try:
+            me = self.c.amap.identify(caller)
+        except ErroreIndirizzo:
+            return None, None, None
+        return me.agent, me.slug, None
+
     # ---------- registro: delega del bus ----------
 
     def su_delega(self, me, a: dict, out: dict) -> None:
@@ -340,14 +366,45 @@ class Deleghe:
     # ---------- registro: SessionStart ----------
 
     def su_start(self, me, caller: dict) -> None:
-        """La sessione partita in un terminale di uno spawn ne prende l'identità; poi il legame."""
+        """La sessione partita in un terminale di uno spawn ne prende l'identità; poi il legame.
+
+        DC29-F5.6, resume: una sessione delegata ripresa (``claude --resume``, Onda riaperta) parte
+        in un terminale nuovo. Le sue deleghe aperte seguono il terminale nuovo, altrimenti la
+        chiusura trova il vecchio ``exited``, dà la sessione per chiusa e lascia viva quella vera.
+        Vale per le righe già nate da uno spawn (terminal_id noto) e, se la sessione è delegata
+        (SESSIONE_DELEGATA=1), anche per le deleghe del bus mai legate: una sessione aperta da
+        Mario non diventa chiudibile solo perché le arriva una delega."""
         tid = caller.get("onda_terminal_id")
         if not tid:
             return
-        self.c._write(lambda: self.c._conn().execute(
-            "UPDATE deleghe SET sess_agent=?, sess_slug=?, claude_session_id=COALESCE(?, claude_session_id), "
-            "session_closed=0, updated_at=? WHERE terminal_id=? AND closure_state!='closed'",
-            (me.agent, me.slug, caller.get("claude_session_id"), iso_now(), tid)))
+        ts = iso_now()
+        delegata = bool(caller.get("delegata"))
+        # Il terminale vecchio deve essere morto per Onda: se è vivo, la sessione nuova con lo stesso
+        # slug è un'altra (aperta a mano accanto) e la delega resta dov'è. Onda illeggibile: non si sposta.
+        vivi = ({e.get("terminalId") for e in self.c.onda.entries() if e.get("state") != "exited"}
+                if self.c.onda.valid() else None)
+        da_spostare = [] if vivi is None else [
+            r["id"] for r in self._righe(
+                "sess_agent=? AND sess_slug=? AND COALESCE(host, '')=? AND task_id IS NOT NULL "
+                "AND closure_state!='closed' AND (terminal_id IS NULL OR terminal_id!=?)",
+                (me.agent, me.slug, me.host or "", tid))
+            if (r["terminal_id"] is not None or delegata) and r["terminal_id"] not in vivi]
+
+        def scrivi():
+            c = self.c._conn()
+            c.execute(
+                "UPDATE deleghe SET sess_agent=?, sess_slug=?, claude_session_id=COALESCE(?, claude_session_id), "
+                "session_closed=0, updated_at=? WHERE terminal_id=? AND closure_state!='closed'",
+                (me.agent, me.slug, caller.get("claude_session_id"), ts, tid))
+            for rid in da_spostare:
+                c.execute(
+                    "UPDATE deleghe SET terminal_id=?, claude_session_id=COALESCE(?, claude_session_id), "
+                    "session_closed=0, orbit_dirty=CASE WHEN step_ref IS NULL THEN orbit_dirty ELSE 1 END, "
+                    "updated_at=? WHERE id=?", (tid, caller.get("claude_session_id"), ts, rid))
+            return len(da_spostare)
+        spostate = self.c._write(scrivi)
+        if spostate:
+            self.c.log("info", "delega_ripresa", sessione=f"{me.agent}/{me.slug}", terminale=tid, righe=spostate)
         self._lega()
         self._dopo_evento()
 

@@ -550,3 +550,90 @@ def test_step_ref_dal_summary_se_l_intent_ha_solo_la_fase():
     assert _step_ref("dcp29-f1-1-prova-pulita", "DCP29-F1.1 (prova). Crea il file") == "DCP29-F1.1"
     assert _step_ref("dc29-f1-disegno-chiudi-delega", "DC29-F1.1 (piano Orbit DC29)") == "DC29-F1.1"
     assert _step_ref("bug-fix", "niente codice qui") is None
+
+
+# ---------- DC29-F5.6: slug negli agentArgs, SessionStart prima dello spawn, resume ----------
+
+def _start_x(b, addr_cwd, terminal, slug=None, delegata=False, sid=None):
+    caller = {**b.caller(addr_cwd), "onda_terminal_id": terminal}
+    if slug:
+        caller["slug"] = slug
+    if delegata:
+        caller["delegata"] = True
+    if sid:
+        caller["claude_session_id"] = sid
+    resp = b.c.handle_request({"v": 1, "id": "x", "op": "hook.start", "caller": caller, "args": {}})
+    assert resp["ok"], resp
+
+
+def _onda_term(b, addr, terminal, state="idle"):
+    agent, _, slug = addr.partition("/")
+    b.onda(addr, state)
+    b.onda_sessions[addr]["terminalId"] = terminal
+    b._scrivi_onda()
+
+
+def _args_wt30():
+    return ["-lc", "export SESSIONE_DELEGATA=1; export AB_SESSION_SLUG=onda-wt30; exec claude --model opus"]
+
+
+def test_slug_negli_agentargs_lega_la_delega(b):
+    """Il caso del 30/10: spawn in onda-electron con AB_SESSION_SLUG=onda-wt30, delega a kai/onda-wt30."""
+    _onda_term(b, "kai/onda-wt30", "pane-wt30")
+    res = {"terminalId": "pane-wt30", "sessionId": "s-wt30", "cwd": str(b.cwd("kai/onda-electron"))}
+    b.op("alita/work-hub", "delega.spawn", result=res, input={"agentArgs": _args_wt30()})
+    r0 = _righe(b)[0]
+    assert (r0["sess_agent"], r0["sess_slug"]) == ("kai", "onda-wt30")
+    tid = _delega(b, "alita/work-hub", "kai/onda-wt30", "WT30-F3.1 fai")
+    rr = _righe(b)
+    assert len(rr) == 1 and rr[0]["task_id"] == tid and rr[0]["terminal_id"] == "pane-wt30"
+    b.op("alita/work-hub", "close", task_id=tid)
+    assert [p["terminalId"] for p in b.fonda.metodi("agent.close")] == ["pane-wt30"]
+    assert _righe(b)[0]["closure_detail"] == "sessione chiusa"
+
+
+def test_sessionstart_prima_del_postooluse_dello_spawn(b):
+    """onda_agent_spawn aspetta la sessione pronta: il SessionStart arriva prima dello spawn."""
+    _start_x(b, "kai/onda-electron", "pane-y", slug="onda-y", delegata=True, sid="claude-y")
+    res = {"terminalId": "pane-y", "sessionId": "s-y", "cwd": str(b.cwd("kai/onda-electron"))}
+    b.op("alita/work-hub", "delega.spawn", result=res, input={})
+    r0 = _righe(b)[0]
+    assert (r0["sess_slug"], r0["claude_session_id"]) == ("onda-y", "claude-y")
+
+
+def test_resume_in_terminale_nuovo_sposta_la_delega(b):
+    tid = _pronta(b)  # kai/dc29-f3 nel pane-kai-dc29-f3
+    # Onda riaperta: il vecchio terminale non c'è più, la sessione ripresa gira in uno nuovo
+    _onda_term(b, "kai/dc29-f3", "pane-ripreso")
+    _start_x(b, "kai/dc29-f3", "pane-ripreso", sid="claude-ripresa")  # niente SESSIONE_DELEGATA al resume
+    r = _righe(b)[0]
+    assert (r["terminal_id"], r["claude_session_id"], r["session_closed"]) == ("pane-ripreso", "claude-ripresa", 0)
+    b.op("alita/work-hub", "close", task_id=tid)
+    assert [p["terminalId"] for p in b.fonda.metodi("agent.close")] == ["pane-ripreso"]
+    assert _righe(b)[0]["closure_reason"] == "retired"
+
+
+def test_sessione_gemella_viva_non_prende_la_delega(b):
+    """Stesso slug aperto a mano accanto mentre la delegata è ancora viva: la delega resta sua."""
+    _pronta(b)
+    b.onda_sessions["kai/altra"] = {**b.onda_sessions["kai/dc29-f3"], "terminalId": "pane-mario"}
+    b._scrivi_onda()
+    _start_x(b, "kai/dc29-f3", "pane-mario", delegata=True)
+    assert _righe(b)[0]["terminal_id"] == "pane-kai-dc29-f3"
+
+
+def test_delega_del_bus_mai_legata_presa_dalla_sessione_delegata_ripresa(b):
+    tid = _delega(b, "alita/work-hub", "kai/rz", "fai Z")
+    _onda_term(b, "kai/rz", "pane-rz")
+    _start_x(b, "kai/rz", "pane-rz", delegata=True)
+    assert _righe(b)[0]["terminal_id"] == "pane-rz"
+    b.op("kai/rz", "send", to="alita/work-hub", intent="re", summary="fatto", message_type="response", task_id=tid)
+    b.op("alita/work-hub", "close", task_id=tid)
+    assert [p["terminalId"] for p in b.fonda.metodi("agent.close")] == ["pane-rz"]
+
+
+def test_sessione_non_delegata_non_prende_la_delega_del_bus(b):
+    _delega(b, "alita/work-hub", "kai/rm", "fai")
+    _onda_term(b, "kai/rm", "pane-rm")
+    _start_x(b, "kai/rm", "pane-rm")  # aperta da Mario, senza SESSIONE_DELEGATA
+    assert _righe(b)[0]["terminal_id"] is None
