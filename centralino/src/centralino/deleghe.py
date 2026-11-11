@@ -307,10 +307,17 @@ class Deleghe:
                 c.execute(f"UPDATE deleghe SET {', '.join(f'{k}=?' for k in vivi)}, updated_at=? WHERE id=?",
                           (*vivi.values(), ts, prima["id"]))
                 return prima["id"]
+            if r.get("reusedAgent"):
+                # DC29-F5.8: lo spawn ha trovato una sessione che c'era già (es. la principale di un
+                # agente): non è nata da questa delega e non va mai chiusa da DC29.
+                return None
             cur = c.execute(f"INSERT INTO deleghe ({', '.join(campi)}, spawned_at, created_at, updated_at) "
                             f"VALUES ({', '.join('?' * len(campi))}, ?, ?, ?)", (*campi.values(), ts, ts, ts))
             return cur.lastrowid
         rid = self.c._write(scrivi)
+        if rid is None:
+            self.c.log("info", "delega_spawn", terminale=tid, worktree=path, legate=[], motivo="sessione_preesistente")
+            return {"registrato": False, "motivo": "sessione_preesistente"}
         legate = self._lega()
         self.c.log("info", "delega_spawn", terminale=tid, worktree=path, legate=legate)
         self._dopo_evento()
@@ -545,6 +552,10 @@ class Deleghe:
                 out.append(x["task_id"])
         return out
 
+    def _da_spawn(self, tid: str) -> bool:
+        """Il terminale è stato aperto da uno spawn registrato (``delega.spawn``)."""
+        return bool(self._righe("terminal_id=? AND spawned_at IS NOT NULL LIMIT 1", (tid,)))
+
     def _socket(self, r) -> str | None:
         """WT30-F5.4: il socket di Onda della sessione delegata (``sessions.onda_socket``), se noto."""
         if not r["sess_agent"] or not r["sess_slug"]:
@@ -562,7 +573,10 @@ class Deleghe:
         if not tid and r["sess_agent"] and r["sess_slug"]:
             s = self.c.store.read().execute("SELECT * FROM sessions WHERE agent=? AND slug=? AND host=?",
                                             (r["sess_agent"], r["sess_slug"], r["host"] or "")).fetchone()
-            if s is not None and s["delegata"] and s["onda_terminal_id"]:
+            # DC29-F5.8: ``sessions.delegata`` è per agente/slug e resta appiccicato fra processi (un
+            # resume o un prompt non lo azzerano): da solo non dice che QUEL pannello è nato dallo
+            # spawn. Il pannello si chiude solo se uno spawn l'ha registrato; nel dubbio non si chiude.
+            if s is not None and s["delegata"] and s["onda_terminal_id"] and self._da_spawn(s["onda_terminal_id"]):
                 tid = s["onda_terminal_id"]
         if not tid:
             return "non_mia", None  # una sessione che non è nata per la delega non si chiude

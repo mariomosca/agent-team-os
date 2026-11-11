@@ -550,3 +550,46 @@ def test_step_ref_dal_summary_se_l_intent_ha_solo_la_fase():
     assert _step_ref("dcp29-f1-1-prova-pulita", "DCP29-F1.1 (prova). Crea il file") == "DCP29-F1.1"
     assert _step_ref("dc29-f1-disegno-chiudi-delega", "DC29-F1.1 (piano Orbit DC29)") == "DC29-F1.1"
     assert _step_ref("bug-fix", "niente codice qui") is None
+
+
+# ---------- DC29-F5.8: la sessione principale non si chiude mai ----------
+
+def _segna_delegata(b, addr, terminal):
+    """Una sessione ``addr`` partita con SESSIONE_DELEGATA=1 nel pannello ``terminal``: la riga
+    ``sessions`` resta delegata=1 anche per il processo dopo (resume, prompt dopo un end)."""
+    caller = {**b.caller(addr), "onda_terminal_id": terminal, "delegata": True}
+    resp = b.c.handle_request({"v": 1, "id": "x", "op": "hook.start", "caller": caller, "args": {}})
+    assert resp["ok"], resp
+
+
+def test_sessione_principale_con_delegata_appiccicato_non_si_chiude(b):
+    """11/11 10:42: Leo chiude la delega data ad alita/work-hub (sessione principale, mai nata da uno
+    spawn) e il fallback su sessions.delegata chiudeva il pannello di Alita."""
+    b.onda("alita/work-hub", "idle")
+    _segna_delegata(b, "alita/work-hub", "pane-alita-work-hub")
+    tid = _delega(b, "leo/pm", "alita/work-hub", "fai")
+    b.op("leo/pm", "close", task_id=tid)
+    r = _righe(b)[0]
+    assert (r["closure_state"], r["closure_reason"]) == ("closed", "senza_worktree")
+    assert b.fonda.metodi("agent.close") == [] and r["session_closed"] == 0
+
+
+def test_spawn_che_riusa_la_sessione_principale_non_si_registra(b):
+    b.onda("alita/work-hub", "idle")
+    res = {**_spawn_res(b, "alita/work-hub", worktree=False), "reusedAgent": True}
+    out = b.op("leo/pm", "delega.spawn", result=res, input={})
+    assert out == {"registrato": False, "motivo": "sessione_preesistente"}
+    tid = _delega(b, "leo/pm", "alita/work-hub", "fai")
+    b.op("leo/pm", "close", task_id=tid)
+    assert b.fonda.metodi("agent.close") == [] and _righe(b)[0]["closure_state"] == "closed"
+
+
+def test_sessione_delegata_con_slug_suo_e_spawn_registrato_si_chiude(b):
+    """Il caso buono resta: spawn registrato su quel pannello, sessione con slug suo (AB_SESSION_SLUG)
+    e SESSIONE_DELEGATA=1, delega non legata allo spawn."""
+    b.op("alita/work-hub", "delega.spawn", result=_spawn_res(b, "kai/lighthouse", worktree=False), input={})
+    b.onda("kai/lighthouse", "idle")
+    _segna_delegata(b, "kai/lh-token", "pane-kai-lighthouse")
+    tid = _delega(b, "alita/work-hub", "kai/lh-token", "fai")
+    b.op("alita/work-hub", "close", task_id=tid)
+    assert len(b.fonda.metodi("agent.close")) == 1
