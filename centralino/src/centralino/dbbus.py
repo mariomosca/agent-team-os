@@ -281,7 +281,11 @@ class DbBus:
             self._registra_ritorno(c, record, agent, slug, mid)
             self._consuma_copie(c, record)
             return True
-        return self._tx(scrivi)
+        nuovo = self._tx(scrivi)
+        if nuovo and origin != "centralino" and record.get("intent") == "delega-esito":
+            # DC29-F6.1: l'esito di una delega chiusa su una macchina senza Orbit, da scrivere sul passo
+            self.c._su_deleghe("da_remoto", record)
+        return nuovo
 
     # ---------- agente nudo (decisione 2 di Alita) ----------
 

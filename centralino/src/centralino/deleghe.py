@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import subprocess
 import threading
 import time
@@ -48,6 +50,7 @@ TAG_PREFIX = os.environ.get("AB_ARCHIVE_TAG_PREFIX") or "archivio/"
 TRANSITORI = {"fetch_failed", "tag_push_failed", "git_error"}
 APERTE = ("open", "pending", "kept")
 INTENT_TENUTA = "delega-tenuta"
+INTENT_ESITO = "delega-esito"  # DC29-F6.1: esito da una macchina senza Orbit
 
 
 class EsternoGiu(Exception):
@@ -155,6 +158,66 @@ class _Spento:
         raise EsternoGiu(f"Orbit non collegato a questo centralino ({tool})")
 
 
+class CliWorktree:
+    """DC29-F6.1: ``worktree.retire`` e ``worktree.list`` senza l'app Onda, con la CLI
+    ``onda-worktree`` (bundle di onda-electron, stessi controlli a porte chiuse). Serve sulle
+    macchine dove Onda non gira (il mini: agenti in tmux). Gli altri metodi di Onda non esistono
+    qui: ``agent.close`` e simili sono 'giù', e la chiusura lo gestisce come per Onda spenta."""
+
+    def __init__(self, binario: str | None = None):
+        self.binario = binario or os.environ.get("AB_ONDA_WORKTREE_CLI") or shutil.which("onda-worktree") \
+            or str(Path.home() / ".local" / "bin" / "onda-worktree")
+
+    def __call__(self, method: str, params: dict, timeout: float | None = None) -> dict:
+        if method == "worktree.retire":
+            argv = ["retire", str(params["path"])]
+            if params.get("archiveTagPrefix"):
+                argv += ["--archive-tag-prefix", str(params["archiveTagPrefix"])]
+            if params.get("deleteBranch") is False:
+                argv.append("--keep-branch")
+            if params.get("pushArchiveTag"):
+                argv.append("--push-archive-tag")
+            if params.get("dryRun"):
+                argv.append("--dry-run")
+        elif method == "worktree.list":
+            argv = ["list", str(params["repoRoot"])] + (["--fetch"] if params.get("fetch") else [])
+        else:
+            raise EsternoGiu(f"Onda non gira su questa macchina ({method})")
+        if not os.access(self.binario, os.X_OK):
+            raise EsternoGiu(f"onda-worktree non installata ({self.binario})")
+        try:
+            p = subprocess.run([self.binario, *argv], capture_output=True, text=True,
+                               timeout=timeout or RETIRE_TIMEOUT_S)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise EsternoGiu(f"onda-worktree: {type(exc).__name__}") from None
+        try:
+            out = json.loads(p.stdout.strip().splitlines()[-1]) if p.stdout.strip() else None
+        except ValueError:
+            out = None
+        if p.returncode != 0 or not isinstance(out, dict):
+            msg = (out or {}).get("error") if isinstance(out, dict) else None
+            raise EsternoGiu(f"onda-worktree {argv[0]}: {msg or (p.stderr or '').strip()[:200] or p.returncode}")
+        return out
+
+
+def _worktree_di(path: str | None) -> tuple[str, str] | None:
+    """(worktree, repo_root) se ``path`` è la radice di un worktree linkato, altrimenti None."""
+    if not path or not Path(path).is_dir():
+        return None
+    try:
+        p = subprocess.run(["git", "-C", path, "rev-parse", "--path-format=absolute", "--show-toplevel",
+                            "--git-dir", "--git-common-dir"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    righe = p.stdout.strip().splitlines()
+    if p.returncode != 0 or len(righe) != 3:
+        return None
+    top, gdir, common = (_real(x) for x in righe)
+    if top != _real(path) or gdir == common:
+        return None  # sottocartella, oppure il checkout principale
+    return path, str(Path(common).parent)
+
+
 def _real(p: str | None) -> str | None:
     if not p:
         return None
@@ -202,7 +265,13 @@ class Deleghe:
         self.c = central
         reale = os.environ.get("AB_DELEGHE_ESTERNI") == "1" or (
             _real(str(central.home)) == _real(str(Path.home() / ".agent-team-os")))
-        self.onda_call = onda_call or (canale.onda_call if reale else _Spento())
+        # DC29-F6.1: macchina senza Onda (nessuna cartella onda/ dove l'app scrive sessions.json,
+        # o AB_DELEGHE_WORKTREE=cli). Worktree con la CLI onda-worktree, ricavati dalla cartella
+        # della sessione delegata; niente Orbit locale: l'esito va via bus all'host di chi delega.
+        modo = os.environ.get("AB_DELEGHE_WORKTREE")
+        self.senza_onda = modo == "cli" or (modo != "onda" and reale and not (Path(central.home) / "onda").is_dir())
+        self.onda_call = onda_call or (
+            (CliWorktree() if self.senza_onda else canale.onda_call) if reale else _Spento())
         self.orbit = orbit or (OrbitMcp() if reale else _Spento())
         self.sync = sync
         self._locks: dict[str, threading.RLock] = {}
@@ -284,18 +353,13 @@ class Deleghe:
             spawn_by = f"{by.agent}/{by.slug}"
         except ErroreIndirizzo:
             spawn_by = None
-        sess_agent = sess_slug = None
-        if cwd:
-            try:
-                me = self.c.amap.identify({"cwd": cwd})
-                sess_agent, sess_slug = me.agent, me.slug
-            except ErroreIndirizzo:
-                pass
+        sess_agent, sess_slug, claude_sid = self._chi_e_nel_terminale(tid, inp, cwd)
         campi = {"spawn_by": spawn_by, "terminal_id": tid, "onda_session_id": r.get("sessionId"),
                  "workspace_id": r.get("workspaceId"), "repo_root": wt.get("repoRoot") or wi.get("repoRoot"),
                  "worktree_path": path, "branch": wt.get("branch") or wi.get("branch"),
                  "base": wt.get("base") or wt.get("mergedInto"), "labels": _j(labels),
-                 "sess_agent": sess_agent, "sess_slug": sess_slug, "host": self.c.amap.host_self()}
+                 "sess_agent": sess_agent, "sess_slug": sess_slug, "claude_session_id": claude_sid,
+                 "host": self.c.amap.host_self()}
         ts = iso_now()
 
         def scrivi():
@@ -319,6 +383,36 @@ class Deleghe:
         return {"registrato": True, "id": row["id"] if row else rid, "task_id": row["task_id"] if row else None,
                 "legate": legate}
 
+    def _chi_e_nel_terminale(self, tid: str, inp: dict, cwd: str | None) -> tuple:
+        """(agent, slug, claude_session_id) della sessione nata nel terminale dello spawn.
+
+        DC29-F5.6: ``onda_agent_spawn`` aspetta che la sessione sia pronta, quindi il suo SessionStart
+        arriva PRIMA di questo PostToolUse e ``su_start`` non trova ancora la riga. Se la sessione
+        si è già presentata (``sessions.onda_terminal_id``) vale la sua identità; altrimenti gli
+        override negli agentArgs (``AB_AGENT``/``AB_SESSION_SLUG``, come fa l'hook); per ultimo la
+        cartella. Il 30/10 lo spawn di kai/onda-wt30 (AB_SESSION_SLUG) era finito come
+        kai/onda-electron e la delega non si è mai legata."""
+        s = self.c.store.read().execute(
+            "SELECT agent, slug, claude_session_id FROM sessions WHERE onda_terminal_id=? AND host=? "
+            "AND ended_at IS NULL AND last_heartbeat>=? ORDER BY last_heartbeat DESC LIMIT 1",
+            (tid, self.c.amap.host_self() or "", iso(now() - timedelta(seconds=FINESTRA_S)))).fetchone()
+        if s is not None:
+            return s["agent"], s["slug"], s["claude_session_id"]
+        args = " ".join(str(x) for x in inp.get("agentArgs") or [] if isinstance(x, (str, int)))
+        env = dict(re.findall(r"\b(AB_AGENT|AB_SESSION_SLUG)=['\"]?([A-Za-z0-9._-]+)", args))
+        caller: dict[str, Any] = {"cwd": cwd} if cwd else {}
+        if env.get("AB_AGENT"):
+            caller["agent"] = env["AB_AGENT"]
+        if env.get("AB_SESSION_SLUG"):
+            caller["slug"] = env["AB_SESSION_SLUG"]
+        if not caller:
+            return None, None, None
+        try:
+            me = self.c.amap.identify(caller)
+        except ErroreIndirizzo:
+            return None, None, None
+        return me.agent, me.slug, None
+
     # ---------- registro: delega del bus ----------
 
     def su_delega(self, me, a: dict, out: dict) -> None:
@@ -340,14 +434,45 @@ class Deleghe:
     # ---------- registro: SessionStart ----------
 
     def su_start(self, me, caller: dict) -> None:
-        """La sessione partita in un terminale di uno spawn ne prende l'identità; poi il legame."""
+        """La sessione partita in un terminale di uno spawn ne prende l'identità; poi il legame.
+
+        DC29-F5.6, resume: una sessione delegata ripresa (``claude --resume``, Onda riaperta) parte
+        in un terminale nuovo. Le sue deleghe aperte seguono il terminale nuovo, altrimenti la
+        chiusura trova il vecchio ``exited``, dà la sessione per chiusa e lascia viva quella vera.
+        Vale per le righe già nate da uno spawn (terminal_id noto) e, se la sessione è delegata
+        (SESSIONE_DELEGATA=1), anche per le deleghe del bus mai legate: una sessione aperta da
+        Mario non diventa chiudibile solo perché le arriva una delega."""
         tid = caller.get("onda_terminal_id")
         if not tid:
             return
-        self.c._write(lambda: self.c._conn().execute(
-            "UPDATE deleghe SET sess_agent=?, sess_slug=?, claude_session_id=COALESCE(?, claude_session_id), "
-            "session_closed=0, updated_at=? WHERE terminal_id=? AND closure_state!='closed'",
-            (me.agent, me.slug, caller.get("claude_session_id"), iso_now(), tid)))
+        ts = iso_now()
+        delegata = bool(caller.get("delegata"))
+        # Il terminale vecchio deve essere morto per Onda: se è vivo, la sessione nuova con lo stesso
+        # slug è un'altra (aperta a mano accanto) e la delega resta dov'è. Onda illeggibile: non si sposta.
+        vivi = ({e.get("terminalId") for e in self.c.onda.entries() if e.get("state") != "exited"}
+                if self.c.onda.valid() else None)
+        da_spostare = [] if vivi is None else [
+            r["id"] for r in self._righe(
+                "sess_agent=? AND sess_slug=? AND COALESCE(host, '')=? AND task_id IS NOT NULL "
+                "AND closure_state!='closed' AND (terminal_id IS NULL OR terminal_id!=?)",
+                (me.agent, me.slug, me.host or "", tid))
+            if (r["terminal_id"] is not None or delegata) and r["terminal_id"] not in vivi]
+
+        def scrivi():
+            c = self.c._conn()
+            c.execute(
+                "UPDATE deleghe SET sess_agent=?, sess_slug=?, claude_session_id=COALESCE(?, claude_session_id), "
+                "session_closed=0, updated_at=? WHERE terminal_id=? AND closure_state!='closed'",
+                (me.agent, me.slug, caller.get("claude_session_id"), ts, tid))
+            for rid in da_spostare:
+                c.execute(
+                    "UPDATE deleghe SET terminal_id=?, claude_session_id=COALESCE(?, claude_session_id), "
+                    "session_closed=0, orbit_dirty=CASE WHEN step_ref IS NULL THEN orbit_dirty ELSE 1 END, "
+                    "updated_at=? WHERE id=?", (tid, caller.get("claude_session_id"), ts, rid))
+            return len(da_spostare)
+        spostate = self.c._write(scrivi)
+        if spostate:
+            self.c.log("info", "delega_ripresa", sessione=f"{me.agent}/{me.slug}", terminale=tid, righe=spostate)
         self._lega()
         self._dopo_evento()
 
@@ -452,6 +577,10 @@ class Deleghe:
                 "worktree_path": r["worktree_path"], "branch": r["branch"], "labels": _labels(r) or None,
                 "closure_state": r["closure_state"], "closure_reason": r["closure_reason"],
                 "closure_detail": r["closure_detail"], "closure_at": _epoch_ms(r["closure_at"])}
+        if self.senza_onda:
+            self._esito_via_bus(r, {k: v for k, v in args.items() if v is not None})
+            self._aggiorna(rid, orbit_dirty=0)
+            return True
         try:
             self.orbit.chiama("delega_set", {k: v for k, v in args.items() if v is not None})
         except EsternoGiu as exc:
@@ -460,6 +589,49 @@ class Deleghe:
             return False
         self._aggiorna(rid, orbit_dirty=0)
         return True
+
+    def _esito_via_bus(self, r, args: dict) -> None:
+        """DC29-F6.1: senza Orbit su questa macchina l'esito della chiusura va all'host di chi ha
+        delegato, come evento ``delega-esito`` (non sveglia, non blocca): il centralino di là lo
+        scrive sul passo (``da_remoto``). Solo gli esiti (closed, kept), una volta per esito; con
+        chi delega sulla stessa macchina non c'è nessun Orbit da aggiornare."""
+        me = self.c.amap.host_self()
+        if args.get("closure_state") not in ("closed", "kept") or not r["delegator"] \
+                or not r["delegator_host"] or r["delegator_host"] == me:
+            return
+        key = f"esito:{r['task_id']}:{args.get('closure_state')}:{args.get('closure_reason')}"
+        if self.c.store.read().execute("SELECT 1 FROM meta WHERE key=?", (key,)).fetchone():
+            return
+        d_agent, _, d_slug = r["delegator"].partition("/")
+        to = f"{d_agent}@{r['delegator_host']}" + (f"/{d_slug}" if d_slug else "")
+        frm, frm_slug = (r["sess_agent"], r["sess_slug"]) if r["sess_agent"] and r["sess_slug"] else (d_agent, None)
+        testo = (f"Delega {r['task_id'] or ''} ({r['step_ref']}) chiusa su {me}: {args.get('closure_state')}, "
+                 f"{args.get('closure_reason')}" + (f" ({args['closure_detail']})" if args.get("closure_detail") else "")
+                 + ". Il centralino di qui lo scrive sul passo.")
+        try:
+            # senza task_id sul messaggio: non è un ritorno della delega, non tocca l'attesa di là
+            self.c.bus.send(frm, to, "event", INTENT_ESITO,
+                            {"summary": testo, "delega_set": args, "delega_task_id": r["task_id"]},
+                            sender_session=frm_slug)
+        except (BusError, ErroreIndirizzo) as exc:
+            self.c.log("warn", "esito_via_bus_fallito", task_id=r["task_id"], errore=str(exc))
+            return
+        self.c._write(lambda: self.c._conn().execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, iso_now())))
+
+    def da_remoto(self, record: dict) -> None:
+        """Un ``delega-esito`` arrivato da un'altra macchina: si scrive sul passo con Orbit di qui.
+        Orbit giù: resta il messaggio nella casella di chi ha delegato, col testo dell'esito."""
+        args = (record.get("payload") or {}).get("delega_set")
+        if record.get("intent") != INTENT_ESITO or not isinstance(args, dict) or not args.get("step_ref"):
+            return
+        if self.senza_onda:
+            return  # nemmeno qui c'è Orbit
+        try:
+            self.orbit.chiama("delega_set", args)
+            self.c.log("info", "esito_remoto_scritto", step_ref=args.get("step_ref"), task_id=args.get("bus_task_id"))
+        except EsternoGiu as exc:
+            self.c.log("warn", "orbit_giu", step_ref=args.get("step_ref"), motivo=str(exc))
 
     # ---------- chiudi_delega (b2) ----------
 
@@ -491,20 +663,25 @@ class Deleghe:
 
     def su_fine_sessione(self, agent: str, slug: str) -> None:
         """SessionEnd: la sessione è finita. Si chiudono le sue deleghe finite (attesa chiusa o
-        passo done), poi la rete sugli orfani del suo repo. Le deleghe ancora aperte restano."""
-        righe = self._righe("sess_agent=? AND sess_slug=? AND spawned_at IS NOT NULL", (agent, slug))
+        passo done), poi la rete sugli orfani del suo repo. Le deleghe ancora aperte restano.
+
+        Senza Onda (DC29-F6.1) contano anche le deleghe del bus non nate da uno spawn: lì le
+        sessioni delegate partono in tmux. La rete sugli orfani resta solo dove gira Onda."""
+        dove = "sess_agent=? AND sess_slug=? AND " + (
+            "(spawned_at IS NOT NULL OR task_id IS NOT NULL)" if self.senza_onda else "spawned_at IS NOT NULL")
+        righe = self._righe(dove, (agent, slug))
         if not righe:
             self._dopo_evento()
             return
         self.c._write(lambda: self.c._conn().execute(
-            "UPDATE deleghe SET session_closed=1, updated_at=? WHERE sess_agent=? AND sess_slug=? "
-            "AND spawned_at IS NOT NULL", (iso_now(), agent, slug)))
+            f"UPDATE deleghe SET session_closed=1, updated_at=? WHERE {dove}", (iso_now(), agent, slug)))
 
         def lavora():
             esiti = [self._chiudi_riga(r["id"], "session_end") for r in righe
                      if r["closure_state"] != "closed" and self._finita(r)]
-            for repo in sorted({r["repo_root"] for r in righe if r["repo_root"]}):
-                esiti.append(self.orfani(repo))
+            if not self.senza_onda:
+                for repo in sorted({r["repo_root"] for r in righe if r["repo_root"]}):
+                    esiti.append(self.orfani(repo))
             return esiti
         self._fai(lavora, "fine-sessione")
 
@@ -593,6 +770,31 @@ class Deleghe:
             self.c.bus.fine_sessione(r["sess_agent"], r["sess_slug"])
         return "chiusa", None
 
+    def _sessione_senza_onda(self, r) -> tuple[str, str | None]:
+        """DC29-F6.1, macchina senza Onda: la sessione delegata gira in tmux e il centralino non la
+        chiude. Il worktree è la sua cartella, se è la radice di un worktree linkato e la sessione
+        è delegata (SESSIONE_DELEGATA=1). Finché la sessione è viva il retire aspetta (pending): lo
+        rifà il suo SessionEnd. Torna gia_chiusa | al_lavoro | altre_deleghe | non_mia."""
+        if not r["worktree_path"] and r["sess_agent"] and r["sess_slug"]:
+            s = self.c.store.read().execute(
+                "SELECT delegata, workspace_path FROM sessions WHERE agent=? AND slug=? AND host=?",
+                (r["sess_agent"], r["sess_slug"], r["host"] or "")).fetchone()
+            wt = _worktree_di(s["workspace_path"]) if s is not None and s["delegata"] else None
+            if wt is None:
+                return "non_mia", None
+            self._aggiorna(r["id"], worktree_path=wt[0], repo_root=wt[1])
+        elif not r["worktree_path"]:
+            return "non_mia", None
+        altre = self._altre_aperte(r)
+        if altre:
+            return "altre_deleghe", ", ".join(altre)
+        if r["session_closed"]:
+            return "gia_chiusa", None
+        if r["sess_agent"] and r["sess_slug"] and self.c.bus.session_live(r["sess_agent"], r["sess_slug"]):
+            return "al_lavoro", "sessione delegata ancora aperta: il worktree si ritira al suo SessionEnd"
+        self._aggiorna(r["id"], session_closed=1)
+        return "gia_chiusa", None
+
     def _retire(self, path: str, workspace_id: str | None, appena_chiusa: bool, sock: str | None = None) -> dict:
         params: dict[str, Any] = {"path": path, "archiveTagPrefix": TAG_PREFIX, "deleteBranch": True}
         if workspace_id:
@@ -639,7 +841,11 @@ class Deleghe:
 
     def _procedura(self, r) -> tuple[str, str, str | None]:
         """(closure_state, closure_reason, closure_detail) per la riga ``r``."""
-        sess, sdet = self._sessione(r)
+        if self.senza_onda and not r["terminal_id"]:
+            sess, sdet = self._sessione_senza_onda(r)
+            r = self._riga(r["id"]) or r  # worktree_path appena ricavato
+        else:
+            sess, sdet = self._sessione(r)
         note = {"chiusa": "sessione chiusa", "gia_chiusa": "sessione già chiusa",
                 "non_mia": None, "altre_deleghe": f"sessione tenuta per {sdet}"}.get(sess)
         if sess in ("al_lavoro", "onda_giu"):
