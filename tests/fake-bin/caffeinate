@@ -1,0 +1,5 @@
+#!/bin/bash
+# fake caffeinate for tests/test_mobile.py: logs its args, lives until killed (max -t seconds, capped at 30)
+[[ -n "$AB_MOBILE_CAF_LOG" ]] && echo "$*" >> "$AB_MOBILE_CAF_LOG"
+end=$((SECONDS + 30))
+while (( SECONDS < end )); do sleep 0.2; done
