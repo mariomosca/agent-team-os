@@ -802,9 +802,12 @@ legata eredita terminale e worktree. Vale per qualunque coppia di agenti (Alita 
 si rifà):
 
 1. sessione: si chiude con Onda `agent.close {terminalId, sessionId, killPty: true}` solo se è nata per
-   la delega (spawn legato, o `sessions.delegata=1` con un pannello), è ferma per Onda (idle o waiting,
-   casella vuota, assestata da 5 s) e non ha altre deleghe aperte non finite. Una sessione che non è nata
-   per la delega non si chiude mai. Al lavoro, o vista di Onda non valida → `pending`;
+   la delega (spawn legato, o `sessions.delegata=1` con un pannello che uno spawn registrato ha aperto),
+   è ferma per Onda (idle o waiting, casella vuota, assestata da 5 s) e non ha altre deleghe aperte non
+   finite. Una sessione che non è nata per la delega non si chiude mai: `sessions.delegata` da solo non
+   basta (è per agente/slug e sopravvive a resume e prompt di un altro processo), e uno spawn con
+   `reusedAgent` senza una riga già sua non si registra (la sessione c'era prima). Nel dubbio non si
+   chiude (DC29-F5.8). Al lavoro, o vista di Onda non valida → `pending`;
 2. worktree: `worktree.retire {path, workspaceId?, archiveTagPrefix: "archivio/", deleteBranch: true}`
    (prefisso da `AB_ARCHIVE_TAG_PREFIX`). Ritirato → `closed`: via il worktree e i suoi pannelli, il
    workspace del repo resta (contratto Onda WT30); `fetch_failed`, `tag_push_failed`,
