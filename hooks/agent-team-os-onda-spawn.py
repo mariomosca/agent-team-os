@@ -92,10 +92,29 @@ def handle(fase: str, event: dict) -> None:
     chiama("delega.spawn", caller_di(event), {"result": res, "input": inp}, TIMEOUT_S["post"])
 
 
+def su_crewmoor() -> bool:
+    """CM02-F3.3c: l'interruttore unico (~/.config/crewmoor/canale = crewmoor, AGENTI_CANALE vince)."""
+    v = os.environ.get("AGENTI_CANALE")
+    if v is None:
+        f = Path(os.environ.get("CREWMOOR_CANALE_FILE") or Path.home() / ".config" / "crewmoor" / "canale")
+        try:
+            v = f.read_text(encoding="utf-8")
+        except OSError:
+            return False
+    return v.strip().lower() == "crewmoor"
+
+
 def main(argv: list[str]) -> int:
     fase = argv[1] if len(argv) > 1 else ""
     if fase not in TIMEOUT_S:
         return 0
+    if su_crewmoor():
+        # Con Crewmoor il centralino non c'è: lo spawn va alle deleghe di deleghe-crewmoor.py (stesso JSON).
+        lanciatore = Path(__file__).resolve().with_name("deleghe-crewmoor.py")
+        try:
+            os.execv(sys.executable, [sys.executable, "-I", str(lanciatore), "orfani" if fase == "pre" else "spawn"])
+        except OSError:
+            return 0
     try:
         event = json.load(sys.stdin)
         if isinstance(event, dict):
