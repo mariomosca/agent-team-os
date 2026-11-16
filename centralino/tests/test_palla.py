@@ -185,7 +185,7 @@ def test_orbit_remoto_stesse_righe(tmp_path, monkeypatch):
         monkeypatch.setenv("ORBIT_FONTE", "remote")
         monkeypatch.setenv("ORBIT_URL", f"http://127.0.0.1:{srv.server_port}")
         monkeypatch.setenv("ORBIT_ENV", "test")
-        monkeypatch.setenv("ORBIT_TEST_READ_TOKEN_PALLA", "tok-di-prova")
+        monkeypatch.setenv("ORBIT_TEST_TOKEN_ALITA_LAPTOP_LETTORI", "tok-di-prova")
         righe = palla.Orbit(palla.ORBIT_DB).righe([rif_piano("BR24-F6.6")])
         assert [(r["step_key"], r["title"], r["state"]) for r in righe] == [("F6.6", "Banda: in coda o ci lavora", "doing")]
         assert visto["path"] == "/api/v1/views/tables?t=plans,plan_phases,tasks"
