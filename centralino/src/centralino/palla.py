@@ -97,7 +97,7 @@ ORBIT_TTL_S = 60
 
 # OL31-F3.4: Orbit from the server instead of the file, same rule as work-hub/tools/orbit_fonte.py.
 # Switch: ORBIT_FONTE/ORBIT_URL/ORBIT_ENV, else ~/.config/orbit/lettori.json {"fonte": "remote",
-# "url": ..., "env": ...}; no file = local (today). Token ORBIT_<ENV>_READ_TOKEN_PALLA from the
+# "url": ..., "env": ...}; no file = local (today). Token ORBIT_<ENV>_TOKEN_ALITA_LAPTOP_LETTORI (Roster, read-only, OA06-F9.4) from the
 # environment or ~/.config/agenti/secrets.env. Only for the real orbit.db (tests pass None or a file).
 LETTORI = Path.home() / ".config" / "orbit" / "lettori.json"
 SECRETS = Path.home() / ".config" / "agenti" / "secrets.env"
@@ -131,7 +131,7 @@ def _orbit_remoto(tabelle: list[str]) -> sqlite3.Connection:
     env = re.sub(r"[^A-Z0-9]", "_", (cfg.get("env") or "production").upper())
     req = urllib.request.Request(
         f"{str(cfg.get('url') or '').rstrip('/')}/api/v1/views/tables?t={','.join(tabelle)}",
-        headers={"Authorization": f"Bearer {_segreto(f'ORBIT_{env}_READ_TOKEN_PALLA')}"})
+        headers={"Authorization": f"Bearer {_segreto(f'ORBIT_{env}_TOKEN_ALITA_LAPTOP_LETTORI')}"})
     with urllib.request.urlopen(req, timeout=5) as r:
         dati = json.load(r)["tables"]
     con = sqlite3.connect(":memory:")
