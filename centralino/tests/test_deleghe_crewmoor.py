@@ -16,6 +16,9 @@ from test_deleghe import FintaOnda
 
 SEND = "mcp__plugin_crewmoor_crewmoor__crewmoor_send"
 CLOSE = "mcp__plugin_crewmoor_crewmoor__crewmoor_close"
+# RN23-F7: gli stessi strumenti dopo il passaggio a Ciurm.
+SEND_CIURM = "mcp__plugin_ciurm_ciurm__ciurm_send"
+CLOSE_CIURM = "mcp__plugin_ciurm_ciurm__ciurm_close"
 
 
 class FintoOrbit:
@@ -70,18 +73,18 @@ def _spawn(k, frm, addr, repo="/finto/repo"):
     return gestisci("spawn", ev, k.dc())
 
 
-def _delega(k, frm, to, task_id, step_ref=None, mode="delegation"):
+def _delega(k, frm, to, task_id, step_ref=None, mode="delegation", tool=SEND):
     inp = {"to": to, "kind": "brief", "mode": mode, "title": "fai il lavoro", "text": "testo"}
     if step_ref:
         inp["stepRef"] = step_ref
     res = {"messageId": "msg_1", "taskId": task_id if mode == "delegation" else None,
            "to": {"agentId": "agt_1", "name": to.lstrip("@").split("/")[0].split("@")[0]}, "route": "session", "created": True}
-    ev = _ev(k, frm, tool_name=SEND, tool_input=inp, tool_response={"structuredContent": res})
+    ev = _ev(k, frm, tool_name=tool, tool_input=inp, tool_response={"structuredContent": res})
     return gestisci("delega", ev, k.dc())
 
 
-def _chiudi(k, frm, task_id, stato="closed"):
-    ev = _ev(k, frm, tool_name=CLOSE, tool_input={"taskId": task_id, "action": "closed"},
+def _chiudi(k, frm, task_id, stato="closed", tool=CLOSE):
+    ev = _ev(k, frm, tool_name=tool, tool_input={"taskId": task_id, "action": "closed"},
              tool_response={"structuredContent": {"taskId": task_id, "waitState": stato, "changed": True}})
     return gestisci("chiusa", ev, k.dc())
 
@@ -134,6 +137,16 @@ def test_comunicazione_e_riarma_non_toccano_niente(k):
     _delega(k, "alita/work-hub", "@kai/cm02-x", "t-20261111-dddddd")
     assert not _chiudi(k, "alita/work-hub", "t-20261111-dddddd", stato="open")["chiusa"]
     assert k.fonda.metodi("agent.close") == []
+
+
+def test_strumenti_di_ciurm_come_quelli_di_crewmoor(k):
+    k.onda("kai/rn23-x", "idle")
+    _spawn(k, "alita/work-hub", "kai/rn23-x")
+    out = _delega(k, "alita/work-hub", "@kai/rn23-x", "t-20261123-eeeeee", step_ref="RN23-F7.1", tool=SEND_CIURM)
+    assert out["registrato"] and out["legate"] == ["t-20261123-eeeeee"]
+    k.avanza(10)
+    assert _chiudi(k, "alita/work-hub", "t-20261123-eeeeee", tool=CLOSE_CIURM)["chiusa"]
+    assert [p["terminalId"] for p in k.fonda.metodi("agent.close")] == ["pane-kai-rn23-x"]
 
 
 def test_altri_strumenti_si_saltano(k):

@@ -95,8 +95,9 @@ CREATE TABLE IF NOT EXISTS sessions (
 """
 
 # I nomi degli strumenti del plugin Crewmoor come li vede un hook (con e senza il prefisso del plugin).
-SEND_TOOLS = ("crewmoor_send",)
-CLOSE_TOOLS = ("crewmoor_close",)
+# RN23-F7: dal passaggio a Ciurm il plugin espone ``ciurm_send`` e ``ciurm_close``; valgono tutti e due.
+SEND_TOOLS = ("crewmoor_send", "ciurm_send")
+CLOSE_TOOLS = ("crewmoor_close", "ciurm_close")
 
 
 def db_path() -> Path:
